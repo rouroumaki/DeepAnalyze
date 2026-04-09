@@ -1,10 +1,19 @@
-function App() {
-  return (
-    <div className="h-screen flex flex-col items-center justify-center">
-      <h1 className="text-4xl font-bold">DeepAnalyze</h1>
-      <p className="mt-4 text-lg text-gray-600">深度分析系统</p>
-    </div>
-  )
-}
+import { useEffect } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { ChatWindow } from "./components/ChatWindow";
+import { useChatStore } from "./store/chat";
 
-export default App
+export default function App() {
+  const loadSessions = useChatStore((s) => s.loadSessions);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  return (
+    <div className="h-screen flex bg-gray-50">
+      <Sidebar />
+      <ChatWindow />
+    </div>
+  );
+}

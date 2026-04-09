@@ -142,7 +142,7 @@ Guidelines:
 - Distinguish between facts and inferences
 - Use clear, professional language
 - Include a table of contents for long reports`,
-  tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "report_generate", "timeline_build", "graph_build", "think", "finish"],
   maxTurns: 20,
 };
 

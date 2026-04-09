@@ -2,7 +2,8 @@
 // DeepAnalyze - Tool Setup
 // =============================================================================
 // Creates a fully configured ToolRegistry with all custom DeepAnalyze tools
-// (kb_search, wiki_browse, expand) registered and wired to their backends.
+// (kb_search, wiki_browse, expand, report_generate, timeline_build, graph_build)
+// registered and wired to their backends.
 // =============================================================================
 
 import { ToolRegistry } from "./tool-registry.js";
@@ -17,6 +18,9 @@ import {
   getWikiPagesByKb,
   getPageContent,
 } from "../../store/wiki-pages.js";
+import { createReportTool } from "../../tools/ReportTool/index.js";
+import { createTimelineTool } from "../../tools/TimelineTool/index.js";
+import { createGraphTool } from "../../tools/GraphTool/index.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies for tool registration
@@ -48,6 +52,9 @@ export interface ToolSetupDeps {
  * - kb_search (Retriever-backed semantic + BM25 + link search)
  * - wiki_browse (page listing, content reading, link traversal)
  * - expand (layer-by-layer content expansion L0 -> L1 -> L2)
+ * - report_generate (structured analysis report generation)
+ * - timeline_build (chronological event extraction from wiki pages)
+ * - graph_build (entity relationship graph from wiki pages and links)
  */
 export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry {
   const registry = new ToolRegistry();
@@ -412,6 +419,24 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
       }
     },
   });
+
+  // -----------------------------------------------------------------------
+  // report_generate tool
+  // -----------------------------------------------------------------------
+
+  registry.register(createReportTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
+
+  // -----------------------------------------------------------------------
+  // timeline_build tool
+  // -----------------------------------------------------------------------
+
+  registry.register(createTimelineTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
+
+  // -----------------------------------------------------------------------
+  // graph_build tool
+  // -----------------------------------------------------------------------
+
+  registry.register(createGraphTool({ linker: deps.linker, retriever: deps.retriever, dataDir: deps.dataDir }));
 
   return registry;
 }

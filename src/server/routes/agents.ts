@@ -13,6 +13,7 @@
 import { Hono } from "hono";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentTask } from "../../services/agent/types.js";
+import { getCompounder } from "../../services/agent/agent-system.js";
 import * as messageStore from "../../store/messages.js";
 import * as sessionStore from "../../store/sessions.js";
 
@@ -25,6 +26,8 @@ interface RunRequest {
   input: string;
   agentType?: string;
   maxTurns?: number;
+  /** Optional knowledge base ID for auto-compounding the result. */
+  kbId?: string;
 }
 
 interface RunCoordinatedRequest {
@@ -87,12 +90,33 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         );
       }
 
+      // Auto-compound the result into the knowledge base if kbId was provided
+      let compoundedPageId: string | null = null;
+      if (body.kbId && result.output) {
+        try {
+          const compounder = await getCompounder();
+          compoundedPageId = compounder.compoundAgentResult(
+            body.kbId,
+            body.agentType || "general",
+            body.input,
+            result.output,
+          );
+        } catch (compoundingErr) {
+          // Compounding failure should not break the response; log and continue
+          console.warn(
+            "[Agents] Knowledge compounding failed:",
+            compoundingErr instanceof Error ? compoundingErr.message : String(compoundingErr),
+          );
+        }
+      }
+
       return c.json({
         taskId: result.taskId,
         status: "completed",
         output: result.output,
         turnsUsed: result.turnsUsed,
         usage: result.usage,
+        compoundedPageId,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);

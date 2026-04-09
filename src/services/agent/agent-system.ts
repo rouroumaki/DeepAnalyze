@@ -11,9 +11,13 @@
 // =============================================================================
 
 import type { Orchestrator } from "./orchestrator.js";
+import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
+
+/** Singleton compounder instance. */
+let compounderInstance: KnowledgeCompounder | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -66,7 +70,27 @@ export function isOrchestratorReady(): boolean {
  */
 export function resetOrchestrator(): void {
   orchestratorInstance = null;
+  compounderInstance = null;
   initPromise = null;
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Compounder
+// ---------------------------------------------------------------------------
+
+/**
+ * Get (or lazily initialize) the singleton KnowledgeCompounder instance.
+ *
+ * The compounder is initialized alongside the Orchestrator during the first
+ * call to `getOrchestrator()`. If the orchestrator has not been initialized
+ * yet, this will trigger the full initialization pipeline.
+ */
+export async function getCompounder(): Promise<KnowledgeCompounder> {
+  // Ensure the orchestrator (and thus the compounder) is initialized
+  if (!compounderInstance) {
+    await getOrchestrator();
+  }
+  return compounderInstance!;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +149,11 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   // Step 6: Orchestrator
   const orchestrator = new Orchestrator(runner);
   console.log("[AgentSystem] Orchestrator ready");
+
+  // Step 7: Knowledge Compounder (for write-back of agent results)
+  const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
+  compounderInstance = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
+  console.log("[AgentSystem] KnowledgeCompounder initialized");
 
   return orchestrator;
 }

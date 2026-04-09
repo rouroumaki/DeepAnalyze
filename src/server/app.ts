@@ -9,6 +9,7 @@ import { sessionRoutes } from "./routes/sessions.ts";
 import { chatRoutes } from "./routes/chat.ts";
 import { getOrchestrator } from "../services/agent/agent-system.js";
 import { createAgentRoutes } from "./routes/agents.ts";
+import { createReportRoutes } from "./routes/reports.js";
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -34,6 +35,12 @@ export function createApp(): Hono {
     // The agent router defines its own paths relative to its mount point.
     return agentRoutes.fetch(c.req.raw);
   });
+
+  // Report, timeline, and graph routes - mounted directly since the route
+  // factory handles lazy orchestrator access internally in the handlers that
+  // need it. Read-only endpoints (list, get, timeline, graph) use the wiki
+  // store and database directly without requiring the agent pipeline.
+  app.route("/api/reports", createReportRoutes());
 
   // Health check
   app.get("/api/health", (c) => c.json({ status: "ok", version: "0.1.0" }));

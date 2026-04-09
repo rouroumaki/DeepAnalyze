@@ -5,8 +5,10 @@
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { DB } from "../store/database.js";
 import type { WikiLink, WikiPage, LinkType } from "../types/index.js";
+import { getWikiPage, getPageContent, updateWikiPage } from "../store/wiki-pages.js";
 
 // ---------------------------------------------------------------------------
 // Row-to-object mapping
@@ -288,5 +290,91 @@ export class Linker {
         }
       }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // L1 Overview link updating
+  // -----------------------------------------------------------------------
+
+  /**
+   * Update the L1 overview page for a document by appending a
+   * "## Related Pages" section that lists outgoing and incoming links.
+   * This keeps the overview page in sync with the link graph.
+   */
+  updateOverviewLinks(docId: string): void {
+    // Find the overview page for this document
+    const db = DB.getInstance().raw;
+    const overviewRow = db
+      .prepare(
+        "SELECT * FROM wiki_pages WHERE doc_id = ? AND page_type = 'overview' LIMIT 1",
+      )
+      .get(docId) as Record<string, unknown> | undefined;
+
+    if (!overviewRow) return;
+
+    const overviewPage = rowToWikiPage(overviewRow);
+    const pageId = overviewPage.id;
+
+    // Get outgoing and incoming links
+    const outgoing = this.getOutgoingLinks(pageId);
+    const incoming = this.getIncomingLinks(pageId);
+
+    if (outgoing.length === 0 && incoming.length === 0) return;
+
+    // Read current overview content
+    let content: string;
+    try {
+      content = getPageContent(overviewPage.filePath);
+    } catch {
+      return;
+    }
+
+    // Remove any existing "## Related Pages" section
+    const marker = "## Related Pages";
+    const markerIdx = content.indexOf(marker);
+    if (markerIdx !== -1) {
+      content = content.slice(0, markerIdx).trimEnd();
+    }
+
+    // Build the related pages section
+    const lines: string[] = ["", "", marker, ""];
+
+    if (outgoing.length > 0) {
+      lines.push("### Outgoing References");
+      for (const link of outgoing) {
+        const targetPage = db
+          .prepare("SELECT title, page_type FROM wiki_pages WHERE id = ?")
+          .get(link.targetPageId) as { title: string; page_type: string } | undefined;
+        if (targetPage) {
+          const entityLabel = link.entityName ? ` (${link.entityName})` : "";
+          lines.push(
+            `- → [[${targetPage.title}]] (${targetPage.page_type})${entityLabel}`,
+          );
+        }
+      }
+      lines.push("");
+    }
+
+    if (incoming.length > 0) {
+      lines.push("### Incoming References");
+      for (const link of incoming) {
+        const sourcePage = db
+          .prepare("SELECT title, page_type FROM wiki_pages WHERE id = ?")
+          .get(link.sourcePageId) as { title: string; page_type: string } | undefined;
+        if (sourcePage) {
+          const entityLabel = link.entityName ? ` (${link.entityName})` : "";
+          lines.push(
+            `- ← [[${sourcePage.title}]] (${sourcePage.page_type})${entityLabel}`,
+          );
+        }
+      }
+      lines.push("");
+    }
+
+    // Append the related pages section to the overview
+    const updatedContent = content + lines.join("\n") + "\n";
+
+    // Update the page content (filesystem + DB)
+    updateWikiPage(pageId, updatedContent);
   }
 }

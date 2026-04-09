@@ -430,44 +430,38 @@ export class Retriever {
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
     const { kbIds, topK = 10, linkedFrom, pageTypes, minScore } = options;
 
+    // Run all three search strategies in parallel using Promise.allSettled
+    // so one failure doesn't block the others.
+    const [vectorSettled, bm25Settled, linkedSettled] = await Promise.allSettled([
+      this.vectorSearch(query, kbIds, topK),
+      this.bm25Search(query, kbIds, topK),
+      linkedFrom ? this.linkedSearch(linkedFrom, 2) : Promise.resolve([]),
+    ]);
+
     const resultSets: SearchResult[][] = [];
 
-    // Run vector search
-    try {
-      const vectorResults = await this.vectorSearch(query, kbIds, topK);
-      if (vectorResults.length > 0) {
-        resultSets.push(vectorResults);
-      }
-    } catch (err) {
+    if (vectorSettled.status === "fulfilled" && vectorSettled.value.length > 0) {
+      resultSets.push(vectorSettled.value);
+    } else if (vectorSettled.status === "rejected") {
       console.warn(
-        `[Retriever] Vector search failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[Retriever] Vector search failed: ${vectorSettled.reason instanceof Error ? vectorSettled.reason.message : String(vectorSettled.reason)}`,
       );
     }
 
-    // Run BM25 search
-    try {
-      const bm25Results = await this.bm25Search(query, kbIds, topK);
-      if (bm25Results.length > 0) {
-        resultSets.push(bm25Results);
-      }
-    } catch (err) {
+    if (bm25Settled.status === "fulfilled" && bm25Settled.value.length > 0) {
+      resultSets.push(bm25Settled.value);
+    } else if (bm25Settled.status === "rejected") {
       console.warn(
-        `[Retriever] BM25 search failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[Retriever] BM25 search failed: ${bm25Settled.reason instanceof Error ? bm25Settled.reason.message : String(bm25Settled.reason)}`,
       );
     }
 
-    // Run linked search if a starting page is specified
-    if (linkedFrom) {
-      try {
-        const linkedResults = await this.linkedSearch(linkedFrom, 2);
-        if (linkedResults.length > 0) {
-          resultSets.push(linkedResults);
-        }
-      } catch (err) {
-        console.warn(
-          `[Retriever] Linked search failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    if (linkedSettled.status === "fulfilled" && linkedSettled.value.length > 0) {
+      resultSets.push(linkedSettled.value);
+    } else if (linkedSettled.status === "rejected") {
+      console.warn(
+        `[Retriever] Linked search failed: ${linkedSettled.reason instanceof Error ? linkedSettled.reason.message : String(linkedSettled.reason)}`,
+      );
     }
 
     // If only one result set, return it directly (no need for RRF)

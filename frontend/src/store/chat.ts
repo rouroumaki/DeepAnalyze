@@ -1,39 +1,52 @@
+// =============================================================================
+// DeepAnalyze - Chat Store
+// Manages sessions, messages, streaming, and agent tasks
+// =============================================================================
+
 import { create } from "zustand";
-import {
-  api,
-  type SessionInfo,
-  type MessageInfo,
-  type AgentTaskInfo,
-} from "../api/client";
+import { api } from "../api/client.js";
+import type { SessionInfo, MessageInfo, AgentTaskInfo, ToolCallInfo } from "../types/index.js";
 
 interface ChatState {
+  // Data
   sessions: SessionInfo[];
   currentSessionId: string | null;
   messages: MessageInfo[];
   agentTasks: AgentTaskInfo[];
+
+  // UI state
   isLoading: boolean;
   isSending: boolean;
+  isStreaming: boolean;
   error: string | null;
 
-  // Report-related state
-  activeTab: "chat" | "reports" | "skills" | "plugins" | "settings";
-  selectedKbId: string | null;
+  // Streaming internals
+  streamingMessageId: string | null;
+  streamingContent: string;
+  streamingToolCalls: ToolCallInfo[];
 
+  // Actions
   loadSessions: () => Promise<void>;
-  createSession: (title?: string) => Promise<SessionInfo | null>;
+  createSession: (title?: string) => Promise<string>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   clearError: () => void;
 
-  // Tab / KB actions
-  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins" | "settings") => void;
-  setSelectedKbId: (kbId: string | null) => void;
+  // Streaming actions (called by WebSocket handlers)
+  startStreaming: (messageId: string) => void;
+  appendStreamContent: (content: string) => void;
+  addStreamToolCall: (toolCall: ToolCallInfo) => void;
+  updateStreamToolResult: (id: string, output: string, status: "completed" | "error") => void;
+  finishStreaming: (fullContent: string, toolCalls?: ToolCallInfo[]) => void;
 
   // Agent task actions
   loadAgentTasks: (sessionId: string) => Promise<void>;
+  addAgentTask: (task: AgentTaskInfo) => void;
+  updateAgentTaskProgress: (taskId: string, progress: number) => void;
+  completeAgentTask: (taskId: string, output: string) => void;
+  failAgentTask: (taskId: string, error: string) => void;
   runAgent: (input: string, agentType?: string) => Promise<void>;
-  runCoordinated: (input: string) => Promise<void>;
   cancelAgentTask: (taskId: string) => Promise<void>;
 }
 
@@ -44,336 +57,268 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentTasks: [],
   isLoading: false,
   isSending: false,
+  isStreaming: false,
   error: null,
-  activeTab: "chat" as const,
-  selectedKbId: null,
+  streamingMessageId: null,
+  streamingContent: "",
+  streamingToolCalls: [],
 
   loadSessions: async () => {
-    set({ isLoading: true, error: null });
+    set({ isLoading: true });
     try {
       const sessions = await api.listSessions();
-      // Sort by createdAt descending (newest first)
-      sessions.sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      set({ sessions, isLoading: false });
-    } catch (err) {
       set({
-        error: err instanceof Error ? err.message : "Failed to load sessions",
+        sessions: sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
         isLoading: false,
       });
+    } catch (err) {
+      set({ error: String(err), isLoading: false });
     }
   },
 
   createSession: async (title?: string) => {
-    set({ error: null });
     try {
       const session = await api.createSession(title);
-      const { sessions } = get();
-      set({ sessions: [session, ...sessions], currentSessionId: session.id });
-      // Load empty messages for the new session
-      set({ messages: [], agentTasks: [] });
-      return session;
+      set((s) => ({
+        sessions: [session, ...s.sessions],
+        currentSessionId: session.id,
+        messages: [],
+        agentTasks: [],
+      }));
+      return session.id;
     } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : "Failed to create session",
-      });
-      return null;
+      set({ error: String(err) });
+      throw err;
     }
   },
 
   selectSession: async (id: string) => {
-    const { currentSessionId } = get();
-    if (currentSessionId === id) return;
-
+    const state = get();
+    if (state.currentSessionId === id) return;
     set({
       currentSessionId: id,
       messages: [],
       agentTasks: [],
-      isLoading: true,
-      error: null,
+      isStreaming: false,
+      streamingMessageId: null,
     });
     try {
-      const messages = await api.getMessages(id);
-      // Also load agent tasks for this session
-      let agentTasks: AgentTaskInfo[] = [];
-      try {
-        agentTasks = await api.getAgentTasks(id);
-      } catch {
-        // Agent tasks endpoint may not be available yet; ignore errors
-      }
-      set({ messages, agentTasks, isLoading: false });
+      const [messages, tasks] = await Promise.all([
+        api.getMessages(id),
+        api.getAgentTasks(id).catch(() => []),
+      ]);
+      set({ messages, agentTasks: tasks });
     } catch (err) {
-      set({
-        error:
-          err instanceof Error ? err.message : "Failed to load messages",
-        isLoading: false,
-      });
+      set({ error: String(err) });
     }
   },
 
   deleteSession: async (id: string) => {
-    set({ error: null });
     try {
       await api.deleteSession(id);
-      const { sessions, currentSessionId } = get();
-      const newSessions = sessions.filter((s) => s.id !== id);
-      const newCurrentId =
-        currentSessionId === id ? null : currentSessionId;
+      const state = get();
+      const sessions = state.sessions.filter((s) => s.id !== id);
+      const currentSessionId = state.currentSessionId === id ? null : state.currentSessionId;
       set({
-        sessions: newSessions,
-        currentSessionId: newCurrentId,
-        messages: currentSessionId === id ? [] : get().messages,
-        agentTasks: currentSessionId === id ? [] : get().agentTasks,
+        sessions,
+        currentSessionId,
+        messages: state.currentSessionId === id ? [] : state.messages,
       });
     } catch (err) {
-      set({
-        error:
-          err instanceof Error ? err.message : "Failed to delete session",
-      });
+      set({ error: String(err) });
     }
   },
 
   sendMessage: async (content: string) => {
     const { currentSessionId } = get();
-    if (!currentSessionId || !content.trim()) return;
+    if (!currentSessionId) return;
 
-    set({ isSending: true, error: null });
-
-    // Append user message locally immediately (optimistic update)
-    const tempUserMsg: MessageInfo = {
-      id: `temp-user-${Date.now()}`,
+    const userMessage: MessageInfo = {
+      id: `temp-${Date.now()}`,
       role: "user",
-      content: content.trim(),
+      content,
       createdAt: new Date().toISOString(),
     };
 
-    set((state) => ({
-      messages: [...state.messages, tempUserMsg],
+    set((s) => ({
+      messages: [...s.messages, userMessage],
+      isSending: true,
     }));
 
     try {
-      const result = await api.sendMessage(currentSessionId, content.trim());
-
-      // Now reload messages from server to get the canonical versions
-      // (both user message and assistant response)
-      const messages = await api.getMessages(currentSessionId);
-      set({ messages, isSending: false });
-
-      // Also refresh agent tasks in case the backend created any
-      try {
-        const agentTasks = await api.getAgentTasks(currentSessionId);
-        set({ agentTasks });
-      } catch {
-        // Agent tasks endpoint may not be available yet; ignore errors
-      }
-
-      // Update session title if it was the first message
-      const { sessions } = get();
-      const session = sessions.find((s) => s.id === currentSessionId);
-      if (session && !session.title) {
-        // Reload sessions to pick up the auto-generated title
-        const updatedSessions = await api.listSessions();
-        updatedSessions.sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        set({ sessions: updatedSessions });
-      }
+      await api.sendMessage(currentSessionId, content);
     } catch (err) {
-      set({
-        error:
-          err instanceof Error ? err.message : "Failed to send message",
-        isSending: false,
-      });
-      // Remove the optimistic user message on failure
-      set((state) => ({
-        messages: state.messages.filter((m) => m.id !== tempUserMsg.id),
-      }));
+      set({ error: String(err) });
     }
   },
 
   clearError: () => set({ error: null }),
 
-  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins" | "settings") => set({ activeTab: tab }),
-  setSelectedKbId: (kbId: string | null) => set({ selectedKbId: kbId }),
+  // --- Streaming ---
 
-  // -----------------------------------------------------------------------
-  // Agent task actions
-  // -----------------------------------------------------------------------
+  startStreaming: (messageId: string) => {
+    const assistantMessage: MessageInfo = {
+      id: messageId,
+      role: "assistant",
+      content: "",
+      createdAt: new Date().toISOString(),
+      isStreaming: true,
+      toolCalls: [],
+    };
+    set((s) => ({
+      messages: [...s.messages, assistantMessage],
+      isStreaming: true,
+      streamingMessageId: messageId,
+      streamingContent: "",
+      streamingToolCalls: [],
+      isSending: false,
+    }));
+  },
+
+  appendStreamContent: (content: string) => {
+    set((s) => {
+      const newContent = s.streamingContent + content;
+      return {
+        streamingContent: newContent,
+        messages: s.messages.map((m) =>
+          m.id === s.streamingMessageId ? { ...m, content: newContent } : m,
+        ),
+      };
+    });
+  },
+
+  addStreamToolCall: (toolCall: ToolCallInfo) => {
+    set((s) => {
+      const newToolCalls = [...s.streamingToolCalls, toolCall];
+      return {
+        streamingToolCalls: newToolCalls,
+        messages: s.messages.map((m) =>
+          m.id === s.streamingMessageId ? { ...m, toolCalls: newToolCalls } : m,
+        ),
+      };
+    });
+  },
+
+  updateStreamToolResult: (id: string, output: string, status: "completed" | "error") => {
+    set((s) => {
+      const newToolCalls = s.streamingToolCalls.map((tc) =>
+        tc.id === id ? { ...tc, output, status } : tc,
+      );
+      return {
+        streamingToolCalls: newToolCalls,
+        messages: s.messages.map((m) =>
+          m.id === s.streamingMessageId ? { ...m, toolCalls: newToolCalls } : m,
+        ),
+      };
+    });
+  },
+
+  finishStreaming: (fullContent: string, toolCalls?: ToolCallInfo[]) => {
+    set((s) => ({
+      isStreaming: false,
+      streamingMessageId: null,
+      streamingContent: "",
+      streamingToolCalls: [],
+      messages: s.messages.map((m) =>
+        m.id === s.streamingMessageId
+          ? { ...m, content: fullContent, isStreaming: false, toolCalls: toolCalls ?? m.toolCalls }
+          : m,
+      ),
+    }));
+  },
+
+  // --- Agent Tasks ---
 
   loadAgentTasks: async (sessionId: string) => {
     try {
-      const agentTasks = await api.getAgentTasks(sessionId);
-      set({ agentTasks });
-    } catch (err) {
-      // Silently ignore errors - the agent endpoint may not be initialized yet
-      console.warn("Failed to load agent tasks:", err);
+      const tasks = await api.getAgentTasks(sessionId);
+      set({ agentTasks: tasks });
+    } catch {
+      // Silently ignore
     }
+  },
+
+  addAgentTask: (task: AgentTaskInfo) => {
+    set((s) => ({ agentTasks: [task, ...s.agentTasks] }));
+  },
+
+  updateAgentTaskProgress: (taskId: string, progress: number) => {
+    set((s) => ({
+      agentTasks: s.agentTasks.map((t) =>
+        t.id === taskId ? { ...t, progress, status: "running" as const } : t,
+      ),
+    }));
+  },
+
+  completeAgentTask: (taskId: string, output: string) => {
+    set((s) => ({
+      agentTasks: s.agentTasks.map((t) =>
+        t.id === taskId
+          ? { ...t, status: "completed" as const, output, completedAt: new Date().toISOString() }
+          : t,
+      ),
+    }));
+  },
+
+  failAgentTask: (taskId: string, error: string) => {
+    set((s) => ({
+      agentTasks: s.agentTasks.map((t) =>
+        t.id === taskId
+          ? { ...t, status: "failed" as const, error, completedAt: new Date().toISOString() }
+          : t,
+      ),
+    }));
   },
 
   runAgent: async (input: string, agentType?: string) => {
     const { currentSessionId } = get();
-    if (!currentSessionId || !input.trim()) return;
+    if (!currentSessionId) return;
 
-    set({ isSending: true, error: null });
-
-    // Optimistically add a user message
-    const tempUserMsg: MessageInfo = {
-      id: `temp-user-agent-${Date.now()}`,
+    const userMessage: MessageInfo = {
+      id: `temp-agent-${Date.now()}`,
       role: "user",
-      content: input.trim(),
+      content: input,
       createdAt: new Date().toISOString(),
     };
 
-    set((state) => ({
-      messages: [...state.messages, tempUserMsg],
-    }));
+    set((s) => ({ messages: [...s.messages, userMessage], isSending: true }));
 
     try {
-      const result = await api.runAgent(
-        currentSessionId,
-        input.trim(),
-        agentType,
-      );
-
-      // Reload messages and agent tasks from the server
-      const [messages, agentTasks] = await Promise.all([
-        api.getMessages(currentSessionId),
-        api.getAgentTasks(currentSessionId).catch(() => get().agentTasks),
-      ]);
-
-      set({ messages, agentTasks, isSending: false });
+      const result = await api.runAgent(currentSessionId, input, agentType);
+      // Poll for updates
+      const poll = async (count = 0) => {
+        if (count > 120) { set({ isSending: false }); return; }
+        if (get().currentSessionId !== currentSessionId) { set({ isSending: false }); return; }
+        try {
+          const tasks = await api.getAgentTasks(currentSessionId);
+          set({ agentTasks: tasks });
+          const current = tasks.find((t) => t.id === result.taskId);
+          if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
+            setTimeout(() => poll(count + 1), 1000);
+          } else {
+            const messages = await api.getMessages(currentSessionId);
+            set({ messages, isSending: false });
+          }
+        } catch {
+          set({ isSending: false });
+        }
+      };
+      setTimeout(() => poll(), 1000);
     } catch (err) {
-      set({
-        error:
-          err instanceof Error ? err.message : "Failed to run agent",
-        isSending: false,
-      });
-      // Remove the optimistic user message on failure
-      set((state) => ({
-        messages: state.messages.filter((m) => m.id !== tempUserMsg.id),
-      }));
-    }
-  },
-
-  runCoordinated: async (input: string) => {
-    const { currentSessionId } = get();
-    if (!currentSessionId || !input.trim()) return;
-
-    set({ isSending: true, error: null });
-
-    // Optimistically add a user message
-    const tempUserMsg: MessageInfo = {
-      id: `temp-user-coord-${Date.now()}`,
-      role: "user",
-      content: input.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    set((state) => ({
-      messages: [...state.messages, tempUserMsg],
-    }));
-
-    try {
-      const result = await api.runCoordinated(currentSessionId, input.trim());
-
-      // Reload agent tasks to show the running coordinated task
-      try {
-        const agentTasks = await api.getAgentTasks(currentSessionId);
-        set({ agentTasks });
-      } catch {
-        // Ignore - polling will pick it up
-      }
-
-      // Start polling for updates since coordinated runs are async
-      pollAgentTasks(currentSessionId, get, set);
-
-      set({ isSending: false });
-    } catch (err) {
-      set({
-        error:
-          err instanceof Error
-            ? err.message
-            : "Failed to start coordinated workflow",
-        isSending: false,
-      });
-      // Remove the optimistic user message on failure
-      set((state) => ({
-        messages: state.messages.filter((m) => m.id !== tempUserMsg.id),
-      }));
+      set({ error: String(err), isSending: false });
     }
   },
 
   cancelAgentTask: async (taskId: string) => {
     try {
       await api.cancelAgentTask(taskId);
-
-      // Refresh the task list
-      const { currentSessionId } = get();
-      if (currentSessionId) {
-        const agentTasks = await api.getAgentTasks(currentSessionId);
-        set({ agentTasks });
-      }
+      set((s) => ({
+        agentTasks: s.agentTasks.map((t) =>
+          t.id === taskId ? { ...t, status: "cancelled" as const } : t,
+        ),
+      }));
     } catch (err) {
-      set({
-        error:
-          err instanceof Error ? err.message : "Failed to cancel task",
-      });
+      set({ error: String(err) });
     }
   },
 }));
-
-// ---------------------------------------------------------------------------
-// Polling helper for async agent tasks
-// ---------------------------------------------------------------------------
-
-/**
- * Poll agent tasks for a session until all tasks reach a terminal state.
- * Updates the store with each poll.
- */
-function pollAgentTasks(
-  sessionId: string,
-  get: () => ChatState,
-  set: (partial: Partial<ChatState>) => void,
-): void {
-  let pollCount = 0;
-  const maxPolls = 120; // 2 minutes at 1-second intervals
-
-  const intervalId = setInterval(async () => {
-    pollCount++;
-
-    // Stop if we've polled too many times
-    if (pollCount > maxPolls) {
-      clearInterval(intervalId);
-      return;
-    }
-
-    // Stop if the user switched sessions
-    if (get().currentSessionId !== sessionId) {
-      clearInterval(intervalId);
-      return;
-    }
-
-    try {
-      const agentTasks = await api.getAgentTasks(sessionId);
-      set({ agentTasks });
-
-      // Also refresh messages since coordinated runs save assistant messages
-      const messages = await api.getMessages(sessionId);
-      set({ messages });
-
-      // Check if all tasks are in a terminal state
-      const hasActiveTasks = agentTasks.some(
-        (t) => t.status === "pending" || t.status === "running",
-      );
-
-      if (!hasActiveTasks) {
-        clearInterval(intervalId);
-      }
-    } catch {
-      // Continue polling even if a single request fails
-    }
-  }, 1000);
-}

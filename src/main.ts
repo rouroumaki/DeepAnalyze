@@ -1,11 +1,9 @@
-import { Hono } from "hono";
+// =============================================================================
+// DeepAnalyze - Server Entry Point
+// =============================================================================
+
 import { DB } from "./store/database.ts";
-
-const app = new Hono();
-
-app.get("/api/health", (c) => {
-  return c.json({ status: "ok", version: "0.1.0" });
-});
+import { createApp } from "./server/app.ts";
 
 // ---------------------------------------------------------------------------
 // Database initialization
@@ -15,9 +13,14 @@ db.migrate();
 console.log("[DB] Database initialized and migrations applied");
 
 // ---------------------------------------------------------------------------
+// Application
+// ---------------------------------------------------------------------------
+const app = createApp();
+
+// ---------------------------------------------------------------------------
 // Server startup
 // ---------------------------------------------------------------------------
-const port = 21000;
+const port = parseInt(process.env.PORT || "21000");
 
 // Graceful shutdown handler
 function shutdown() {
@@ -37,7 +40,7 @@ if (typeof Bun !== "undefined") {
   });
   console.log(`DeepAnalyze server running on http://localhost:${port}`);
 } else {
-  // Node.js runtime (fallback for development without Bun)
+  // Node.js runtime (fallback)
   import("@hono/node-server").then(({ serve }) => {
     serve({ fetch: app.fetch, port });
     console.log(`DeepAnalyze server running on http://localhost:${port}`);

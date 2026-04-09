@@ -7,7 +7,8 @@
     "build": "bun build src/main.ts --outdir dist --target bun",
     "start": "bun run dist/main.js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",

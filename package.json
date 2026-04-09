@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "bun run --watch src/main.ts",
     "build": "bun build src/main.ts --outdir dist --target bun",
-    "typecheck": "tsc --noEmit"
+    "start": "bun run dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",

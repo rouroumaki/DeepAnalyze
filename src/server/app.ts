@@ -5,6 +5,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { errorHandler, requestLogger } from "./middleware/index.js";
 import { sessionRoutes } from "./routes/sessions.ts";
 import { chatRoutes } from "./routes/chat.ts";
 import { getOrchestrator } from "../services/agent/agent-system.js";
@@ -16,7 +17,13 @@ import { knowledgeRoutes } from "./routes/knowledge.js";
 export function createApp(): Hono {
   const app = new Hono();
 
-  // Global middleware
+  // Global error handler (must be registered before routes)
+  app.onError(errorHandler);
+
+  // Request logging and tracing
+  app.use("*", requestLogger);
+
+  // CORS
   app.use("*", cors());
 
   // API routes
@@ -61,6 +68,11 @@ export function createApp(): Hono {
 
   // Health check
   app.get("/api/health", (c) => c.json({ status: "ok", version: "0.1.0" }));
+
+  // 404 catch-all for unmatched routes
+  app.notFound((c) => {
+    return c.json({ error: "Not found", path: c.req.path }, 404);
+  });
 
   return app;
 }

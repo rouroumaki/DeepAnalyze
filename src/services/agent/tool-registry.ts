@@ -100,6 +100,14 @@ export class ToolRegistry {
     }
   }
 
+  /**
+   * Unregister a tool by name.
+   * Returns true if the tool was found and removed, false otherwise.
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   // -----------------------------------------------------------------------
   // Lookup
   // -----------------------------------------------------------------------

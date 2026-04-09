@@ -12,12 +12,16 @@
 
 import type { Orchestrator } from "./orchestrator.js";
 import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
+import type { PluginManager } from "../plugins/plugin-manager.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
 
 /** Singleton compounder instance. */
 let compounderInstance: KnowledgeCompounder | null = null;
+
+/** Singleton plugin manager instance. */
+let pluginManagerInstance: PluginManager | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -71,6 +75,7 @@ export function isOrchestratorReady(): boolean {
 export function resetOrchestrator(): void {
   orchestratorInstance = null;
   compounderInstance = null;
+  pluginManagerInstance = null;
   initPromise = null;
 }
 
@@ -91,6 +96,25 @@ export async function getCompounder(): Promise<KnowledgeCompounder> {
     await getOrchestrator();
   }
   return compounderInstance!;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Manager
+// ---------------------------------------------------------------------------
+
+/**
+ * Get (or lazily initialize) the singleton PluginManager instance.
+ *
+ * The PluginManager is initialized alongside the Orchestrator during the first
+ * call to `getOrchestrator()`. If the orchestrator has not been initialized
+ * yet, this will trigger the full initialization pipeline.
+ */
+export async function getPluginManager(): Promise<PluginManager> {
+  // Ensure the orchestrator (and thus the plugin manager) is initialized
+  if (!pluginManagerInstance) {
+    await getOrchestrator();
+  }
+  return pluginManagerInstance!;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +174,15 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   const orchestrator = new Orchestrator(runner);
   console.log("[AgentSystem] Orchestrator ready");
 
-  // Step 7: Knowledge Compounder (for write-back of agent results)
+  // Step 7: Plugin Manager
+  const { PluginManager } = await import("../plugins/plugin-manager.js");
+  const pluginManager = new PluginManager(toolRegistry);
+  pluginManager.setAgentRunner(runner);
+  pluginManager.loadFromDatabase();
+  pluginManagerInstance = pluginManager;
+  console.log("[AgentSystem] PluginManager initialized");
+
+  // Step 8: Knowledge Compounder (for write-back of agent results)
   const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
   compounderInstance = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
   console.log("[AgentSystem] KnowledgeCompounder initialized");

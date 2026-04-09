@@ -29,3 +29,4 @@ export type {
   AgentRunOptions,
 } from "./types.js";
 export type { SubTask, OrchestratorResult } from "./orchestrator.js";
+export { getOrchestrator, getCompounder, getPluginManager, resetOrchestrator, isOrchestratorReady } from "./agent-system.js";

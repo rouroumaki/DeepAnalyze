@@ -6,13 +6,32 @@
 
 import { Hono } from "hono";
 import { SettingsStore, type ProviderConfig, type ProviderDefaults } from "../../store/settings.js";
+import { getAllProviders, getProviderMetadata, type ProviderMetadata } from "../../models/provider-registry.js";
 
 export function createSettingsRoutes(): Hono {
   const router = new Hono();
   const store = new SettingsStore();
 
   // -----------------------------------------------------------------------
-  // Provider CRUD
+  // Provider registry (read-only metadata about all known providers)
+  // -----------------------------------------------------------------------
+
+  /** List all known provider types from the registry */
+  router.get("/registry", (c) => {
+    return c.json(getAllProviders());
+  });
+
+  /** Get metadata for a single provider type */
+  router.get("/registry/:id", (c) => {
+    const meta = getProviderMetadata(c.req.param("id"));
+    if (!meta) {
+      return c.json({ error: "Provider type not found in registry" }, 404);
+    }
+    return c.json(meta);
+  });
+
+  // -----------------------------------------------------------------------
+  // Provider CRUD (user-configured instances)
   // -----------------------------------------------------------------------
 
   /** List all configured providers */

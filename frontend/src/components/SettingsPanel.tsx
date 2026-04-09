@@ -4,573 +4,460 @@ import {
   type ProviderConfig,
   type ProviderDefaults,
   type ProviderTestResult,
+  type ProviderSettings,
 } from "../api/client";
 
 // ---------------------------------------------------------------------------
-// Provider type options
+// Provider metadata from registry
 // ---------------------------------------------------------------------------
 
-const PROVIDER_TYPES = [
-  { value: "openai-compatible", label: "OpenAI Compatible" },
-  { value: "ollama", label: "Ollama (Local)" },
-  { value: "anthropic", label: "Anthropic (Claude)" },
-] as const;
-
-const PROVIDER_PRESETS: Record<string, Partial<ProviderConfig>> = {
-  "openai-compatible": {
-    endpoint: "https://api.openai.com/v1",
-    maxTokens: 32768,
-    supportsToolUse: true,
-  },
-  ollama: {
-    endpoint: "http://localhost:11434/v1",
-    maxTokens: 32768,
-    supportsToolUse: true,
-  },
-  anthropic: {
-    endpoint: "https://api.anthropic.com/v1",
-    maxTokens: 32768,
-    supportsToolUse: true,
-  },
-};
-
-function generateId(): string {
-  return `provider-${Date.now().toString(36)}`;
+interface ProviderMetadata {
+  id: string;
+  name: string;
+  defaultApiBase: string;
+  defaultModel: string;
+  isLocal: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Empty provider template
-// ---------------------------------------------------------------------------
-
-function emptyProvider(type: ProviderConfig["type"]): ProviderConfig {
-  const preset = PROVIDER_PRESETS[type] ?? {};
-  return {
-    id: generateId(),
-    name: "",
-    type,
-    endpoint: preset.endpoint ?? "",
-    apiKey: "",
-    model: "",
-    maxTokens: preset.maxTokens ?? 32768,
-    supportsToolUse: preset.supportsToolUse ?? true,
-    enabled: true,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SettingsPanel component
+// SettingsPanel - modelled after AIE_new's ProviderConfig.vue
 // ---------------------------------------------------------------------------
 
 export function SettingsPanel() {
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [defaults, setDefaults] = useState<ProviderDefaults>({
-    main: "",
-    summarizer: "",
-    embedding: "",
-    vlm: "",
-  });
-  const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
-  const [isNew, setIsNew] = useState(false);
-  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
-  const [isTesting, setIsTesting] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [registry, setRegistry] = useState<ProviderMetadata[]>([]);
+  const [settings, setSettings] = useState<ProviderSettings | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string>("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiBase, setApiBase] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [maxTokens, setMaxTokens] = useState(32768);
+  const [enabled, setEnabled] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
-  // Load providers on mount
-  const loadProviders = useCallback(async () => {
+  // Load registry + settings
+  const loadData = useCallback(async () => {
     try {
-      const settings = await api.getProviders();
-      setProviders(settings.providers);
-      setDefaults(settings.defaults);
+      // Load provider registry
+      const registryResp = await fetch("/api/settings/registry");
+      if (registryResp.ok) {
+        const regData = await registryResp.json();
+        setRegistry(regData);
+      }
+
+      // Load configured providers
+      const settingsData = await api.getProviders();
+      setSettings(settingsData);
     } catch (err) {
-      setError("Failed to load provider settings");
+      console.error("Failed to load settings:", err);
     }
   }, []);
 
   useEffect(() => {
-    loadProviders();
-  }, [loadProviders]);
+    loadData();
+  }, [loadData]);
 
-  // Clear messages after 3 seconds
+  // Auto-dismiss messages
   useEffect(() => {
-    if (successMessage) {
-      const t = setTimeout(() => setSuccessMessage(null), 3000);
+    if (message) {
+      const t = setTimeout(() => setMessage(null), 3000);
       return () => clearTimeout(t);
     }
-  }, [successMessage]);
+  }, [message]);
 
-  // -----------------------------------------------------------------------
-  // Handlers
-  // -----------------------------------------------------------------------
+  // Get current provider metadata
+  const currentMeta = registry.find((p) => p.id === selectedProvider);
+  const isLocal = currentMeta?.isLocal ?? false;
 
-  const handleAddProvider = () => {
-    setEditingProvider(emptyProvider("openai-compatible"));
-    setIsNew(true);
-    setTestResult(null);
-    setError(null);
-  };
+  // Get current configured provider from settings
+  const currentConfigured = settings?.providers.find((p) => p.id === selectedProvider);
 
-  const handleEditProvider = (provider: ProviderConfig) => {
-    setEditingProvider({ ...provider });
-    setIsNew(false);
-    setTestResult(null);
-    setError(null);
-  };
+  // When provider selection changes, populate form
+  useEffect(() => {
+    if (!selectedProvider) return;
 
-  const handleDeleteProvider = async (id: string) => {
-    try {
-      await api.deleteProvider(id);
-      setProviders((prev) => prev.filter((p) => p.id !== id));
-      setSuccessMessage("Provider deleted");
-      if (editingProvider?.id === id) {
-        setEditingProvider(null);
-      }
-    } catch (err) {
-      setError("Failed to delete provider");
+    const meta = registry.find((p) => p.id === selectedProvider);
+    const configured = settings?.providers.find((p) => p.id === selectedProvider);
+
+    if (configured) {
+      setApiKey(configured.apiKey);
+      setApiBase(configured.endpoint);
+      setModelName(configured.model);
+      setMaxTokens(configured.maxTokens);
+      setEnabled(configured.enabled);
+    } else {
+      setApiKey("");
+      setApiBase(meta?.defaultApiBase ?? "");
+      setModelName(meta?.defaultModel ?? "");
+      setMaxTokens(32768);
+      setEnabled(true);
     }
-  };
+    setTestResult(null);
+  }, [selectedProvider, registry, settings]);
 
-  const handleSaveProvider = async () => {
-    if (!editingProvider) return;
-    if (!editingProvider.name || !editingProvider.endpoint || !editingProvider.model) {
-      setError("Name, endpoint, and model are required");
-      return;
+  // Initialize with currently configured provider
+  useEffect(() => {
+    if (settings && settings.defaults.main && !selectedProvider) {
+      setSelectedProvider(settings.defaults.main);
+    } else if (settings && settings.providers.length > 0 && !selectedProvider) {
+      setSelectedProvider(settings.providers[0].id);
     }
+  }, [settings, selectedProvider]);
 
-    setIsSaving(true);
-    setError(null);
+  // Save provider configuration
+  const handleSave = async () => {
+    if (!selectedProvider) return;
+
+    setSaving(true);
     try {
-      await api.saveProvider(editingProvider);
-      setSuccessMessage(isNew ? "Provider created" : "Provider updated");
-      setEditingProvider(null);
-      setIsNew(false);
-      await loadProviders();
-    } catch (err) {
-      setError("Failed to save provider");
+      const provider: ProviderConfig = {
+        id: selectedProvider,
+        name: currentMeta?.name ?? selectedProvider,
+        type: "openai-compatible",
+        endpoint: apiBase,
+        apiKey,
+        model: modelName,
+        maxTokens,
+        supportsToolUse: true,
+        enabled,
+      };
+
+      await api.saveProvider(provider);
+      setMessage({ type: "ok", text: "配置已保存" });
+      await loadData();
+    } catch {
+      setMessage({ type: "err", text: "保存失败" });
     } finally {
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
-  const handleTestProvider = async () => {
-    if (!editingProvider) return;
-    setIsTesting(true);
+  // Test connection
+  const handleTest = async () => {
+    if (!selectedProvider) return;
+
+    setTesting(true);
     setTestResult(null);
-    setError(null);
     try {
-      // Save first if it's new, so we can test it
-      if (isNew) {
-        await api.saveProvider(editingProvider);
-        setIsNew(false);
-        await loadProviders();
-      }
-      const result = await api.testProvider(editingProvider.id);
-      setTestResult(result);
+      // Save first so the provider exists in DB
+      await handleSave();
+      const result = await api.testProvider(selectedProvider);
+      setTestResult({
+        success: result.success,
+        message: result.success
+          ? result.models && result.models.length > 0
+            ? `连接成功! 可用模型: ${result.models.slice(0, 5).join(", ")}`
+            : "连接成功!"
+          : result.error ?? "连接失败",
+      });
     } catch (err) {
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : "Connection failed",
+        message: err instanceof Error ? err.message : "连接失败",
       });
     } finally {
-      setIsTesting(false);
+      setTesting(false);
     }
   };
 
-  const handleUpdateDefaults = async (role: keyof ProviderDefaults, value: string) => {
-    const newDefaults = { ...defaults, [role]: value };
-    setDefaults(newDefaults);
+  // Update default role
+  const handleSetDefault = async (role: string) => {
     try {
-      await api.saveDefaults({ [role]: value });
-      setSuccessMessage("Default model updated");
+      await api.saveDefaults({ [role]: selectedProvider });
+      setMessage({ type: "ok", text: "默认模型已更新" });
+      await loadData();
     } catch {
-      setError("Failed to update defaults");
+      setMessage({ type: "err", text: "更新默认模型失败" });
     }
   };
-
-  const handleFieldChange = (
-    field: keyof ProviderConfig,
-    value: string | number | boolean,
-  ) => {
-    if (!editingProvider) return;
-
-    let updated = { ...editingProvider, [field]: value };
-
-    // When type changes, apply preset defaults
-    if (field === "type" && typeof value === "string") {
-      const preset = PROVIDER_PRESETS[value] ?? {};
-      updated = {
-        ...updated,
-        endpoint: preset.endpoint ?? updated.endpoint,
-        maxTokens: preset.maxTokens ?? updated.maxTokens,
-        supportsToolUse: preset.supportsToolUse ?? updated.supportsToolUse,
-      };
-    }
-
-    setEditingProvider(updated);
-  };
-
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div className="max-w-3xl mx-auto space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-800">
-              Model Provider Settings
-            </h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Configure the AI model backends for DeepAnalyze. Supports remote APIs (OpenAI, Claude) and local models (Ollama, vLLM).
-            </p>
-          </div>
-          <button
-            onClick={handleAddProvider}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
-          >
-            + Add Provider
-          </button>
+        <div>
+          <h2 className="text-lg font-semibold text-gray-800">
+            模型配置
+          </h2>
+          <p className="text-sm text-gray-500 mt-1">
+            选择并配置 AI 模型提供商。支持远端 API (OpenAI, Claude, DeepSeek 等) 和本地模型 (Ollama, vLLM)。
+          </p>
+          {settings && settings.defaults.main && (
+            <div className="mt-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+              <span className="text-gray-500">当前使用:</span>{" "}
+              <span className="font-medium text-blue-700">
+                {settings.providers.find((p) => p.id === settings!.defaults.main)?.name ?? settings.defaults.main}
+                {" / "}
+                {settings.providers.find((p) => p.id === settings!.defaults.main)?.model ?? ""}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Messages */}
-        {error && (
-          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-            {error}
-            <button
-              onClick={() => setError(null)}
-              className="float-right font-bold cursor-pointer"
-            >
-              x
-            </button>
-          </div>
-        )}
-        {successMessage && (
-          <div className="px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
-            {successMessage}
+        {message && (
+          <div
+            className={`px-4 py-3 rounded-lg text-sm ${
+              message.type === "ok"
+                ? "bg-green-50 border border-green-200 text-green-700"
+                : "bg-red-50 border border-red-200 text-red-700"
+            }`}
+          >
+            {message.text}
           </div>
         )}
 
-        {/* Provider list */}
-        <div className="space-y-3">
-          {providers.length === 0 && !editingProvider && (
-            <div className="text-center py-12 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-400">No providers configured.</p>
-              <p className="text-gray-400 text-sm mt-1">
-                Click "Add Provider" to configure your first model backend.
-              </p>
-            </div>
-          )}
-
-          {providers.map((provider) => (
-            <div
-              key={provider.id}
-              className="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between"
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${provider.enabled ? "bg-green-500" : "bg-gray-300"}`}
-                />
-                <div>
-                  <p className="font-medium text-gray-800">
-                    {provider.name || provider.id}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {PROVIDER_TYPES.find((t) => t.value === provider.type)?.label ?? provider.type}
-                    {" | "}
-                    {provider.model}
-                    {" | "}
-                    {provider.endpoint.replace(/https?:\/\//, "").split("/")[0]}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleEditProvider(provider)}
-                  className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors cursor-pointer"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => handleDeleteProvider(provider.id)}
-                  className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 rounded-md transition-colors cursor-pointer"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+        {/* Provider selection */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            选择提供商
+          </label>
+          <select
+            value={selectedProvider}
+            onChange={(e) => setSelectedProvider(e.target.value)}
+            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="">-- 选择一个提供商 --</option>
+            <optgroup label="远端 API">
+              {registry
+                .filter((p) => !p.isLocal)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </optgroup>
+            <optgroup label="本地模型">
+              {registry
+                .filter((p) => p.isLocal)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </optgroup>
+          </select>
         </div>
 
-        {/* Edit form */}
-        {editingProvider && (
-          <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
-            <h3 className="font-semibold text-gray-800">
-              {isNew ? "New Provider" : `Edit: ${editingProvider.name}`}
-            </h3>
-
-            <div className="grid grid-cols-2 gap-4">
-              {/* Name */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Name *
-                </label>
-                <input
-                  type="text"
-                  value={editingProvider.name}
-                  onChange={(e) => handleFieldChange("name", e.target.value)}
-                  placeholder="My OpenAI Provider"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Type */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Provider Type
-                </label>
-                <select
-                  value={editingProvider.type}
-                  onChange={(e) => handleFieldChange("type", e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  {PROVIDER_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Endpoint */}
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  API Endpoint *
-                </label>
-                <input
-                  type="text"
-                  value={editingProvider.endpoint}
-                  onChange={(e) => handleFieldChange("endpoint", e.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* API Key */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  API Key
-                </label>
-                <input
-                  type="password"
-                  value={editingProvider.apiKey}
-                  onChange={(e) => handleFieldChange("apiKey", e.target.value)}
-                  placeholder="sk-... (leave empty for local models)"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Model */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Model Name *
-                </label>
-                <input
-                  type="text"
-                  value={editingProvider.model}
-                  onChange={(e) => handleFieldChange("model", e.target.value)}
-                  placeholder="gpt-4o / qwen2.5-14b / claude-3.5-sonnet"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Max Tokens */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Max Tokens
-                </label>
-                <input
-                  type="number"
-                  value={editingProvider.maxTokens}
-                  onChange={(e) =>
-                    handleFieldChange("maxTokens", parseInt(e.target.value) || 32768)
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Tool Use */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={editingProvider.supportsToolUse}
-                  onChange={(e) =>
-                    handleFieldChange("supportsToolUse", e.target.checked)
-                  }
-                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <label className="text-sm text-gray-700">
-                  Supports Tool/Function Calling
-                </label>
-              </div>
-
-              {/* Enabled */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={editingProvider.enabled}
-                  onChange={(e) => handleFieldChange("enabled", e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <label className="text-sm text-gray-700">Enabled</label>
-              </div>
+        {/* Provider config form */}
+        {selectedProvider ? (
+          <div className="space-y-4 bg-gray-50 border border-gray-200 rounded-xl p-5">
+            {/* Model name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                模型名称
+              </label>
+              <input
+                type="text"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder={currentMeta?.defaultModel || "模型 ID"}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                填写模型 ID，如 gpt-4o, deepseek-chat, qwen-plus 等
+              </p>
             </div>
+
+            {/* API Key */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                API Key{" "}
+                {isLocal && (
+                  <span className="font-normal text-gray-400">(可选)</span>
+                )}
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  isLocal
+                    ? "本地模型无需 API Key"
+                    : "sk-..."
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* API Base URL */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                API 地址{" "}
+                {currentMeta?.defaultApiBase && (
+                  <span className="font-normal text-gray-400">(可选，默认已填)</span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={apiBase}
+                onChange={(e) => setApiBase(e.target.value)}
+                placeholder={currentMeta?.defaultApiBase || "https://..."}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              {currentMeta?.defaultApiBase && (
+                <p className="text-xs text-gray-400 mt-1">
+                  默认: {currentMeta.defaultApiBase}
+                </p>
+              )}
+            </div>
+
+            {/* Max tokens */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                最大 Token 数
+              </label>
+              <input
+                type="number"
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(parseInt(e.target.value) || 32768)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* Enabled toggle */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">启用此提供商</span>
+            </label>
 
             {/* Test result */}
             {testResult && (
               <div
-                className={`p-3 rounded-lg text-sm ${
+                className={`flex items-start gap-2 px-3 py-2.5 rounded-lg text-sm ${
                   testResult.success
                     ? "bg-green-50 border border-green-200 text-green-700"
                     : "bg-red-50 border border-red-200 text-red-700"
                 }`}
               >
-                {testResult.success ? (
-                  <span>
-                    Connection successful! Available models:
-                    {testResult.models && testResult.models.length > 0
-                      ? ` ${testResult.models.slice(0, 10).join(", ")}${testResult.models.length > 10 ? "..." : ""}`
-                      : " (none listed)"}
-                  </span>
-                ) : (
-                  <span>Connection failed: {testResult.error}</span>
-                )}
+                <span className="text-base">{testResult.success ? "✓" : "✗"}</span>
+                <span>{testResult.message}</span>
               </div>
             )}
 
             {/* Action buttons */}
-            <div className="flex items-center gap-3 pt-2">
+            <div className="flex items-center gap-3 pt-1">
               <button
-                onClick={handleSaveProvider}
-                disabled={isSaving}
+                onClick={handleSave}
+                disabled={saving}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-300 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
               >
-                {isSaving ? "Saving..." : isNew ? "Create" : "Save Changes"}
+                {saving ? "保存中..." : "保存配置"}
               </button>
               <button
-                onClick={handleTestProvider}
-                disabled={isTesting}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                onClick={handleTest}
+                disabled={testing || (!isLocal && !apiKey)}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400 text-gray-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
               >
-                {isTesting ? "Testing..." : "Test Connection"}
+                {testing ? "测试中..." : "测试连接"}
               </button>
               <button
-                onClick={() => {
-                  setEditingProvider(null);
-                  setTestResult(null);
-                }}
-                className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm cursor-pointer"
+                onClick={() => handleSetDefault("main")}
+                className="px-4 py-2 bg-green-50 hover:bg-green-100 text-green-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
               >
-                Cancel
+                设为默认
               </button>
             </div>
           </div>
+        ) : (
+          <div className="text-center py-12 bg-white rounded-xl border border-gray-200">
+            <p className="text-gray-400">请选择一个提供商进行配置</p>
+          </div>
         )}
 
-        {/* Default role assignments */}
-        <div className="bg-white border border-gray-200 rounded-xl p-6">
-          <h3 className="font-semibold text-gray-800 mb-4">Default Model Roles</h3>
-          <p className="text-sm text-gray-500 mb-4">
-            Assign providers to specific roles. The &quot;main&quot; role is used for general chat and analysis tasks.
-          </p>
-          <div className="grid grid-cols-2 gap-4">
-            {(["main", "summarizer", "embedding", "vlm"] as const).map((role) => (
-              <div key={role}>
-                <label className="block text-xs font-medium text-gray-600 mb-1 capitalize">
-                  {role === "vlm" ? "Vision-Language" : role}
-                </label>
-                <select
-                  value={defaults[role]}
-                  onChange={(e) => handleUpdateDefaults(role, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        {/* Configured providers list */}
+        {settings && settings.providers.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">
+              已配置的提供商
+            </h3>
+            <div className="space-y-2">
+              {settings.providers.map((p) => (
+                <div
+                  key={p.id}
+                  className={`flex items-center justify-between px-4 py-3 bg-white border rounded-lg cursor-pointer transition-colors ${
+                    p.id === selectedProvider
+                      ? "border-blue-400 bg-blue-50/30"
+                      : "border-gray-200 hover:border-gray-300"
+                  }`}
+                  onClick={() => setSelectedProvider(p.id)}
                 >
-                  <option value="">-- None --</option>
-                  {providers
-                    .filter((p) => p.enabled)
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name || p.id} ({p.model})
-                      </option>
-                    ))}
-                </select>
-              </div>
-            ))}
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`w-2.5 h-2.5 rounded-full ${
+                        p.enabled ? "bg-green-500" : "bg-gray-300"
+                      }`}
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">
+                        {p.name}
+                        {settings.defaults.main === p.id && (
+                          <span className="ml-2 text-xs text-blue-600 font-normal">
+                            (默认)
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {p.model} | {p.endpoint.replace(/https?:\/\//, "").split("/")[0]}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSetDefaultFor(p.id);
+                      }}
+                      className="px-2 py-1 text-xs text-gray-500 hover:text-blue-600 cursor-pointer"
+                    >
+                      设为默认
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(p.id);
+                      }}
+                      className="px-2 py-1 text-xs text-gray-500 hover:text-red-600 cursor-pointer"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-
-        {/* Preset buttons for quick setup */}
-        <div className="bg-white border border-gray-200 rounded-xl p-6">
-          <h3 className="font-semibold text-gray-800 mb-4">Quick Setup</h3>
-          <p className="text-sm text-gray-500 mb-4">
-            Click a preset to quickly add a common provider configuration.
-          </p>
-          <div className="flex flex-wrap gap-3">
-            {[
-              {
-                label: "OpenAI GPT-4o",
-                config: {
-                  ...emptyProvider("openai-compatible"),
-                  name: "OpenAI GPT-4o",
-                  endpoint: "https://api.openai.com/v1",
-                  model: "gpt-4o",
-                },
-              },
-              {
-                label: "DeepSeek Chat",
-                config: {
-                  ...emptyProvider("openai-compatible"),
-                  name: "DeepSeek Chat",
-                  endpoint: "https://api.deepseek.com/v1",
-                  model: "deepseek-chat",
-                },
-              },
-              {
-                label: "Ollama Local",
-                config: {
-                  ...emptyProvider("ollama"),
-                  name: "Ollama Local",
-                  endpoint: "http://localhost:11434/v1",
-                  model: "qwen2.5:14b",
-                },
-              },
-              {
-                label: "Claude (via OpenAI proxy)",
-                config: {
-                  ...emptyProvider("openai-compatible"),
-                  name: "Claude 3.5 Sonnet",
-                  endpoint: "https://api.anthropic.com/v1",
-                  model: "claude-3-5-sonnet-20241022",
-                },
-              },
-            ].map((preset) => (
-              <button
-                key={preset.label}
-                onClick={() => {
-                  setEditingProvider(preset.config);
-                  setIsNew(true);
-                  setTestResult(null);
-                  setError(null);
-                }}
-                className="px-4 py-2 border border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-sm font-medium text-gray-700 rounded-lg transition-colors cursor-pointer"
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
+
+  async function handleSetDefaultFor(id: string) {
+    try {
+      await api.saveDefaults({ main: id });
+      setMessage({ type: "ok", text: "默认模型已更新" });
+      await loadData();
+    } catch {
+      setMessage({ type: "err", text: "更新失败" });
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await api.deleteProvider(id);
+      setMessage({ type: "ok", text: "提供商已删除" });
+      if (selectedProvider === id) {
+        setSelectedProvider("");
+      }
+      await loadData();
+    } catch {
+      setMessage({ type: "err", text: "删除失败" });
+    }
+  }
 }

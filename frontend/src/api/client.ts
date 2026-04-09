@@ -342,6 +342,11 @@ export const api = {
 
   // --- Settings / Provider API ---
 
+  getProviderRegistry: () =>
+    request<{ id: string; name: string; defaultApiBase: string; defaultModel: string; isLocal: boolean }[]>(
+      "/api/settings/registry"
+    ),
+
   getProviders: () =>
     request<ProviderSettings>("/api/settings/providers"),
 

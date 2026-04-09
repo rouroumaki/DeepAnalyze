@@ -11,6 +11,7 @@ import { getOrchestrator } from "../services/agent/agent-system.js";
 import { createAgentRoutes } from "./routes/agents.ts";
 import { createReportRoutes } from "./routes/reports.js";
 import { createPluginRoutes } from "./routes/plugins.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -42,6 +43,9 @@ export function createApp(): Hono {
   // need it. Read-only endpoints (list, get, timeline, graph) use the wiki
   // store and database directly without requiring the agent pipeline.
   app.route("/api/reports", createReportRoutes());
+
+  // Knowledge base management routes - document upload, KB CRUD, and processing pipeline
+  app.route("/api/knowledge", knowledgeRoutes);
 
   // Plugin and skill routes - lazily initialized on first request, similar
   // to agent routes. The createPluginRoutes factory calls getPluginManager()

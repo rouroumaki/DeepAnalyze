@@ -9,12 +9,12 @@ import { dirname } from 'node:path';
 
 // Import all migrations
 import { migration as m001_init } from './migrations/001_init.ts';
+import { migration as m002_wiki_indexes } from './migrations/002_wiki_indexes.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
   m001_init,
-  // Add future migrations here:
-  // m002_xxx,
+  m002_wiki_indexes,
 ] as const;
 
 // ---------------------------------------------------------------------------

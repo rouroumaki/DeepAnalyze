@@ -3,6 +3,8 @@ import { MessageList } from "./MessageList";
 import { MessageInput } from "./MessageInput";
 import { SubtaskPanel } from "./SubtaskPanel";
 import { ReportPanel } from "./ReportPanel";
+import { SkillBrowser } from "./SkillBrowser";
+import { PluginManager } from "./PluginManager";
 
 export function ChatWindow() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
@@ -74,7 +76,11 @@ export function ChatWindow() {
           <h3 className="text-sm font-medium text-gray-700 truncate">
             {activeTab === "chat"
               ? currentSession.title || "新对话"
-              : "报告中心"}
+              : activeTab === "reports"
+                ? "报告中心"
+                : activeTab === "skills"
+                  ? "技能中心"
+                  : "插件管理"}
           </h3>
 
           {/* Tab switcher */}
@@ -127,6 +133,54 @@ export function ChatWindow() {
               </svg>
               报告
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("skills")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-150 cursor-pointer ${
+                activeTab === "skills"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
+                />
+              </svg>
+              技能
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("plugins")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-150 cursor-pointer ${
+                activeTab === "plugins"
+                  ? "bg-white text-blue-600 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 01-.657.643 48.491 48.491 0 01-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 01-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 00-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 01-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 00.657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 01-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 005.427-.63 48.05 48.05 0 00.582-4.717.532.532 0 00-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.959.401v0a.656.656 0 00.658-.663 48.422 48.422 0 00-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 01-.61-.58v0z"
+                />
+              </svg>
+              插件
+            </button>
           </div>
         </div>
       </div>
@@ -145,11 +199,15 @@ export function ChatWindow() {
           {/* Input */}
           <MessageInput />
         </>
-      ) : (
+      ) : activeTab === "reports" ? (
         <ReportPanel
           kbId={kbId}
           onKbIdChange={setSelectedKbId}
         />
+      ) : activeTab === "skills" ? (
+        <SkillBrowser />
+      ) : (
+        <PluginManager />
       )}
     </div>
   );

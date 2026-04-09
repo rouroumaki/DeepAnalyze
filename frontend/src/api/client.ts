@@ -59,6 +59,44 @@ export interface RunCoordinatedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin / Skill types
+// ---------------------------------------------------------------------------
+
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  toolNames: string[];
+  agentTypes: string[];
+  loadedAt: string;
+  error?: string;
+}
+
+export interface SkillVariableInfo {
+  name: string;
+  description: string;
+  required: boolean;
+  defaultValue?: string;
+}
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  pluginId: string | null;
+  description: string;
+  systemPrompt: string;
+  tools: string[];
+  variables?: SkillVariableInfo[];
+  modelRole?: string;
+  maxTurns?: number;
+  config: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Report / Timeline / Graph types
 // ---------------------------------------------------------------------------
 
@@ -199,4 +237,71 @@ export const api = {
       stats: { nodeCount: number; edgeCount: number };
     }>(`/api/reports/graph/${kbId}${qs ? `?${qs}` : ""}`);
   },
+
+  // --- Plugin API ---
+
+  listPlugins: () =>
+    request<{ plugins: PluginInfo[] }>("/api/plugins/plugins"),
+
+  getPlugin: (id: string) =>
+    request<PluginInfo>(`/api/plugins/plugins/${id}`),
+
+  enablePlugin: (id: string) =>
+    request<{ pluginId: string; enabled: boolean }>(
+      `/api/plugins/plugins/${id}/enable`,
+      { method: "POST" },
+    ),
+
+  disablePlugin: (id: string) =>
+    request<{ pluginId: string; enabled: boolean }>(
+      `/api/plugins/plugins/${id}/disable`,
+      { method: "POST" },
+    ),
+
+  deletePlugin: (id: string) =>
+    request<{ pluginId: string; deleted: boolean }>(
+      `/api/plugins/plugins/${id}`,
+      { method: "DELETE" },
+    ),
+
+  // --- Skill API ---
+
+  listSkills: () =>
+    request<{ skills: SkillInfo[] }>("/api/plugins/skills"),
+
+  getSkill: (id: string) =>
+    request<SkillInfo>(`/api/plugins/skills/${id}`),
+
+  createSkill: (skill: {
+    name: string;
+    description: string;
+    systemPrompt: string;
+    tools: string[];
+    variables?: SkillVariableInfo[];
+    maxTurns?: number;
+  }) =>
+    request<SkillInfo>("/api/plugins/skills", {
+      method: "POST",
+      body: JSON.stringify(skill),
+    }),
+
+  deleteSkill: (id: string) =>
+    request<{ skillId: string; deleted: boolean }>(
+      `/api/plugins/skills/${id}`,
+      { method: "DELETE" },
+    ),
+
+  runSkill: (
+    sessionId: string,
+    skillId: string,
+    variables: Record<string, string>,
+    kbId?: string,
+  ) =>
+    request<{ taskId: string; output: string; skillName: string }>(
+      "/api/agents/run-skill",
+      {
+        method: "POST",
+        body: JSON.stringify({ sessionId, skillId, variables, kbId }),
+      },
+    ),
 };

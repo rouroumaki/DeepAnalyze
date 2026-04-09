@@ -13,7 +13,7 @@
 import { Hono } from "hono";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentTask } from "../../services/agent/types.js";
-import { getCompounder } from "../../services/agent/agent-system.js";
+import { getCompounder, getPluginManager } from "../../services/agent/agent-system.js";
 import * as messageStore from "../../store/messages.js";
 import * as sessionStore from "../../store/sessions.js";
 
@@ -35,6 +35,16 @@ interface RunCoordinatedRequest {
   input: string;
 }
 
+interface RunSkillRequest {
+  sessionId: string;
+  skillId: string;
+  variables: Record<string, string>;
+  /** Optional user input to append to the resolved prompt. */
+  input?: string;
+  /** Optional knowledge base ID for auto-compounding the result. */
+  kbId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Route factory
 // ---------------------------------------------------------------------------
@@ -45,6 +55,7 @@ interface RunCoordinatedRequest {
  * Routes:
  *   POST /run              - Run a single agent task
  *   POST /run-coordinated  - Run a coordinated multi-agent workflow
+ *   POST /run-skill        - Run a skill as an agent task
  *   GET  /tasks/:sessionId - List agent tasks for a session
  *   GET  /task/:taskId     - Get a single task status
  *   POST /cancel/:taskId   - Cancel a running task
@@ -164,6 +175,116 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       taskId: parentTaskId,
       status: "running",
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /run-skill - Run a skill as an agent task
+  // -----------------------------------------------------------------------
+  router.post("/run-skill", async (c) => {
+    const body = await c.req.json<RunSkillRequest>();
+
+    if (!body.sessionId || !body.skillId) {
+      return c.json(
+        { error: "sessionId and skillId are required" },
+        400,
+      );
+    }
+
+    if (!body.variables || typeof body.variables !== "object") {
+      return c.json(
+        { error: "variables must be a non-null object" },
+        400,
+      );
+    }
+
+    const session = sessionStore.getSession(body.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+
+    try {
+      // Get the plugin manager and resolve the skill
+      const pluginManager = await getPluginManager();
+
+      const skill = pluginManager.getSkill(body.skillId);
+      if (!skill) {
+        return c.json({ error: `Skill "${body.skillId}" not found.` }, 404);
+      }
+
+      // Resolve the system prompt with provided variables
+      const resolvedPrompt = pluginManager.resolveSkillPrompt(
+        body.skillId,
+        body.variables,
+      );
+
+      // Build the full user input
+      const userInput = body.input ?? "Execute the skill task.";
+
+      // Save user message to the chat session
+      messageStore.createMessage(
+        body.sessionId,
+        "user",
+        `[Skill: ${skill.name}] ${userInput}`,
+      );
+
+      // Run the agent with the skill's system prompt and tools as overrides
+      const result = await orchestrator.runSingle({
+        input: userInput,
+        agentType: "general",
+        sessionId: body.sessionId,
+        maxTurns: skill.maxTurns,
+        systemPromptOverride: resolvedPrompt,
+        toolsOverride: skill.tools,
+      });
+
+      // Save assistant response to the chat session
+      if (result.output) {
+        messageStore.createMessage(
+          body.sessionId,
+          "assistant",
+          result.output,
+        );
+      }
+
+      // Auto-compound the result into the knowledge base if kbId was provided
+      let compoundedPageId: string | null = null;
+      if (body.kbId && result.output) {
+        try {
+          const compounder = await getCompounder();
+          compoundedPageId = compounder.compoundAgentResult(
+            body.kbId,
+            `skill:${skill.name}`,
+            userInput,
+            result.output,
+          );
+        } catch (compoundingErr) {
+          console.warn(
+            "[Agents] Knowledge compounding failed:",
+            compoundingErr instanceof Error ? compoundingErr.message : String(compoundingErr),
+          );
+        }
+      }
+
+      return c.json({
+        taskId: result.taskId,
+        status: "completed",
+        output: result.output,
+        turnsUsed: result.turnsUsed,
+        usage: result.usage,
+        skillName: skill.name,
+        compoundedPageId,
+      });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return c.json(
+        {
+          taskId: null,
+          status: "failed",
+          error: errorMsg,
+        },
+        500,
+      );
+    }
   });
 
   // -----------------------------------------------------------------------

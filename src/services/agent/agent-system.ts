@@ -187,5 +187,20 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   compounderInstance = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
   console.log("[AgentSystem] KnowledgeCompounder initialized");
 
+  // Step 9: Register built-in skills
+  const { BUILT_IN_SKILLS } = await import("../skills/built-in-skills.js");
+  for (const skill of BUILT_IN_SKILLS) {
+    try {
+      // Check if skill already exists (by name)
+      const existing = pluginManager.listSkills();
+      if (!existing.some(s => s.name === skill.name)) {
+        pluginManager.createSkill(skill);
+      }
+    } catch {
+      // Skill may already exist, skip
+    }
+  }
+  console.log("[AgentSystem] Built-in skills registered");
+
   return orchestrator;
 }

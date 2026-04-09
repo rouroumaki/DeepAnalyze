@@ -130,16 +130,20 @@ export class AgentRunner {
       options.modelRole ?? definition.modelRole ?? "main";
     const modelId = this.modelRouter.getDefaultModel(modelRole);
 
+    // Determine effective system prompt (override takes precedence)
+    const effectiveSystemPrompt = options.systemPromptOverride ?? definition.systemPrompt;
+
     // Build initial messages
     const messages = this.buildMessages(
-      definition,
+      effectiveSystemPrompt,
       options.input,
       options.contextMessages,
     );
 
-    // Get the tools available to this agent
-    const availableTools = this.toolRegistry.filterByNames(definition.tools);
-    const toolDefs = this.toolRegistry.buildToolDefinitions(definition.tools);
+    // Determine effective tool list (override takes precedence)
+    const effectiveTools = options.toolsOverride ?? definition.tools;
+    const availableTools = this.toolRegistry.filterByNames(effectiveTools);
+    const toolDefs = this.toolRegistry.buildToolDefinitions(effectiveTools);
 
     // Track execution state
     let totalToolCalls = 0;
@@ -319,7 +323,7 @@ export class AgentRunner {
    * Consists of: system prompt + context messages + user input.
    */
   private buildMessages(
-    definition: AgentDefinition,
+    systemPrompt: string,
     input: string,
     contextMessages?: Array<{ role: "user" | "assistant"; content: string }>,
   ): ChatMessage[] {
@@ -328,7 +332,7 @@ export class AgentRunner {
     // System prompt
     messages.push({
       role: "system",
-      content: definition.systemPrompt,
+      content: systemPrompt,
     });
 
     // Context messages (prior conversation history, etc.)

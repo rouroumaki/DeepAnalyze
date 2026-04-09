@@ -151,6 +151,10 @@ export interface AgentRunOptions {
   contextMessages?: Array<{ role: "user" | "assistant"; content: string }>;
   /** Model role override */
   modelRole?: "main" | "summarizer" | "embedding" | "vlm";
+  /** Optional system prompt override (used for skill execution). */
+  systemPromptOverride?: string;
+  /** Optional tool override (used for skill execution). */
+  toolsOverride?: string[];
 }
 
 // ---------------------------------------------------------------------------

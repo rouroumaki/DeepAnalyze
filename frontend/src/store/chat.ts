@@ -15,12 +15,20 @@ interface ChatState {
   isSending: boolean;
   error: string | null;
 
+  // Report-related state
+  activeTab: "chat" | "reports";
+  selectedKbId: string | null;
+
   loadSessions: () => Promise<void>;
   createSession: (title?: string) => Promise<SessionInfo | null>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   clearError: () => void;
+
+  // Tab / KB actions
+  setActiveTab: (tab: "chat" | "reports") => void;
+  setSelectedKbId: (kbId: string | null) => void;
 
   // Agent task actions
   loadAgentTasks: (sessionId: string) => Promise<void>;
@@ -37,6 +45,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   isSending: false,
   error: null,
+  activeTab: "chat" as const,
+  selectedKbId: null,
 
   loadSessions: async () => {
     set({ isLoading: true, error: null });
@@ -185,6 +195,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  setActiveTab: (tab: "chat" | "reports") => set({ activeTab: tab }),
+  setSelectedKbId: (kbId: string | null) => set({ selectedKbId: kbId }),
 
   // -----------------------------------------------------------------------
   // Agent task actions

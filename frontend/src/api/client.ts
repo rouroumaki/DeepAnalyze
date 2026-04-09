@@ -59,6 +59,51 @@ export interface RunCoordinatedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Report / Timeline / Graph types
+// ---------------------------------------------------------------------------
+
+export interface ReportInfo {
+  id: string;
+  kbId: string;
+  title: string;
+  tokenCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportDetail {
+  id: string;
+  kbId: string;
+  title: string;
+  content: string;
+  tokenCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TimelineEvent {
+  date: string;
+  title: string;
+  description: string;
+  sourcePageId: string;
+  sourceTitle: string;
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: string;
+  group?: string;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  label?: string;
+  type: string;
+}
+
+// ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
 
@@ -110,4 +155,48 @@ export const api = {
       `/api/agents/cancel/${taskId}`,
       { method: "POST" },
     ),
+
+  // --- Report / Timeline / Graph API ---
+
+  listReports: (kbId: string) =>
+    request<{ kbId: string; reports: ReportInfo[] }>(
+      `/api/reports/reports/${kbId}`,
+    ),
+
+  getReport: (reportId: string) =>
+    request<ReportDetail>(`/api/reports/report/${reportId}`),
+
+  generateReport: (
+    kbId: string,
+    query: string,
+    title: string,
+    reportType?: string,
+    sessionId?: string,
+  ) =>
+    request<{ taskId: string; status: string }>("/api/reports/generate", {
+      method: "POST",
+      body: JSON.stringify({ kbId, query, title, reportType, sessionId }),
+    }),
+
+  getTimeline: (kbId: string, query?: string, maxEvents?: number) => {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    if (maxEvents) params.set("maxEvents", String(maxEvents));
+    const qs = params.toString();
+    return request<{ events: TimelineEvent[]; totalCount: number }>(
+      `/api/reports/timeline/${kbId}${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  getGraph: (kbId: string, query?: string, maxNodes?: number) => {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    if (maxNodes) params.set("maxNodes", String(maxNodes));
+    const qs = params.toString();
+    return request<{
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      stats: { nodeCount: number; edgeCount: number };
+    }>(`/api/reports/graph/${kbId}${qs ? `?${qs}` : ""}`);
+  },
 };

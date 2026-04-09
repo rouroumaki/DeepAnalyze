@@ -1,8 +1,12 @@
 /**
  * router.ts - Model Router
  *
- * Reads the YAML configuration, instantiates provider adapters, and
+ * Reads provider configuration from the database settings table (primary)
+ * or the YAML config file (fallback), instantiates provider adapters, and
  * dispatches chat/chatStream calls to the appropriate provider.
+ *
+ * The router can be re-initialized at runtime when provider settings change
+ * via the Settings API.
  */
 
 import { readFileSync } from "node:fs";
@@ -20,6 +24,7 @@ import {
   OpenAICompatibleProvider,
   type OpenAICompatibleOptions,
 } from "./openai-compatible";
+import type { ProviderConfig } from "../store/settings.js";
 
 // ---------------------------------------------------------------------------
 // ModelRouter
@@ -28,19 +33,201 @@ import {
 export class ModelRouter {
   private providers = new Map<string, ModelProvider>();
   private config: AppConfig | null = null;
+  /** Maps provider IDs to provider names for role resolution */
+  private providerIdToName = new Map<string, string>();
+  /** Default role assignments from DB settings */
+  private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string } | null = null;
 
   // -----------------------------------------------------------------------
   // Initialization
   // -----------------------------------------------------------------------
 
   /**
-   * Initialize the router by reading and validating the YAML config file,
-   * then instantiating a provider for every named model entry.
+   * Initialize the router. Tries database settings first (from the settings
+   * store), then falls back to the YAML config file.
    *
-   * @param configPath - Absolute or relative path to the YAML config file.
-   *   Defaults to "config/default.yaml" relative to the cwd.
+   * @param configPath - Path to the YAML config file (fallback).
    */
   async initialize(configPath?: string): Promise<void> {
+    // Try database settings first
+    const dbLoaded = await this.tryLoadFromDatabase();
+    if (dbLoaded) {
+      console.log("[ModelRouter] Loaded provider config from database");
+      return;
+    }
+
+    // Fallback to YAML config
+    this.loadFromYaml(configPath);
+    console.log("[ModelRouter] Loaded provider config from YAML file");
+  }
+
+  /**
+   * Re-initialize from database settings (called when providers are updated
+   * via the Settings API).
+   */
+  async reload(): Promise<void> {
+    this.providers.clear();
+    this.config = null;
+    this.providerIdToName.clear();
+    this.dbDefaults = null;
+    await this.initialize();
+  }
+
+  // -----------------------------------------------------------------------
+  // Provider access
+  // -----------------------------------------------------------------------
+
+  /**
+   * Return a provider by its config name, or the default main provider
+   * if no name is given.
+   */
+  getProvider(name?: string): ModelProvider {
+    if (!this.config && this.dbDefaults) {
+      // Using database config - resolve by ID or default
+      const providerId = name ?? this.dbDefaults.main;
+      const provider = this.providers.get(providerId);
+      if (!provider) {
+        const available = [...this.providers.keys()].join(", ");
+        throw new Error(
+          `ModelRouter: provider "${providerId}" not found. Available: ${available}`,
+        );
+      }
+      return provider;
+    }
+
+    if (!this.config) {
+      throw new Error("ModelRouter: not initialized. Call initialize() first.");
+    }
+
+    const providerName = name ?? this.config.defaults.main;
+    const provider = this.providers.get(providerName);
+    if (!provider) {
+      const available = [...this.providers.keys()].join(", ");
+      throw new Error(
+        `ModelRouter: provider "${providerName}" not found. Available: ${available}`,
+      );
+    }
+    return provider;
+  }
+
+  // -----------------------------------------------------------------------
+  // Convenience methods that delegate to the default (or named) provider
+  // -----------------------------------------------------------------------
+
+  async chat(
+    messages: ChatMessage[],
+    options: ChatOptions = {},
+  ): Promise<ChatResponse> {
+    return this.getProvider(options.model).chat(messages, options);
+  }
+
+  async *chatStream(
+    messages: ChatMessage[],
+    options: ChatOptions = {},
+  ): AsyncGenerator<StreamChunk> {
+    const provider = this.getProvider(options.model);
+    yield* provider.chatStream(messages, options);
+  }
+
+  estimateTokens(text: string): number {
+    return this.getProvider().estimateTokens(text);
+  }
+
+  // -----------------------------------------------------------------------
+  // Default model lookup by role
+  // -----------------------------------------------------------------------
+
+  getDefaultModel(role: ModelRole): string {
+    // Database config path
+    if (this.dbDefaults) {
+      const modelId = this.dbDefaults[role];
+      if (modelId) return modelId;
+      return this.dbDefaults.main;
+    }
+
+    // YAML config path
+    if (!this.config) {
+      throw new Error("ModelRouter: not initialized. Call initialize() first.");
+    }
+
+    const modelName =
+      this.config.defaults[role as keyof typeof this.config.defaults];
+    if (modelName) {
+      return modelName;
+    }
+
+    if (this.config.models[role]) {
+      return role;
+    }
+
+    return this.config.defaults.main;
+  }
+
+  // -----------------------------------------------------------------------
+  // List configured providers (for API exposure)
+  // -----------------------------------------------------------------------
+
+  /** Return the names of all configured providers. */
+  listProviderNames(): string[] {
+    return [...this.providers.keys()];
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal - Database loading
+  // -----------------------------------------------------------------------
+
+  private async tryLoadFromDatabase(): Promise<boolean> {
+    try {
+      // Dynamic import to avoid circular dependency at module load time.
+      // DB singleton is initialized in main.ts before the ModelRouter.
+      const { DB } = await import("../store/database.js");
+      if (!DB.isReady()) return false;
+
+      const db = DB.getInstance();
+
+      // Check if the settings table exists yet
+      const table = db.raw
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
+        .get() as { name: string } | undefined;
+      if (!table) return false;
+
+      const row = db.raw
+        .prepare("SELECT value FROM settings WHERE key = 'providers'")
+        .get() as { value: string } | undefined;
+      if (!row) return false;
+
+      const settings = JSON.parse(row.value) as {
+        providers: ProviderConfig[];
+        defaults: { main: string; summarizer: string; embedding: string; vlm: string };
+      };
+
+      if (!settings.providers || settings.providers.length === 0) return false;
+
+      // Clear and rebuild from DB config
+      this.providers.clear();
+      this.providerIdToName.clear();
+
+      for (const p of settings.providers) {
+        if (!p.enabled) continue;
+        const provider = this.createProviderFromConfig(p);
+        this.providers.set(p.id, provider);
+        this.providerIdToName.set(p.id, p.id);
+      }
+
+      if (this.providers.size === 0) return false;
+
+      this.dbDefaults = settings.defaults;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal - YAML loading (fallback)
+  // -----------------------------------------------------------------------
+
+  private loadFromYaml(configPath?: string): void {
     const resolvedPath = resolve(configPath ?? "config/default.yaml");
 
     let raw: string;
@@ -79,84 +266,7 @@ export class ModelRouter {
   }
 
   // -----------------------------------------------------------------------
-  // Provider access
-  // -----------------------------------------------------------------------
-
-  /**
-   * Return a provider by its config name, or the default main provider
-   * if no name is given.
-   */
-  getProvider(name?: string): ModelProvider {
-    if (!this.config) {
-      throw new Error("ModelRouter: not initialized. Call initialize() first.");
-    }
-
-    const providerName = name ?? this.config.defaults.main;
-    const provider = this.providers.get(providerName);
-    if (!provider) {
-      const available = [...this.providers.keys()].join(", ");
-      throw new Error(
-        `ModelRouter: provider "${providerName}" not found. Available: ${available}`,
-      );
-    }
-    return provider;
-  }
-
-  // -----------------------------------------------------------------------
-  // Convenience methods that delegate to the default (or named) provider
-  // -----------------------------------------------------------------------
-
-  async chat(
-    messages: ChatMessage[],
-    options: ChatOptions = {},
-  ): Promise<ChatResponse> {
-    return this.getProvider(options.model).chat(messages, options);
-  }
-
-  async *chatStream(
-    messages: ChatMessage[],
-    options: ChatOptions = {},
-  ): AsyncGenerator<StreamChunk> {
-    // We cannot directly yield* from an async generator that requires a
-    // provider lookup, so we obtain the provider and delegate.
-    const provider = this.getProvider(options.model);
-    yield* provider.chatStream(messages, options);
-  }
-
-  estimateTokens(text: string): number {
-    return this.getProvider().estimateTokens(text);
-  }
-
-  // -----------------------------------------------------------------------
-  // Default model lookup by role
-  // -----------------------------------------------------------------------
-
-  /**
-   * Return the model identifier for a given role.
-   * Falls back to the "main" default if the requested role is not configured.
-   */
-  getDefaultModel(role: ModelRole): string {
-    if (!this.config) {
-      throw new Error("ModelRouter: not initialized. Call initialize() first.");
-    }
-
-    const modelName =
-      this.config.defaults[role as keyof typeof this.config.defaults];
-    if (modelName) {
-      return modelName;
-    }
-
-    // Fallback: if the role itself exists as a model name, return it
-    if (this.config.models[role]) {
-      return role;
-    }
-
-    // Final fallback: return whatever "main" resolves to
-    return this.config.defaults.main;
-  }
-
-  // -----------------------------------------------------------------------
-  // Internal
+  // Internal - Provider factory
   // -----------------------------------------------------------------------
 
   private createProvider(
@@ -176,13 +286,24 @@ export class ModelRouter {
       }
 
       default: {
-        // TypeScript exhaustive check - should never reach here due to
-        // Zod enum validation, but we handle it gracefully.
         const _exhaustive: never = modelConfig.provider;
         throw new Error(
           `ModelRouter: unsupported provider type "${String(_exhaustive)}" for model "${name}"`,
         );
       }
     }
+  }
+
+  private createProviderFromConfig(p: ProviderConfig): ModelProvider {
+    // All provider types use OpenAI-compatible protocol for now
+    // (Ollama, vLLM, LM Studio, LiteLLM, OpenAI, DeepSeek, etc.)
+    const options: OpenAICompatibleOptions = {
+      name: p.id,
+      endpoint: p.endpoint,
+      apiKey: p.apiKey || undefined,
+      model: p.model,
+      maxTokens: p.maxTokens,
+    };
+    return new OpenAICompatibleProvider(options);
   }
 }

@@ -16,7 +16,7 @@ interface ChatState {
   error: string | null;
 
   // Report-related state
-  activeTab: "chat" | "reports" | "skills" | "plugins";
+  activeTab: "chat" | "reports" | "skills" | "plugins" | "settings";
   selectedKbId: string | null;
 
   loadSessions: () => Promise<void>;
@@ -27,7 +27,7 @@ interface ChatState {
   clearError: () => void;
 
   // Tab / KB actions
-  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins") => void;
+  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins" | "settings") => void;
   setSelectedKbId: (kbId: string | null) => void;
 
   // Agent task actions
@@ -196,7 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
-  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins") => set({ activeTab: tab }),
+  setActiveTab: (tab: "chat" | "reports" | "skills" | "plugins" | "settings") => set({ activeTab: tab }),
   setSelectedKbId: (kbId: string | null) => set({ selectedKbId: kbId }),
 
   // -----------------------------------------------------------------------

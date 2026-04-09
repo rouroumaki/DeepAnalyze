@@ -11,12 +11,14 @@ import { dirname } from 'node:path';
 import { migration as m001_init } from './migrations/001_init.ts';
 import { migration as m002_wiki_indexes } from './migrations/002_wiki_indexes.ts';
 import { migration as m003_vector_tables } from './migrations/003_vector_tables.ts';
+import { migration as m004_settings } from './migrations/004_settings.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
   m001_init,
   m002_wiki_indexes,
   m003_vector_tables,
+  m004_settings,
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,11 @@ export class DB {
       DB.instance = new DB(resolved);
     }
     return DB.instance;
+  }
+
+  /** Check if the singleton has been initialized */
+  static isReady(): boolean {
+    return DB.instance !== null;
   }
 
   /** Reset singleton (for testing) */

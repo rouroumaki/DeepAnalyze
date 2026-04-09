@@ -13,6 +13,7 @@ import { createAgentRoutes } from "./routes/agents.ts";
 import { createReportRoutes } from "./routes/reports.js";
 import { createPluginRoutes } from "./routes/plugins.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
+import { createSettingsRoutes } from "./routes/settings.js";
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -53,6 +54,9 @@ export function createApp(): Hono {
 
   // Knowledge base management routes - document upload, KB CRUD, and processing pipeline
   app.route("/api/knowledge", knowledgeRoutes);
+
+  // Settings and provider configuration routes - manage model providers and defaults
+  app.route("/api/settings", createSettingsRoutes());
 
   // Plugin and skill routes - lazily initialized on first request, similar
   // to agent routes. The createPluginRoutes factory calls getPluginManager()

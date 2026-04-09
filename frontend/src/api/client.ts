@@ -97,6 +97,41 @@ export interface SkillInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Provider / Settings types
+// ---------------------------------------------------------------------------
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  type: "openai-compatible" | "anthropic" | "ollama";
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  supportsToolUse: boolean;
+  enabled: boolean;
+}
+
+export interface ProviderDefaults {
+  main: string;
+  summarizer: string;
+  embedding: string;
+  vlm: string;
+}
+
+export interface ProviderSettings {
+  providers: ProviderConfig[];
+  defaults: ProviderDefaults;
+}
+
+export interface ProviderTestResult {
+  success: boolean;
+  status?: number;
+  models?: string[];
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Report / Timeline / Graph types
 // ---------------------------------------------------------------------------
 
@@ -302,6 +337,45 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify({ sessionId, skillId, variables, kbId }),
+      },
+    ),
+
+  // --- Settings / Provider API ---
+
+  getProviders: () =>
+    request<ProviderSettings>("/api/settings/providers"),
+
+  getProvider: (id: string) =>
+    request<ProviderConfig>(`/api/settings/providers/${id}`),
+
+  saveProvider: (provider: ProviderConfig) =>
+    request<{ success: boolean; provider: ProviderConfig }>(
+      `/api/settings/providers/${provider.id}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(provider),
+      },
+    ),
+
+  deleteProvider: (id: string) =>
+    request<{ success: boolean }>(`/api/settings/providers/${id}`, {
+      method: "DELETE",
+    }),
+
+  testProvider: (id: string) =>
+    request<ProviderTestResult>(`/api/settings/providers/${id}/test`, {
+      method: "POST",
+    }),
+
+  getDefaults: () =>
+    request<ProviderDefaults>("/api/settings/defaults"),
+
+  saveDefaults: (defaults: Partial<ProviderDefaults>) =>
+    request<{ success: boolean; defaults: ProviderDefaults }>(
+      "/api/settings/defaults",
+      {
+        method: "PUT",
+        body: JSON.stringify(defaults),
       },
     ),
 };

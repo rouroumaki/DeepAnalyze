@@ -10,11 +10,13 @@ import { dirname } from 'node:path';
 // Import all migrations
 import { migration as m001_init } from './migrations/001_init.ts';
 import { migration as m002_wiki_indexes } from './migrations/002_wiki_indexes.ts';
+import { migration as m003_vector_tables } from './migrations/003_vector_tables.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
   m001_init,
   m002_wiki_indexes,
+  m003_vector_tables,
 ] as const;
 
 // ---------------------------------------------------------------------------

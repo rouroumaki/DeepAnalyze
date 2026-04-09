@@ -1,6 +1,7 @@
 import { useChatStore } from "../store/chat";
 import { MessageList } from "./MessageList";
 import { MessageInput } from "./MessageInput";
+import { SubtaskPanel } from "./SubtaskPanel";
 
 export function ChatWindow() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
@@ -72,6 +73,9 @@ export function ChatWindow() {
       <div className="flex-1 overflow-hidden">
         <MessageList />
       </div>
+
+      {/* Agent task progress panel */}
+      <SubtaskPanel />
 
       {/* Input */}
       <MessageInput />

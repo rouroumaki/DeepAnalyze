@@ -27,6 +27,41 @@ export interface MessageInfo {
   createdAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Agent task types
+// ---------------------------------------------------------------------------
+
+export interface AgentTaskInfo {
+  id: string;
+  agentType: string;
+  status: string;
+  input: string;
+  output: string | null;
+  error: string | null;
+  parentId: string | null;
+  sessionId: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface RunAgentResponse {
+  taskId: string;
+  status: string;
+  output?: string;
+  error?: string;
+  turnsUsed?: number;
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+export interface RunCoordinatedResponse {
+  taskId: string;
+  status: string;
+}
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+
 export const api = {
   listSessions: () => request<SessionInfo[]>("/api/sessions"),
 
@@ -49,4 +84,30 @@ export const api = {
 
   getMessages: (sessionId: string) =>
     request<MessageInfo[]>(`/api/sessions/${sessionId}/messages`),
+
+  // --- Agent API ---
+
+  runAgent: (sessionId: string, input: string, agentType?: string) =>
+    request<RunAgentResponse>("/api/agents/run", {
+      method: "POST",
+      body: JSON.stringify({ sessionId, input, agentType }),
+    }),
+
+  runCoordinated: (sessionId: string, input: string) =>
+    request<RunCoordinatedResponse>("/api/agents/run-coordinated", {
+      method: "POST",
+      body: JSON.stringify({ sessionId, input }),
+    }),
+
+  getAgentTasks: (sessionId: string) =>
+    request<AgentTaskInfo[]>(`/api/agents/tasks/${sessionId}`),
+
+  getAgentTask: (taskId: string) =>
+    request<AgentTaskInfo>(`/api/agents/task/${taskId}`),
+
+  cancelAgentTask: (taskId: string) =>
+    request<{ taskId: string; status: string }>(
+      `/api/agents/cancel/${taskId}`,
+      { method: "POST" },
+    ),
 };

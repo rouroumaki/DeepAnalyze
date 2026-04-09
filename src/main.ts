@@ -15,6 +15,9 @@ console.log("[DB] Database initialized and migrations applied");
 // ---------------------------------------------------------------------------
 // Application
 // ---------------------------------------------------------------------------
+// The agent system (Orchestrator, AgentRunner, ToolRegistry, etc.) is
+// initialized lazily on the first request to /api/agents/*. This keeps
+// server startup fast and avoids errors when model config is missing.
 const app = createApp();
 
 // ---------------------------------------------------------------------------
@@ -39,10 +42,12 @@ if (typeof Bun !== "undefined") {
     fetch: app.fetch,
   });
   console.log(`DeepAnalyze server running on http://localhost:${port}`);
+  console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
 } else {
   // Node.js runtime (fallback)
   import("@hono/node-server").then(({ serve }) => {
     serve({ fetch: app.fetch, port });
     console.log(`DeepAnalyze server running on http://localhost:${port}`);
+    console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
   });
 }

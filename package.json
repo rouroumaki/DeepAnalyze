@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/main.ts",
-    "build": "bun build src/main.ts --outdir dist --target bun",
-    "start": "bun run dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "echo 'Bun can run TS directly. Use npm start instead.'",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "bun test"

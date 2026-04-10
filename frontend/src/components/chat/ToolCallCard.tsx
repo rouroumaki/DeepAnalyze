@@ -1,44 +1,35 @@
-// =============================================================================
-// DeepAnalyze - ToolCallCard Component
-// Displays tool invocation details in a collapsible card
-// =============================================================================
-
 import { useState } from "react";
+import { ChevronDown, Check, X, Loader2 } from "lucide-react";
 import type { ToolCallInfo } from "../../types/index";
 
 interface ToolCallCardProps {
   toolCall: ToolCallInfo;
 }
 
-const TOOL_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  kb_search: { bg: "bg-blue-500/10", text: "text-blue-400", border: "border-blue-500/20" },
-  wiki_browse: { bg: "bg-purple-500/10", text: "text-purple-400", border: "border-purple-500/20" },
-  expand: { bg: "bg-cyan-500/10", text: "text-cyan-400", border: "border-cyan-500/20" },
-  read: { bg: "bg-green-500/10", text: "text-green-400", border: "border-green-500/20" },
-  grep: { bg: "bg-amber-500/10", text: "text-amber-400", border: "border-amber-500/20" },
-  bash: { bg: "bg-red-500/10", text: "text-red-400", border: "border-red-500/20" },
-  report_generate: { bg: "bg-teal-500/10", text: "text-teal-400", border: "border-teal-500/20" },
-  timeline_build: { bg: "bg-indigo-500/10", text: "text-indigo-400", border: "border-indigo-500/20" },
-  graph_build: { bg: "bg-pink-500/10", text: "text-pink-400", border: "border-pink-500/20" },
+const TOOL_STYLES: Record<string, { bg: string; border: string; text: string }> = {
+  kb_search: { bg: "var(--interactive-light)", border: "rgba(59,130,246,0.2)", text: "var(--interactive)" },
+  wiki_browse: { bg: "rgba(139,92,246,0.08)", border: "rgba(139,92,246,0.2)", text: "#8b5cf6" },
+  expand: { bg: "var(--info-light)", border: "rgba(14,165,233,0.2)", text: "var(--info)" },
+  read: { bg: "var(--success-light)", border: "rgba(16,185,129,0.2)", text: "var(--success)" },
+  grep: { bg: "var(--warning-light)", border: "rgba(245,158,11,0.2)", text: "var(--warning)" },
+  bash: { bg: "var(--error-light)", border: "rgba(239,68,68,0.2)", text: "var(--error)" },
+  report_generate: { bg: "rgba(20,184,166,0.08)", border: "rgba(20,184,166,0.2)", text: "#14b8a6" },
+  timeline_build: { bg: "rgba(99,102,241,0.08)", border: "rgba(99,102,241,0.2)", text: "#6366f1" },
+  graph_build: { bg: "rgba(236,72,153,0.08)", border: "rgba(236,72,153,0.2)", text: "#ec4899" },
 };
 
-function getToolColors(toolName: string) {
-  return TOOL_COLORS[toolName] ?? { bg: "bg-gray-500/10", text: "text-gray-400", border: "border-gray-500/20" };
+function getToolStyle(toolName: string) {
+  return TOOL_STYLES[toolName] ?? { bg: "var(--bg-tertiary)", border: "var(--border-primary)", text: "var(--text-secondary)" };
 }
 
-function getStatusIcon(status: string) {
+function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case "running":
-      return (
-        <svg className="w-3.5 h-3.5 animate-spin text-da-amber" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-      );
+      return <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--warning)" }} />;
     case "completed":
-      return <svg className="w-3.5 h-3.5 text-da-green" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>;
+      return <Check size={14} style={{ color: "var(--success)" }} />;
     case "error":
-      return <svg className="w-3.5 h-3.5 text-da-red" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>;
+      return <X size={14} style={{ color: "var(--error)" }} />;
     default:
       return null;
   }
@@ -46,39 +37,111 @@ function getStatusIcon(status: string) {
 
 export function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const colors = getToolColors(toolCall.toolName);
+  const style = getToolStyle(toolCall.toolName);
 
   return (
-    <div className={`rounded-lg border ${colors.border} ${colors.bg} overflow-hidden`}>
+    <div
+      style={{
+        borderRadius: "var(--radius-lg)",
+        border: `1px solid ${style.border}`,
+        background: style.bg,
+        overflow: "hidden",
+      }}
+    >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer hover:bg-white/5 transition-colors"
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-2)",
+          padding: "8px 12px",
+          textAlign: "left",
+          cursor: "pointer",
+          border: "none",
+          background: "transparent",
+          transition: "background var(--transition-fast)",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "rgba(0,0,0,0.03)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "transparent";
+        }}
       >
-        {getStatusIcon(toolCall.status)}
-        <span className={`text-xs font-medium ${colors.text}`}>{toolCall.toolName}</span>
-        <span className="text-[10px] text-da-text-muted flex-1 truncate">
+        <StatusIcon status={toolCall.status} />
+        <span style={{ fontSize: "var(--text-xs)", fontWeight: 500, color: style.text }}>
+          {toolCall.toolName}
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--text-tertiary)",
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {JSON.stringify(toolCall.input).slice(0, 60)}
         </span>
-        <svg
-          className={`w-3 h-3 text-da-text-muted transition-transform ${expanded ? "rotate-180" : ""}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <ChevronDown
+          size={12}
+          style={{
+            color: "var(--text-tertiary)",
+            transition: "transform var(--transition-fast)",
+            transform: expanded ? "rotate(180deg)" : "rotate(0)",
+          }}
+        />
       </button>
 
       {expanded && (
-        <div className="border-t border-da-border/50 px-3 py-2 space-y-2">
+        <div
+          style={{
+            borderTop: `1px solid ${style.border}`,
+            padding: "var(--space-2) var(--space-3)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-2)",
+            animation: "fadeIn 0.15s ease-out",
+          }}
+        >
           <div>
-            <div className="text-[10px] text-da-text-muted mb-1">输入参数</div>
-            <pre className="text-xs text-da-text-secondary bg-da-bg rounded p-2 overflow-x-auto max-h-32">
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4 }}>
+              输入参数
+            </div>
+            <pre
+              style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-secondary)",
+                background: "var(--bg-primary)",
+                borderRadius: "var(--radius-md)",
+                padding: "var(--space-2)",
+                overflowX: "auto",
+                maxHeight: 128,
+                margin: 0,
+              }}
+            >
               {JSON.stringify(toolCall.input, null, 2)}
             </pre>
           </div>
           {toolCall.output && (
             <div>
-              <div className="text-[10px] text-da-text-muted mb-1">输出结果</div>
-              <pre className="text-xs text-da-text-secondary bg-da-bg rounded p-2 overflow-x-auto max-h-32">
+              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4 }}>
+                输出结果
+              </div>
+              <pre
+                style={{
+                  fontSize: "var(--text-xs)",
+                  color: "var(--text-secondary)",
+                  background: "var(--bg-primary)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "var(--space-2)",
+                  overflowX: "auto",
+                  maxHeight: 128,
+                  margin: 0,
+                }}
+              >
                 {toolCall.output.length > 500 ? toolCall.output.slice(0, 500) + "..." : toolCall.output}
               </pre>
             </div>

@@ -87,22 +87,22 @@ export const api = {
 
   // --- Knowledge Base ---
   listKnowledgeBases: () =>
-    request<KnowledgeBase[]>("/api/knowledge/bases"),
+    request<KnowledgeBase[]>("/api/knowledge/kbs"),
   createKnowledgeBase: (name: string, description?: string) =>
-    request<KnowledgeBase>("/api/knowledge/bases", {
+    request<KnowledgeBase>("/api/knowledge/kbs", {
       method: "POST",
       body: JSON.stringify({ name, description }),
     }),
   deleteKnowledgeBase: (id: string) =>
-    request<void>(`/api/knowledge/bases/${id}`, { method: "DELETE" }),
+    request<void>(`/api/knowledge/kbs/${id}`, { method: "DELETE" }),
 
   // --- Documents ---
   listDocuments: (kbId: string) =>
-    request<DocumentInfo[]>(`/api/knowledge/${kbId}/documents`),
+    request<DocumentInfo[]>(`/api/knowledge/kbs/${kbId}/documents`),
   uploadDocument: (kbId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    return fetch(`${BASE_URL}/api/knowledge/${kbId}/documents/upload`, {
+    return fetch(`${BASE_URL}/api/knowledge/kbs/${kbId}/upload`, {
       method: "POST",
       body: formData,
     }).then((r) => {
@@ -111,7 +111,7 @@ export const api = {
     });
   },
   deleteDocument: (kbId: string, docId: string) =>
-    request<void>(`/api/knowledge/${kbId}/documents/${docId}`, {
+    request<void>(`/api/knowledge/kbs/${kbId}/documents/${docId}`, {
       method: "DELETE",
     }),
 

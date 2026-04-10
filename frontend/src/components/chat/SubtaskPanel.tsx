@@ -6,96 +6,198 @@
 import { useState } from "react";
 import { useChatStore } from "../../store/chat";
 import type { AgentTaskInfo } from "../../types/index";
-
-const AGENT_COLORS: Record<string, { bg: string; text: string }> = {
-  explore: { bg: "bg-indigo-500/10", text: "text-indigo-400" },
-  compile: { bg: "bg-purple-500/10", text: "text-purple-400" },
-  verify: { bg: "bg-amber-500/10", text: "text-amber-400" },
-  report: { bg: "bg-teal-500/10", text: "text-teal-400" },
-  coordinator: { bg: "bg-sky-500/10", text: "text-sky-400" },
-  general: { bg: "bg-gray-500/10", text: "text-gray-400" },
-};
-
-function getAgentColor(type: string) {
-  return AGENT_COLORS[type] ?? AGENT_COLORS.general;
-}
+import {
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Ban,
+  ChevronDown,
+} from "lucide-react";
 
 function StatusIcon({ status }: { status: string }) {
+  const iconStyle: React.CSSProperties = {
+    width: 14,
+    height: 14,
+    flexShrink: 0,
+  };
   switch (status) {
     case "running":
-      return (
-        <svg className="w-3.5 h-3.5 animate-spin text-da-amber" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-      );
+      return <Loader2 size={14} style={{ ...iconStyle, color: "var(--warning)", animation: "spin 1s linear infinite" }} />;
     case "completed":
-      return <svg className="w-3.5 h-3.5 text-da-green" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>;
+      return <CheckCircle2 size={14} style={{ ...iconStyle, color: "var(--success)" }} />;
     case "failed":
-      return <svg className="w-3.5 h-3.5 text-da-red" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>;
+      return <XCircle size={14} style={{ ...iconStyle, color: "var(--error)" }} />;
     case "pending":
-      return <svg className="w-3.5 h-3.5 text-da-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
+      return <Clock size={14} style={{ ...iconStyle, color: "var(--text-tertiary)" }} />;
     case "cancelled":
-      return <svg className="w-3.5 h-3.5 text-da-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>;
+      return <Ban size={14} style={{ ...iconStyle, color: "var(--text-tertiary)" }} />;
     default:
       return null;
   }
 }
 
-function TaskItem({ task }: { task: AgentTaskInfo }) {
+interface TaskTreeNode {
+  task: AgentTaskInfo;
+  children: TaskTreeNode[];
+}
+
+function buildTaskTree(tasks: AgentTaskInfo[]): TaskTreeNode[] {
+  const map = new Map<string, TaskTreeNode>();
+  const roots: TaskTreeNode[] = [];
+
+  for (const task of tasks) {
+    map.set(task.id, { task, children: [] });
+  }
+
+  for (const task of tasks) {
+    const node = map.get(task.id)!;
+    if (task.parentId && map.has(task.parentId)) {
+      map.get(task.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+function TaskItem({ node }: { node: TaskTreeNode }) {
   const [expanded, setExpanded] = useState(false);
   const cancelAgentTask = useChatStore((s) => s.cancelAgentTask);
-  const colors = getAgentColor(task.agentType);
 
   return (
-    <div className="border border-da-border rounded-lg overflow-hidden">
+    <div style={{
+      border: "1px solid var(--border-primary)",
+      borderRadius: "var(--radius-lg)",
+      overflow: "hidden",
+    }}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-da-bg-hover transition-colors cursor-pointer"
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-2)",
+          padding: "var(--space-2) var(--space-3)",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          transition: "background var(--transition-fast)",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
-        <StatusIcon status={task.status} />
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${colors.bg} ${colors.text}`}>
-          {task.agentType}
+        <StatusIcon status={node.task.status} />
+        <span style={{
+          fontSize: 10,
+          fontWeight: "var(--font-medium)",
+          padding: "2px 6px",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-tertiary)",
+          color: "var(--text-secondary)",
+        }}>
+          {node.task.agentType}
         </span>
-        <span className="text-xs text-da-text-secondary flex-1 truncate">
-          {task.input.slice(0, 50)}
+        {node.task.status === "running" && node.task.progress != null && node.task.progress > 0 && (
+          <div style={{ flex: "0 0 60px", height: 3, background: "var(--bg-tertiary)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ width: `${node.task.progress}%`, height: "100%", background: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
+          </div>
+        )}
+        <span style={{
+          fontSize: "var(--text-xs)",
+          color: "var(--text-secondary)",
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}>
+          {node.task.input.slice(0, 50)}
         </span>
-        {task.status === "running" && (
+        {node.task.status === "running" && (
           <button
-            onClick={(e) => { e.stopPropagation(); cancelAgentTask(task.id); }}
-            className="text-da-text-muted hover:text-da-red text-xs cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); cancelAgentTask(node.task.id); }}
+            style={{
+              fontSize: "var(--text-xs)",
+              color: "var(--text-tertiary)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              transition: "color var(--transition-fast)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
           >
             取消
           </button>
         )}
-        <svg
-          className={`w-3 h-3 text-da-text-muted transition-transform ${expanded ? "rotate-180" : ""}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <ChevronDown
+          size={12}
+          style={{
+            color: "var(--text-tertiary)",
+            transition: `transform var(--transition-fast)`,
+            transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+            flexShrink: 0,
+          }}
+        />
       </button>
 
       {expanded && (
-        <div className="border-t border-da-border px-3 py-2 space-y-1.5 bg-da-bg/50">
-          {task.input && (
+        <div style={{
+          borderTop: "1px solid var(--border-primary)",
+          padding: "var(--space-2) var(--space-3)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-1)",
+          background: "color-mix(in srgb, var(--bg-primary) 50%, transparent)",
+        }}>
+          {node.task.input && (
             <div>
-              <span className="text-[10px] text-da-text-muted">输入:</span>
-              <pre className="text-xs text-da-text-secondary mt-0.5 whitespace-pre-wrap">{task.input}</pre>
+              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>输入:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-secondary)",
+                marginTop: 2,
+                whiteSpace: "pre-wrap",
+                margin: 0,
+              }}>{node.task.input}</pre>
             </div>
           )}
-          {task.output && (
+          {node.task.output && (
             <div>
-              <span className="text-[10px] text-da-text-muted">输出:</span>
-              <pre className="text-xs text-da-text-secondary mt-0.5 whitespace-pre-wrap max-h-32 overflow-y-auto">
-                {task.output.length > 500 ? task.output.slice(0, 500) + "..." : task.output}
+              <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>输出:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-secondary)",
+                marginTop: 2,
+                whiteSpace: "pre-wrap",
+                maxHeight: 128,
+                overflowY: "auto",
+                margin: 0,
+              }}>
+                {node.task.output.length > 500 ? node.task.output.slice(0, 500) + "..." : node.task.output}
               </pre>
             </div>
           )}
-          {task.error && (
+          {node.task.error && (
             <div>
-              <span className="text-[10px] text-da-red">错误:</span>
-              <pre className="text-xs text-da-red mt-0.5 whitespace-pre-wrap">{task.error}</pre>
+              <span style={{ fontSize: 10, color: "var(--error)" }}>错误:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--error)",
+                marginTop: 2,
+                whiteSpace: "pre-wrap",
+                margin: 0,
+              }}>{node.task.error}</pre>
+            </div>
+          )}
+          {node.children.length > 0 && (
+            <div style={{ marginLeft: 16, marginTop: "var(--space-2)", display: "flex", flexDirection: "column", gap: "var(--space-1)" }}>
+              {node.children.map((child) => (
+                <TaskItem key={child.task.id} node={child} />
+              ))}
             </div>
           )}
         </div>
@@ -115,27 +217,88 @@ export function SubtaskPanel() {
   const failed = agentTasks.filter((t) => t.status === "failed").length;
 
   return (
-    <div className={`shrink-0 border-t border-da-border bg-da-bg-secondary ${collapsed ? "" : "max-h-48"}`}>
+    <div style={{
+      flexShrink: 0,
+      borderTop: "1px solid var(--border-primary)",
+      background: "var(--bg-secondary)",
+      maxHeight: collapsed ? undefined : 192,
+    }}>
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-4 py-2 text-left cursor-pointer hover:bg-da-bg-hover transition-colors"
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-2)",
+          padding: "var(--space-2) var(--space-4)",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          transition: "background var(--transition-fast)",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
-        <svg className={`w-3 h-3 text-da-text-muted transition-transform ${collapsed ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-        <span className="text-xs font-medium text-da-text-secondary">Agent 任务</span>
-        {running > 0 && <span className="w-2 h-2 rounded-full bg-da-accent" />}
-        {completed > 0 && <span className="w-2 h-2 rounded-full bg-da-green" />}
-        {failed > 0 && <span className="w-2 h-2 rounded-full bg-da-red" />}
-        <span className="text-[10px] text-da-text-muted">
+        <ChevronDown
+          size={12}
+          style={{
+            color: "var(--text-tertiary)",
+            transition: `transform var(--transition-fast)`,
+            transform: collapsed ? "rotate(0deg)" : "rotate(180deg)",
+            flexShrink: 0,
+          }}
+        />
+        <span style={{
+          fontSize: "var(--text-xs)",
+          fontWeight: "var(--font-medium)",
+          color: "var(--text-secondary)",
+        }}>
+          Agent 任务
+        </span>
+        {running > 0 && (
+          <span style={{
+            width: 8,
+            height: 8,
+            borderRadius: "var(--radius-full)",
+            background: "var(--interactive)",
+            flexShrink: 0,
+          }} />
+        )}
+        {completed > 0 && (
+          <span style={{
+            width: 8,
+            height: 8,
+            borderRadius: "var(--radius-full)",
+            background: "var(--success)",
+            flexShrink: 0,
+          }} />
+        )}
+        {failed > 0 && (
+          <span style={{
+            width: 8,
+            height: 8,
+            borderRadius: "var(--radius-full)",
+            background: "var(--error)",
+            flexShrink: 0,
+          }} />
+        )}
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
           {running > 0 ? `${running} 运行中` : `${completed} 完成`}
         </span>
       </button>
 
       {!collapsed && (
-        <div className="px-4 pb-2 space-y-1 overflow-y-auto max-h-36">
-          {agentTasks.map((task) => (
-            <TaskItem key={task.id} task={task} />
+        <div style={{
+          padding: "0 var(--space-4) var(--space-2)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-1)",
+          overflowY: "auto",
+          maxHeight: 144,
+        }}>
+          {buildTaskTree(agentTasks).map((node) => (
+            <TaskItem key={node.task.id} node={node} />
           ))}
         </div>
       )}

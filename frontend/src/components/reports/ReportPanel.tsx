@@ -8,6 +8,17 @@ import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useMarkdown } from "../../hooks/useMarkdown";
 import type { ReportInfo, ReportDetail, TimelineEvent, GraphNode, GraphEdge } from "../../types/index";
+import { ReportExport } from "./ReportExport";
+import {
+  Loader2,
+  ChevronLeft,
+  FileText,
+  Clock,
+  Network,
+  Plus,
+  X,
+  FileDown,
+} from "lucide-react";
 
 interface ReportPanelProps {
   kbId: string;
@@ -17,7 +28,8 @@ interface ReportPanelProps {
 type SubTab = "reports" | "timeline" | "graph";
 
 export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
-  const { error } = useToast();
+  const { error: showError } = useToast();
+  const { success } = useToast();
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("reports");
   const [reports, setReports] = useState<ReportInfo[]>([]);
   const [selectedReport, setSelectedReport] = useState<ReportDetail | null>(null);
@@ -25,6 +37,12 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
   const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
   const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showGenModal, setShowGenModal] = useState(false);
+  const [genTitle, setGenTitle] = useState("");
+  const [genQuery, setGenQuery] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [exportingReportId, setExportingReportId] = useState<string | null>(null);
+  const [exportingReportTitle, setExportingReportTitle] = useState("");
 
   // Load data when kb changes
   useEffect(() => {
@@ -45,18 +63,19 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 
   // Graph canvas rendering
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const nodePositionsRef = useRef<Map<string, { x: number; y: number; vx: number; vy: number }>>(new Map());
   const animFrameRef = useRef<number>(0);
 
-  const initGraphPositions = useCallback(() => {
+  const initGraphPositions = useCallback((centerX: number, centerY: number) => {
     const positions = nodePositionsRef.current;
     graphNodes.forEach((node, i) => {
       if (!positions.has(node.id)) {
         const angle = (2 * Math.PI * i) / graphNodes.length;
         const r = 150 + Math.random() * 100;
         positions.set(node.id, {
-          x: 400 + Math.cos(angle) * r,
-          y: 300 + Math.sin(angle) * r,
+          x: centerX + Math.cos(angle) * r,
+          y: centerY + Math.sin(angle) * r,
           vx: 0,
           vy: 0,
         });
@@ -65,10 +84,20 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
   }, [graphNodes]);
 
   useEffect(() => {
-    if (activeSubTab !== "graph" || !canvasRef.current || graphNodes.length === 0) return;
+    if (activeSubTab !== "graph" || !canvasRef.current || !containerRef.current || graphNodes.length === 0) return;
 
-    initGraphPositions();
+    const container = containerRef.current;
     const canvas = canvasRef.current;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    initGraphPositions(centerX, centerY);
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -118,8 +147,8 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 
       // Center gravity
       positions.forEach((p) => {
-        p.vx += (400 - p.x) * 0.01;
-        p.vy += (300 - p.y) * 0.01;
+        p.vx += (centerX - p.x) * 0.01;
+        p.vy += (centerY - p.y) * 0.01;
         p.vx *= damping;
         p.vy *= damping;
         p.x += p.vx;
@@ -178,67 +207,345 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [activeSubTab, graphNodes, graphEdges, initGraphPositions]);
 
+  const handleGenerateReport = async () => {
+    if (!kbId || !genTitle.trim()) return;
+    setGenerating(true);
+    try {
+      await api.generateReport(kbId, genQuery, genTitle);
+      success("报告生成任务已提交");
+      setShowGenModal(false);
+      setGenTitle("");
+      setGenQuery("");
+      // Reload reports
+      const reportsData = await api.listReports(kbId);
+      setReports(reportsData.reports ?? []);
+    } catch {
+      showError("生成报告失败");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   if (!kbId) {
     return (
-      <div className="h-full flex items-center justify-center text-da-text-muted">
+      <div style={{
+        height: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-tertiary)",
+      }}>
         <p>请先在知识库标签页中选择一个知识库</p>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col bg-da-bg">
+    <div style={{
+      height: "100%",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--bg-primary)",
+    }}>
       {/* Sub-tab navigation */}
-      <div className="shrink-0 border-b border-da-border px-4 py-2 bg-da-bg-secondary">
-        <div className="flex items-center gap-1">
+      <div style={{
+        flexShrink: 0,
+        borderBottom: "1px solid var(--border-primary)",
+        padding: "var(--space-2) var(--space-4)",
+        background: "var(--bg-secondary)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
           {[
-            { id: "reports" as const, label: "报告" },
-            { id: "timeline" as const, label: "时间线" },
-            { id: "graph" as const, label: "关系图" },
+            { id: "reports" as const, label: "报告", Icon: FileText },
+            { id: "timeline" as const, label: "时间线", Icon: Clock },
+            { id: "graph" as const, label: "关系图", Icon: Network },
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveSubTab(tab.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer transition-colors ${
-                activeSubTab === tab.id
-                  ? "bg-da-accent text-white"
-                  : "text-da-text-muted hover:text-da-text-secondary"
-              }`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-1)",
+                padding: "6px 12px",
+                fontSize: "var(--text-xs)",
+                fontWeight: "var(--font-medium)",
+                borderRadius: "var(--radius-md)",
+                cursor: "pointer",
+                transition: "all var(--transition-fast)",
+                border: "none",
+                background: activeSubTab === tab.id ? "var(--interactive)" : "transparent",
+                color: activeSubTab === tab.id ? "#fff" : "var(--text-tertiary)",
+              }}
+              onMouseEnter={(e) => {
+                if (activeSubTab !== tab.id) e.currentTarget.style.color = "var(--text-secondary)";
+              }}
+              onMouseLeave={(e) => {
+                if (activeSubTab !== tab.id) e.currentTarget.style.color = "var(--text-tertiary)";
+              }}
             >
+              <tab.Icon size={14} />
               {tab.label}
             </button>
           ))}
         </div>
+
+        {/* Generate report button */}
+        {activeSubTab === "reports" && (
+          <button
+            onClick={() => setShowGenModal(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-1)",
+              padding: "6px 12px",
+              fontSize: "var(--text-xs)",
+              fontWeight: "var(--font-medium)",
+              borderRadius: "var(--radius-md)",
+              cursor: "pointer",
+              border: "none",
+              background: "var(--interactive)",
+              color: "#fff",
+              transition: "background var(--transition-fast)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--interactive-hover)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
+          >
+            <Plus size={14} />
+            生成报告
+          </button>
+        )}
       </div>
 
+      {/* Generate Report Modal */}
+      {showGenModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+          }}
+          onClick={() => setShowGenModal(false)}
+        >
+          <div
+            style={{
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "var(--radius-xl)",
+              padding: "var(--space-6)",
+              width: 440,
+              maxWidth: "90vw",
+              boxShadow: "var(--shadow-md)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-4)" }}>
+              <h3 style={{
+                fontSize: "var(--text-base)",
+                fontWeight: "var(--font-semibold)",
+                color: "var(--text-primary)",
+                margin: 0,
+              }}>
+                生成新报告
+              </h3>
+              <button
+                onClick={() => setShowGenModal(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-tertiary)",
+                  padding: 0,
+                  display: "flex",
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+              <div>
+                <label style={{
+                  display: "block",
+                  fontSize: "var(--text-sm)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-secondary)",
+                  marginBottom: "var(--space-1)",
+                }}>
+                  报告标题 *
+                </label>
+                <input
+                  type="text"
+                  value={genTitle}
+                  onChange={(e) => setGenTitle(e.target.value)}
+                  placeholder="输入报告标题"
+                  style={{
+                    width: "100%",
+                    padding: "var(--space-2) var(--space-3)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-lg)",
+                    fontSize: "var(--text-sm)",
+                    background: "var(--bg-primary)",
+                    color: "var(--text-primary)",
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; }}
+                  onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
+                />
+              </div>
+              <div>
+                <label style={{
+                  display: "block",
+                  fontSize: "var(--text-sm)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-secondary)",
+                  marginBottom: "var(--space-1)",
+                }}>
+                  分析要求 (可选)
+                </label>
+                <textarea
+                  value={genQuery}
+                  onChange={(e) => setGenQuery(e.target.value)}
+                  placeholder="描述你希望报告包含的内容或分析方向..."
+                  rows={3}
+                  style={{
+                    width: "100%",
+                    padding: "var(--space-2) var(--space-3)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-lg)",
+                    fontSize: "var(--text-sm)",
+                    background: "var(--bg-primary)",
+                    color: "var(--text-primary)",
+                    outline: "none",
+                    resize: "vertical",
+                    boxSizing: "border-box",
+                    fontFamily: "inherit",
+                  }}
+                  onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; }}
+                  onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--space-3)" }}>
+                <button
+                  onClick={() => setShowGenModal(false)}
+                  style={{
+                    padding: "var(--space-2) var(--space-4)",
+                    fontSize: "var(--text-sm)",
+                    fontWeight: "var(--font-medium)",
+                    borderRadius: "var(--radius-lg)",
+                    cursor: "pointer",
+                    border: "1px solid var(--border-primary)",
+                    background: "transparent",
+                    color: "var(--text-secondary)",
+                    transition: "background var(--transition-fast)",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleGenerateReport}
+                  disabled={generating || !genTitle.trim()}
+                  style={{
+                    padding: "var(--space-2) var(--space-4)",
+                    fontSize: "var(--text-sm)",
+                    fontWeight: "var(--font-medium)",
+                    borderRadius: "var(--radius-lg)",
+                    cursor: generating || !genTitle.trim() ? "not-allowed" : "pointer",
+                    border: "none",
+                    background: "var(--interactive)",
+                    color: "#fff",
+                    opacity: generating || !genTitle.trim() ? 0.5 : 1,
+                    transition: "background var(--transition-fast)",
+                  }}
+                  onMouseEnter={(e) => { if (!generating && genTitle.trim()) e.currentTarget.style.background = "var(--interactive-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
+                >
+                  {generating ? "生成中..." : "开始生成"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Content */}
-      <div className="flex-1 overflow-hidden">
+      <div style={{ flex: 1, overflow: "hidden" }}>
         {loading ? (
-          <div className="h-full flex items-center justify-center text-da-text-muted">
-            <svg className="w-6 h-6 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
+          <div style={{
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--text-tertiary)",
+            gap: "var(--space-2)",
+          }}>
+            <Loader2 size={20} style={{ animation: "spin 1s linear infinite" }} />
             加载中...
           </div>
         ) : selectedReport ? (
-          <ReportDetailPanel report={selectedReport} onBack={() => setSelectedReport(null)} />
+          <ReportDetailPanel report={selectedReport} onBack={() => setSelectedReport(null)} onExport={(id, title) => { setExportingReportId(id); setExportingReportTitle(title); }} />
         ) : activeSubTab === "reports" ? (
-          <div className="h-full overflow-y-auto p-4 space-y-2">
+          <div style={{
+            height: "100%",
+            overflowY: "auto",
+            padding: "var(--space-4)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-2)",
+          }}>
             {reports.length === 0 ? (
-              <div className="text-center py-12 text-da-text-muted">
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
                 <p>暂无报告</p>
-                <p className="text-xs mt-1">在对话中请求 Agent 生成分析报告</p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  在对话中请求 Agent 生成分析报告，或点击上方"生成报告"按钮
+                </p>
               </div>
             ) : (
               reports.map((report) => (
                 <div
                   key={report.id}
-                  onClick={() => api.getReport(report.id).then(setSelectedReport).catch(() => error("加载报告失败"))}
-                  className="px-4 py-3 bg-da-surface border border-da-border rounded-lg cursor-pointer hover:border-da-accent/30 transition-colors"
+                  onClick={() => api.getReport(report.id).then(setSelectedReport).catch(() => showError("加载报告失败"))}
+                  style={{
+                    padding: "var(--space-3) var(--space-4)",
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-lg)",
+                    cursor: "pointer",
+                    transition: "border-color var(--transition-fast)",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
                 >
-                  <p className="text-sm text-da-text font-medium">{report.title}</p>
-                  <div className="flex items-center gap-2 mt-1 text-xs text-da-text-muted">
+                  <p style={{
+                    fontSize: "var(--text-sm)",
+                    color: "var(--text-primary)",
+                    fontWeight: "var(--font-medium)",
+                    margin: 0,
+                  }}>
+                    {report.title}
+                  </p>
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-2)",
+                    marginTop: "var(--space-1)",
+                    fontSize: "var(--text-xs)",
+                    color: "var(--text-tertiary)",
+                  }}>
                     <span>{new Date(report.createdAt).toLocaleDateString("zh-CN")}</span>
                     <span>{report.tokenCount} tokens</span>
                   </div>
@@ -247,20 +554,74 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
             )}
           </div>
         ) : activeSubTab === "timeline" ? (
-          <div className="h-full overflow-y-auto p-4">
+          <div style={{ height: "100%", overflowY: "auto", padding: "var(--space-4)" }}>
             {timeline.length === 0 ? (
-              <div className="text-center py-12 text-da-text-muted">暂无时间线数据</div>
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
+                暂无时间线数据
+              </div>
             ) : (
-              <div className="relative pl-6">
-                <div className="absolute left-2 top-0 bottom-0 w-px bg-da-border" />
+              <div style={{ position: "relative", paddingLeft: "var(--space-6)" }}>
+                <div style={{
+                  position: "absolute",
+                  left: 8,
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  background: "var(--border-primary)",
+                }} />
                 {timeline.map((event, i) => (
-                  <div key={i} className="relative pb-6 animate-fade-in">
-                    <div className="absolute left-[-18px] w-3 h-3 rounded-full bg-da-accent border-2 border-da-bg" />
-                    <div className="px-4 py-3 bg-da-surface border border-da-border rounded-lg">
-                      <div className="text-xs text-da-accent font-medium mb-1">{event.date}</div>
-                      <p className="text-sm text-da-text font-medium">{event.title}</p>
-                      <p className="text-sm text-da-text-secondary mt-1">{event.description}</p>
-                      <p className="text-xs text-da-text-muted mt-2">来源: {event.sourceTitle}</p>
+                  <div key={i} style={{ position: "relative", paddingBottom: "var(--space-6)" }}>
+                    <div style={{
+                      position: "absolute",
+                      left: -18,
+                      width: 12,
+                      height: 12,
+                      borderRadius: "var(--radius-full)",
+                      background: "var(--interactive)",
+                      border: "2px solid var(--bg-primary)",
+                    }} />
+                    <div style={{
+                      padding: "var(--space-3) var(--space-4)",
+                      background: "var(--bg-secondary)",
+                      border: "1px solid var(--border-primary)",
+                      borderRadius: "var(--radius-lg)",
+                    }}>
+                      <div style={{
+                        fontSize: "var(--text-xs)",
+                        color: "var(--interactive)",
+                        fontWeight: "var(--font-medium)",
+                        marginBottom: "var(--space-1)",
+                      }}>
+                        {event.date}
+                      </div>
+                      <p style={{
+                        fontSize: "var(--text-sm)",
+                        color: "var(--text-primary)",
+                        fontWeight: "var(--font-medium)",
+                        margin: 0,
+                      }}>
+                        {event.title}
+                      </p>
+                      <p style={{
+                        fontSize: "var(--text-sm)",
+                        color: "var(--text-secondary)",
+                        marginTop: "var(--space-1)",
+                        margin: 0,
+                      }}>
+                        {event.description}
+                      </p>
+                      <p style={{
+                        fontSize: "var(--text-xs)",
+                        color: "var(--text-tertiary)",
+                        marginTop: "var(--space-2)",
+                        margin: 0,
+                      }}>
+                        来源: {event.sourceTitle}
+                      </p>
                     </div>
                   </div>
                 ))}
@@ -269,40 +630,132 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
           </div>
         ) : (
           /* Graph */
-          <div className="h-full relative">
-            <canvas ref={canvasRef} width={800} height={600} className="w-full h-full" />
-            <div className="absolute top-3 right-3 flex items-center gap-3 text-xs text-da-text-muted bg-da-bg/80 px-3 py-2 rounded-lg">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500" />文档</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400" />实体</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400" />概念</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400" />报告</span>
+          <div ref={containerRef} style={{ height: "100%", position: "relative" }}>
+            <canvas
+              ref={canvasRef}
+              style={{ width: "100%", height: "100%", display: "block" }}
+            />
+            <div style={{
+              position: "absolute",
+              top: "var(--space-3)",
+              right: "var(--space-3)",
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-3)",
+              fontSize: "var(--text-xs)",
+              color: "var(--text-tertiary)",
+              background: "color-mix(in srgb, var(--bg-primary) 80%, transparent)",
+              padding: "var(--space-2) var(--space-3)",
+              borderRadius: "var(--radius-lg)",
+            }}>
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "var(--radius-full)", background: "#3b82f6" }} />
+                文档
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "var(--radius-full)", background: "#34d399" }} />
+                实体
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "var(--radius-full)", background: "#a78bfa" }} />
+                概念
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "var(--radius-full)", background: "#f59e0b" }} />
+                报告
+              </span>
               <span>| {graphNodes.length} 节点 {graphEdges.length} 边</span>
             </div>
           </div>
         )}
       </div>
+
+      {exportingReportId && (
+        <ReportExport
+          reportId={exportingReportId}
+          reportTitle={exportingReportTitle}
+          onClose={() => setExportingReportId(null)}
+        />
+      )}
     </div>
   );
 }
 
 // Report Detail View
-function ReportDetailPanel({ report, onBack }: { report: ReportDetail; onBack: () => void }) {
+function ReportDetailPanel({ report, onBack, onExport }: { report: ReportDetail; onBack: () => void; onExport: (id: string, title: string) => void }) {
   const htmlContent = useMarkdown(report.content);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="sticky top-0 bg-da-bg-secondary border-b border-da-border px-6 py-3 flex items-center gap-3 z-10">
-        <button onClick={onBack} className="text-da-text-muted hover:text-da-text cursor-pointer">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
+    <div style={{ height: "100%", overflowY: "auto" }}>
+      <div style={{
+        position: "sticky",
+        top: 0,
+        background: "var(--bg-secondary)",
+        borderBottom: "1px solid var(--border-primary)",
+        padding: "var(--space-3) var(--space-6)",
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--space-3)",
+        zIndex: 10,
+      }}>
+        <button
+          onClick={onBack}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--text-tertiary)",
+            padding: 0,
+            display: "flex",
+            transition: "color var(--transition-fast)",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-primary)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <button
+          onClick={() => onExport(report.id, report.title)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-1)",
+            padding: "4px 10px",
+            fontSize: "var(--text-xs)",
+            fontWeight: "var(--font-medium)",
+            borderRadius: "var(--radius-md)",
+            cursor: "pointer",
+            border: "1px solid var(--border-primary)",
+            background: "transparent",
+            color: "var(--text-secondary)",
+            transition: "all var(--transition-fast)",
+            marginLeft: "auto",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; e.currentTarget.style.color = "var(--interactive)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+        >
+          <FileDown size={14} />
+          导出
         </button>
         <div>
-          <h3 className="text-sm font-medium text-da-text">{report.title}</h3>
-          <p className="text-[10px] text-da-text-muted">{new Date(report.createdAt).toLocaleString("zh-CN")} | {report.tokenCount} tokens</p>
+          <h3 style={{
+            fontSize: "var(--text-sm)",
+            fontWeight: "var(--font-medium)",
+            color: "var(--text-primary)",
+            margin: 0,
+          }}>
+            {report.title}
+          </h3>
+          <p style={{
+            fontSize: 10,
+            color: "var(--text-tertiary)",
+            margin: 0,
+          }}>
+            {new Date(report.createdAt).toLocaleString("zh-CN")} | {report.tokenCount} tokens
+          </p>
         </div>
       </div>
-      <div className="px-6 py-4 max-w-4xl mx-auto">
+      <div style={{ padding: "var(--space-4) var(--space-6)", maxWidth: 900, margin: "0 auto" }}>
         <div className="markdown-content" dangerouslySetInnerHTML={{ __html: htmlContent }} />
       </div>
     </div>

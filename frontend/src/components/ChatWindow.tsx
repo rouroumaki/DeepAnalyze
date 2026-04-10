@@ -1,119 +1,264 @@
-// =============================================================================
-// DeepAnalyze - ChatWindow Component
-// Main content area with tab navigation
-// =============================================================================
-
 import { useState } from "react";
 import { useChatStore } from "../store/chat";
+import { useUIStore } from "../store/ui";
 import { MessageList } from "./chat/MessageList";
 import { MessageInput } from "./chat/MessageInput";
 import { SubtaskPanel } from "./chat/SubtaskPanel";
-import { ReportPanel } from "./reports/ReportPanel";
-import { SettingsPanel } from "./settings/SettingsPanel";
-import { KnowledgePanel } from "./knowledge/KnowledgePanel";
-import { PluginManager } from "./plugins/PluginManager";
-import { SkillBrowser } from "./plugins/SkillBrowser";
-import { TaskPanel } from "./tasks/TaskPanel";
-import type { TabId } from "../types/index";
+import { ScopeSelector } from "./chat/ScopeSelector";
+import { useKeyboard } from "../hooks/useKeyboard";
+import { Sparkles, Upload, BookOpen, MessageSquare } from "lucide-react";
 
-interface ChatWindowProps {
-  sendWsMessage: (content: string) => void;
-}
-
-export function ChatWindow({ sendWsMessage }: ChatWindowProps) {
+export function ChatWindow() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const createSession = useChatStore((s) => s.createSession);
-  const [activeTab, setActiveTab] = useState<TabId>("chat");
-  const [selectedKbId, setSelectedKbId] = useState("");
+  const sendMessage = useChatStore((s) => s.sendMessage);
+  const setActiveView = useUIStore((s) => s.setActiveView);
+
+  const [scope, setScope] = useState("");
+
+  useKeyboard({ key: "n", ctrl: true }, () => {
+    createSession();
+  });
 
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
-  const tabs: Array<{ id: TabId; label: string; icon: string }> = [
-    { id: "chat", label: "对话", icon: "chat" },
-    { id: "knowledge", label: "知识库", icon: "knowledge" },
-    { id: "reports", label: "报告", icon: "reports" },
-    { id: "tasks", label: "任务", icon: "tasks" },
-    { id: "settings", label: "设置", icon: "settings" },
-  ];
-
+  // Welcome screen when no session active
   if (!currentSessionId || !currentSession) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-da-bg">
-        <div className="text-center max-w-md animate-fade-in">
-          <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center">
-            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-da-text mb-2">DeepAnalyze</h2>
-          <p className="text-da-text-secondary mb-8">深度分析系统 - Agent驱动的文档分析与报告生成平台</p>
-          <button
-            onClick={() => createSession()}
-            className="px-6 py-3 bg-da-accent hover:bg-da-accent-hover text-white rounded-xl font-medium transition-colors cursor-pointer"
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "var(--bg-primary)",
+          padding: "var(--space-8)",
+        }}
+      >
+        <div
+          style={{
+            textAlign: "center",
+            maxWidth: 520,
+            animation: "fadeIn 0.4s ease-out",
+          }}
+        >
+          {/* Logo */}
+          <div
+            style={{
+              width: 64,
+              height: 64,
+              margin: "0 auto var(--space-6)",
+              borderRadius: "var(--radius-xl)",
+              background: "linear-gradient(135deg, #3b82f6, #06b6d4)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 8px 24px rgba(59, 130, 246, 0.25)",
+            }}
           >
-            开始新对话
-          </button>
-          <div className="flex flex-wrap justify-center gap-2 mt-6">
-            {["分析一份文档", "总结研究报告", "提取关键信息"].map((hint) => (
-              <span key={hint} className="px-3 py-1.5 bg-da-surface border border-da-border rounded-full text-sm text-da-text-secondary">
-                {hint}
-              </span>
-            ))}
+            <Sparkles size={28} color="#fff" />
+          </div>
+
+          <h2
+            style={{
+              fontSize: "var(--text-3xl)",
+              fontWeight: 700,
+              color: "var(--text-primary)",
+              margin: "0 0 var(--space-2)",
+            }}
+          >
+            DeepAnalyze
+          </h2>
+          <p
+            style={{
+              fontSize: "var(--text-base)",
+              color: "var(--text-secondary)",
+              margin: "0 0 var(--space-8)",
+              lineHeight: "var(--leading-relaxed)",
+            }}
+          >
+            深度分析系统 — Agent驱动的文档分析与报告生成平台
+          </p>
+
+          {/* Action buttons */}
+          <div
+            style={{
+              display: "flex",
+              gap: "var(--space-3)",
+              justifyContent: "center",
+              marginBottom: "var(--space-8)",
+            }}
+          >
+            <WelcomeAction
+              icon={<Upload size={18} />}
+              label="上传文档"
+              onClick={() => setActiveView("knowledge")}
+            />
+            <WelcomeAction
+              icon={<BookOpen size={18} />}
+              label="选择知识库"
+              onClick={() => setActiveView("knowledge")}
+            />
+            <WelcomeAction
+              icon={<MessageSquare size={18} />}
+              label="开始对话"
+              onClick={() => createSession()}
+              primary
+            />
+          </div>
+
+          {/* Quick hints */}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "var(--space-2)",
+              justifyContent: "center",
+            }}
+          >
+            {["分析一份文档的关键条款", "提取文档中的时间线", "对比分析多份文档的差异"].map(
+              (hint) => (
+                <button
+                  key={hint}
+                  onClick={async () => {
+                    const sessionId = await createSession();
+                    if (sessionId) {
+                      sendMessage(hint);
+                    }
+                  }}
+                  style={{
+                    padding: "var(--space-1) var(--space-3)",
+                    background: "var(--surface-primary)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-full)",
+                    fontSize: "var(--text-sm)",
+                    color: "var(--text-secondary)",
+                    cursor: "pointer",
+                    transition: "all var(--transition-fast)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = "var(--interactive)";
+                    e.currentTarget.style.color = "var(--interactive)";
+                    e.currentTarget.style.background = "var(--interactive-light)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = "var(--border-primary)";
+                    e.currentTarget.style.color = "var(--text-secondary)";
+                    e.currentTarget.style.background = "var(--surface-primary)";
+                  }}
+                >
+                  {hint}
+                </button>
+              ),
+            )}
           </div>
         </div>
       </div>
     );
   }
 
+  // Active chat session
   return (
-    <div className="flex-1 flex flex-col h-full bg-da-bg">
-      {/* Tab Navigation */}
-      <div className="shrink-0 border-b border-da-border bg-da-bg-secondary">
-        <div className="flex items-center justify-between px-4 py-1.5">
-          <div className="text-sm font-medium text-da-text-secondary truncate max-w-[200px]">
-            {activeTab === "chat"
-              ? currentSession.title || "新对话"
-              : tabs.find((t) => t.id === activeTab)?.label ?? ""}
-          </div>
-          <div className="flex items-center gap-0.5 bg-da-bg-tertiary rounded-lg p-0.5">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
-                  activeTab === tab.id
-                    ? "bg-da-accent text-white shadow-sm"
-                    : "text-da-text-muted hover:text-da-text-secondary hover:bg-da-bg-hover"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: "var(--bg-primary)",
+      }}
+    >
+      {/* Chat header bar */}
+      <div
+        style={{
+          height: 44,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 var(--space-4)",
+          borderBottom: "1px solid var(--border-primary)",
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontSize: "var(--text-sm)",
+            fontWeight: 600,
+            color: "var(--text-primary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {currentSession.title || "新对话"}
+        </span>
+        <ScopeSelector value={scope} onChange={setScope} />
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {activeTab === "chat" && (
-          <div className="h-full flex flex-col">
-            <div className="flex-1 overflow-hidden">
-              <MessageList />
-            </div>
-            <SubtaskPanel />
-            <MessageInput sendWsMessage={sendWsMessage} />
-          </div>
-        )}
-        {activeTab === "knowledge" && (
-          <KnowledgePanel kbId={selectedKbId} onKbIdChange={setSelectedKbId} />
-        )}
-        {activeTab === "reports" && (
-          <ReportPanel kbId={selectedKbId} onKbIdChange={setSelectedKbId} />
-        )}
-        {activeTab === "tasks" && <TaskPanel />}
-        {activeTab === "settings" && <SettingsPanel />}
+      {/* Messages */}
+      <div style={{ flex: 1, overflow: "hidden" }}>
+        <MessageList />
       </div>
+
+      {/* Subtask progress */}
+      <SubtaskPanel />
+
+      {/* Input */}
+      <MessageInput />
     </div>
+  );
+}
+
+function WelcomeAction({
+  icon,
+  label,
+  onClick,
+  primary = false,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--space-2)",
+        padding: "var(--space-2) var(--space-4)",
+        border: primary ? "none" : "1px solid var(--border-primary)",
+        borderRadius: "var(--radius-xl)",
+        background: primary ? "var(--brand-primary)" : "var(--surface-primary)",
+        color: primary ? "var(--brand-foreground)" : "var(--text-secondary)",
+        fontSize: "var(--text-sm)",
+        fontWeight: 500,
+        cursor: "pointer",
+        transition: "all var(--transition-fast)",
+        boxShadow: primary ? "var(--shadow-md)" : "none",
+      }}
+      onMouseEnter={(e) => {
+        if (primary) {
+          e.currentTarget.style.background = "var(--brand-hover)";
+          e.currentTarget.style.boxShadow = "var(--shadow-lg)";
+        } else {
+          e.currentTarget.style.borderColor = "var(--interactive)";
+          e.currentTarget.style.color = "var(--interactive)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (primary) {
+          e.currentTarget.style.background = "var(--brand-primary)";
+          e.currentTarget.style.boxShadow = "var(--shadow-md)";
+        } else {
+          e.currentTarget.style.borderColor = "var(--border-primary)";
+          e.currentTarget.style.color = "var(--text-secondary)";
+        }
+      }}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

@@ -106,9 +106,10 @@ export interface ProviderMetadata {
 export interface KnowledgeBase {
   id: string;
   name: string;
-  description: string;
-  documentCount: number;
+  description: string | null;
+  documentCount?: number;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface DocumentInfo {

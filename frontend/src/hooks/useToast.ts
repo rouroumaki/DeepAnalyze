@@ -1,48 +1,12 @@
-// =============================================================================
-// DeepAnalyze - Toast Notification Hook
-// =============================================================================
-
-import { useCallback } from "react";
-
-type ToastType = "success" | "error" | "warning" | "info";
-
-interface ToastOptions {
-  duration?: number;
-}
-
-function showToast(
-  message: string,
-  type: ToastType = "info",
-  options: ToastOptions = {},
-) {
-  const duration = options.duration ?? 3000;
-  const container = document.getElementById("toast-container") || (() => {
-    const el = document.createElement("div");
-    el.id = "toast-container";
-    el.style.cssText = "position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;";
-    document.body.appendChild(el);
-    return el;
-  })();
-
-  const toast = document.createElement("div");
-  toast.className = `da-toast da-toast-${type}`;
-  toast.textContent = message;
-  toast.style.pointerEvents = "auto";
-  container.appendChild(toast);
-
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateX(20px)";
-    toast.style.transition = "all 0.3s ease";
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
-}
+import { useUIStore } from '../store/ui';
 
 export function useToast() {
-  const success = useCallback((msg: string) => showToast(msg, "success"), []);
-  const error = useCallback((msg: string) => showToast(msg, "error"), []);
-  const warning = useCallback((msg: string) => showToast(msg, "warning"), []);
-  const info = useCallback((msg: string) => showToast(msg, "info"), []);
+  const addToast = useUIStore((s) => s.addToast);
 
-  return { success, error, warning, info };
+  return {
+    success: (message: string) => addToast('success', message),
+    error: (message: string) => addToast('error', message),
+    warning: (message: string) => addToast('warning', message),
+    info: (message: string) => addToast('info', message),
+  };
 }

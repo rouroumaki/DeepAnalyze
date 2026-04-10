@@ -17,4 +17,15 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          icons: ['lucide-react'],
+          markdown: ['marked', 'dompurify', 'highlight.js'],
+        },
+      },
+    },
+  },
 })

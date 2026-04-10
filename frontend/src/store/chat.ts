@@ -39,6 +39,7 @@ interface ChatState {
   addStreamToolCall: (toolCall: ToolCallInfo) => void;
   updateStreamToolResult: (id: string, output: string, status: "completed" | "error") => void;
   finishStreaming: (fullContent: string, toolCalls?: ToolCallInfo[]) => void;
+  stopStreaming: () => void;
 
   // Agent task actions
   loadAgentTasks: (sessionId: string) => Promise<void>;
@@ -133,6 +134,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { currentSessionId } = get();
     if (!currentSessionId) return;
 
+    // Optimistically show user message in UI
     const userMessage: MessageInfo = {
       id: `temp-${Date.now()}`,
       role: "user",
@@ -146,9 +148,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     try {
-      await api.sendMessage(currentSessionId, content);
+      // Use runAgent which handles: saving user msg → running agent → saving assistant response
+      await api.runAgent(currentSessionId, content);
+
+      // Reload messages from server to get the real user msg + assistant response
+      const messages = await api.getMessages(currentSessionId);
+      set({ messages });
+
+      // Also reload agent tasks
+      const tasks = await api.getAgentTasks(currentSessionId).catch(() => []);
+      set({ agentTasks: tasks });
     } catch (err) {
       set({ error: String(err) });
+    } finally {
+      set({ isSending: false });
     }
   },
 
@@ -223,6 +236,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         m.id === s.streamingMessageId
           ? { ...m, content: fullContent, isStreaming: false, toolCalls: toolCalls ?? m.toolCalls }
           : m,
+      ),
+    }));
+  },
+
+  stopStreaming: () => {
+    set((s) => ({
+      isStreaming: false,
+      isSending: false,
+      streamingMessageId: null,
+      streamingContent: "",
+      streamingToolCalls: [],
+      messages: s.messages.map((m) =>
+        m.isStreaming ? { ...m, isStreaming: false } : m,
       ),
     }));
   },

@@ -40,8 +40,8 @@ interface UseWebSocketReturn {
   reconnectAttempts: number;
 }
 
-const MAX_RECONNECT_ATTEMPTS = 10;
-const BASE_DELAY = 1000;
+const MAX_RECONNECT_ATTEMPTS = 3;
+const BASE_DELAY = 5000;
 const MAX_DELAY = 30000;
 
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
@@ -174,11 +174,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           setReconnectAttempts(attemptsRef.current);
           setIsReconnecting(true);
 
+          if (attemptsRef.current === 1) {
+            console.warn("[WebSocket] Connection lost. Reconnecting...");
+          }
+
           reconnectTimerRef.current = setTimeout(() => {
             if (sessionIdRef.current && mountedRef.current) {
               connect(sessionIdRef.current);
             }
           }, delay);
+        }
+
+        if (attemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          console.warn("[WebSocket] Max reconnect attempts reached. Use HTTP for messaging.");
         }
       };
 

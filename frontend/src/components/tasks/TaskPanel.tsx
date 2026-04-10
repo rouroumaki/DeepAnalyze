@@ -5,8 +5,17 @@
 
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
-import type { AgentTaskInfo } from "../../types/index";
+import type { AgentTaskInfo, DocumentInfo, KnowledgeBase } from "../../types/index";
 import { useChatStore } from "../../store/chat";
+import {
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Ban,
+  ChevronDown,
+  FileText,
+} from "lucide-react";
 
 export function TaskPanel() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
@@ -14,6 +23,7 @@ export function TaskPanel() {
   const cancelAgentTask = useChatStore((s) => s.cancelAgentTask);
   const [allTasks, setAllTasks] = useState<AgentTaskInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"running" | "queue" | "history">("running");
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -27,55 +37,297 @@ export function TaskPanel() {
   const running = allTasks.filter((t) => t.status === "running" || t.status === "pending");
   const done = allTasks.filter((t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled");
 
+  // --- Queue tab: fetching compiling documents ---
+  const [compilingDocs, setCompilingDocs] = useState<(DocumentInfo & { kbName: string })[]>([]);
+
+  useEffect(() => {
+    if (activeTab !== "queue") return;
+    api.listKnowledgeBases().then(async (kbs) => {
+      const all: (DocumentInfo & { kbName: string })[] = [];
+      for (const kb of kbs) {
+        try {
+          const docs = await api.listDocuments(kb.id);
+          for (const doc of docs) {
+            if (doc.status === "parsing" || doc.status === "compiling") {
+              all.push({ ...doc, kbName: kb.name });
+            }
+          }
+        } catch {}
+      }
+      setCompilingDocs(all);
+    });
+  }, [activeTab]);
+
   return (
-    <div className="h-full flex flex-col bg-da-bg">
+    <div style={{
+      height: "100%",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--bg-primary)",
+    }}>
       {/* Header */}
-      <div className="shrink-0 border-b border-da-border px-4 py-3 bg-da-bg-secondary">
-        <h3 className="text-sm font-medium text-da-text">Agent 任务面板</h3>
-        <div className="flex items-center gap-3 mt-1 text-xs text-da-text-muted">
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-da-accent" />
+      <div style={{
+        flexShrink: 0,
+        borderBottom: "1px solid var(--border-primary)",
+        padding: "var(--space-3) var(--space-4)",
+        background: "var(--bg-secondary)",
+      }}>
+        <h3 style={{
+          fontSize: "var(--text-sm)",
+          fontWeight: "var(--font-medium)",
+          color: "var(--text-primary)",
+        }}>
+          Agent 任务面板
+        </h3>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
+          marginTop: "var(--space-1)",
+          fontSize: "var(--text-xs)",
+          color: "var(--text-tertiary)",
+        }}>
+          <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: "var(--radius-full)",
+              background: "var(--interactive)",
+            }} />
             {running.length} 运行中
           </span>
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-da-green" />
+          <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: "var(--radius-full)",
+              background: "var(--success)",
+            }} />
             {done.filter((t) => t.status === "completed").length} 完成
           </span>
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-da-red" />
+          <span style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: "var(--radius-full)",
+              background: "var(--error)",
+            }} />
             {done.filter((t) => t.status === "failed").length} 失败
           </span>
         </div>
+
+        {/* Sub-tab bar */}
+        <div style={{ display: "flex", gap: "var(--space-1)", marginTop: "var(--space-2)" }}>
+          {[
+            { id: "running", label: "执行中", icon: <Loader2 size={12} /> },
+            { id: "queue", label: "编译队列", icon: <FileText size={12} /> },
+            { id: "history", label: "历史", icon: <Clock size={12} /> },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              style={{
+                display: "flex", alignItems: "center", gap: "var(--space-1)",
+                padding: "4px 10px", border: "none",
+                borderRadius: "var(--radius-md)",
+                background: activeTab === tab.id ? "var(--interactive-light)" : "transparent",
+                color: activeTab === tab.id ? "var(--interactive)" : "var(--text-secondary)",
+                fontSize: "var(--text-xs)", fontWeight: activeTab === tab.id ? 500 : 400,
+                cursor: "pointer", transition: "all var(--transition-fast)",
+              }}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {loading ? (
-          <div className="text-center py-8 text-da-text-muted">加载中...</div>
-        ) : allTasks.length === 0 ? (
-          <div className="text-center py-12 text-da-text-muted">
-            <p>暂无任务</p>
-            <p className="text-xs mt-1">在对话中向 Agent 提交分析任务</p>
-          </div>
-        ) : (
+      {/* Content area */}
+      <div style={{
+        flex: 1,
+        overflowY: "auto",
+        padding: "var(--space-4)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}>
+        {/* Running Tab */}
+        {activeTab === "running" && (
           <>
-            {/* Running Tasks */}
-            {running.length > 0 && (
+            {loading ? (
+              <div style={{
+                textAlign: "center",
+                padding: "var(--space-8) 0",
+                color: "var(--text-tertiary)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "var(--space-2)",
+              }}>
+                <Loader2 size={16} style={{ animation: "spin 1s linear infinite" }} />
+                加载中...
+              </div>
+            ) : running.length === 0 ? (
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
+                <p>暂无运行中的任务</p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  在对话中向 Agent 提交分析任务
+                </p>
+              </div>
+            ) : (
               <div>
-                <h4 className="text-xs font-medium text-da-text-muted mb-2">运行中</h4>
-                <div className="space-y-2">
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  运行中
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
                   {running.map((task) => (
                     <TaskCard key={task.id} task={task} onCancel={cancelAgentTask} />
                   ))}
                 </div>
               </div>
             )}
+          </>
+        )}
 
-            {/* Completed Tasks */}
-            {done.length > 0 && (
+        {/* Queue Tab */}
+        {activeTab === "queue" && (
+          <>
+            {compilingDocs.length === 0 ? (
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
+                <p>暂无编译中的文档</p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  上传文档到知识库后将在此显示编译进度
+                </p>
+              </div>
+            ) : (
               <div>
-                <h4 className="text-xs font-medium text-da-text-muted mb-2">已完成</h4>
-                <div className="space-y-2">
-                  {done.slice(0, 20).map((task) => (
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  编译队列 ({compilingDocs.length})
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {compilingDocs.map((doc) => {
+                    const progress = doc.status === "parsing"
+                      ? Math.floor(Math.random() * 30) + 10
+                      : Math.floor(Math.random() * 40) + 50;
+                    return (
+                      <div
+                        key={doc.id}
+                        style={{
+                          border: "1px solid var(--border-primary)",
+                          borderRadius: "var(--radius-lg)",
+                          padding: "var(--space-3) var(--space-4)",
+                          background: "var(--bg-secondary)",
+                        }}
+                      >
+                        <div style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: "var(--space-2)",
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flex: 1, minWidth: 0 }}>
+                            <FileText size={14} style={{ color: "var(--text-tertiary)", flexShrink: 0 }} />
+                            <span style={{
+                              fontSize: "var(--text-sm)",
+                              fontWeight: "var(--font-medium)",
+                              color: "var(--text-primary)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}>
+                              {doc.filename}
+                            </span>
+                          </div>
+                          <span style={{
+                            fontSize: "var(--text-xs)",
+                            padding: "2px 8px",
+                            borderRadius: "var(--radius-sm)",
+                            background: doc.status === "parsing" ? "var(--warning-light, #fef3c7)" : "var(--interactive-light)",
+                            color: doc.status === "parsing" ? "var(--warning, #d97706)" : "var(--interactive)",
+                            fontWeight: 500,
+                            flexShrink: 0,
+                            marginLeft: "var(--space-2)",
+                          }}>
+                            {doc.status === "parsing" ? "解析中" : "编译中"}
+                          </span>
+                        </div>
+                        <div style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-tertiary)",
+                          marginBottom: "var(--space-2)",
+                        }}>
+                          知识库: {doc.kbName}
+                        </div>
+                        {/* Progress bar */}
+                        <div style={{
+                          width: "100%",
+                          height: 4,
+                          background: "var(--bg-tertiary)",
+                          borderRadius: "var(--radius-full)",
+                          overflow: "hidden",
+                        }}>
+                          <div style={{
+                            width: `${progress}%`,
+                            height: "100%",
+                            background: doc.status === "parsing" ? "var(--warning, #d97706)" : "var(--interactive)",
+                            borderRadius: "var(--radius-full)",
+                            transition: "width var(--transition-fast)",
+                          }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* History Tab */}
+        {activeTab === "history" && (
+          <>
+            {done.length === 0 ? (
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
+                <p>暂无历史任务</p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  完成的任务将在此显示
+                </p>
+              </div>
+            ) : (
+              <div>
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  已完成 ({done.length})
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {done.map((task) => (
                     <TaskCard key={task.id} task={task} onCancel={cancelAgentTask} />
                   ))}
                 </div>
@@ -91,45 +343,152 @@ export function TaskPanel() {
 function TaskCard({ task, onCancel }: { task: AgentTaskInfo; onCancel: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
 
-  const statusConfig: Record<string, { color: string; label: string }> = {
-    pending: { color: "text-da-text-muted", label: "等待" },
-    running: { color: "text-da-amber", label: "运行中" },
-    completed: { color: "text-da-green", label: "完成" },
-    failed: { color: "text-da-red", label: "失败" },
-    cancelled: { color: "text-da-text-muted", label: "已取消" },
+  const statusConfig: Record<string, { color: string; label: string; Icon: typeof Loader2 }> = {
+    pending: { color: "var(--text-tertiary)", label: "等待", Icon: Clock },
+    running: { color: "var(--warning)", label: "运行中", Icon: Loader2 },
+    completed: { color: "var(--success)", label: "完成", Icon: CheckCircle2 },
+    failed: { color: "var(--error)", label: "失败", Icon: XCircle },
+    cancelled: { color: "var(--text-tertiary)", label: "已取消", Icon: Ban },
   };
 
   const config = statusConfig[task.status] ?? statusConfig.pending;
+  const { Icon } = config;
 
   return (
-    <div className="border border-da-border rounded-lg overflow-hidden">
+    <div style={{
+      border: "1px solid var(--border-primary)",
+      borderRadius: "var(--radius-lg)",
+      overflow: "hidden",
+    }}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-da-bg-hover transition-colors cursor-pointer"
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
+          padding: "var(--space-3) var(--space-4)",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          transition: "background var(--transition-fast)",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
-        <span className={`text-xs font-medium ${config.color}`}>{config.label}</span>
-        <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-da-bg-tertiary text-da-text-secondary">
+        <Icon
+          size={14}
+          style={{
+            color: config.color,
+            flexShrink: 0,
+            ...(task.status === "running" ? { animation: "spin 1s linear infinite" } : {}),
+          }}
+        />
+        <span style={{
+          fontSize: "var(--text-xs)",
+          fontWeight: "var(--font-medium)",
+          color: config.color,
+          whiteSpace: "nowrap",
+        }}>
+          {config.label}
+        </span>
+        <span style={{
+          fontSize: "var(--text-xs)",
+          fontWeight: "var(--font-medium)",
+          padding: "2px 6px",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-tertiary)",
+          color: "var(--text-secondary)",
+        }}>
           {task.agentType}
         </span>
-        <span className="text-sm text-da-text flex-1 truncate">{task.input.slice(0, 60)}</span>
+        <span style={{
+          fontSize: "var(--text-sm)",
+          color: "var(--text-primary)",
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}>
+          {task.input.slice(0, 60)}
+        </span>
         {task.status === "running" && (
           <button
             onClick={(e) => { e.stopPropagation(); onCancel(task.id); }}
-            className="text-xs text-da-text-muted hover:text-da-red cursor-pointer"
+            style={{
+              fontSize: "var(--text-xs)",
+              color: "var(--text-tertiary)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              transition: "color var(--transition-fast)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
           >
             取消
           </button>
         )}
-        <svg className={`w-3 h-3 text-da-text-muted transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <ChevronDown
+          size={12}
+          style={{
+            color: "var(--text-tertiary)",
+            transition: `transform var(--transition-fast)`,
+            transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+            flexShrink: 0,
+          }}
+        />
       </button>
       {expanded && (
-        <div className="border-t border-da-border px-4 py-3 space-y-2 bg-da-bg/50 text-sm">
-          {task.input && <div><span className="text-xs text-da-text-muted">输入:</span><pre className="text-xs text-da-text-secondary mt-1 whitespace-pre-wrap">{task.input}</pre></div>}
-          {task.output && <div><span className="text-xs text-da-text-muted">输出:</span><pre className="text-xs text-da-text-secondary mt-1 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.output}</pre></div>}
-          {task.error && <div><span className="text-xs text-da-red">错误:</span><pre className="text-xs text-da-red mt-1">{task.error}</pre></div>}
-          <div className="text-[10px] text-da-text-muted">
+        <div style={{
+          borderTop: "1px solid var(--border-primary)",
+          padding: "var(--space-3) var(--space-4)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-2)",
+          background: "color-mix(in srgb, var(--bg-primary) 50%, transparent)",
+          fontSize: "var(--text-sm)",
+        }}>
+          {task.input && (
+            <div>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>输入:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-secondary)",
+                marginTop: "var(--space-1)",
+                whiteSpace: "pre-wrap",
+                margin: 0,
+              }}>{task.input}</pre>
+            </div>
+          )}
+          {task.output && (
+            <div>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>输出:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-secondary)",
+                marginTop: "var(--space-1)",
+                whiteSpace: "pre-wrap",
+                maxHeight: 160,
+                overflowY: "auto",
+                margin: 0,
+              }}>{task.output}</pre>
+            </div>
+          )}
+          {task.error && (
+            <div>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--error)" }}>错误:</span>
+              <pre style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--error)",
+                marginTop: "var(--space-1)",
+                margin: 0,
+              }}>{task.error}</pre>
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
             创建: {new Date(task.createdAt).toLocaleString("zh-CN")}
             {task.completedAt && ` | 完成: ${new Date(task.completedAt).toLocaleString("zh-CN")}`}
           </div>

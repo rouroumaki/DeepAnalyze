@@ -40,13 +40,22 @@ if (typeof Bun !== "undefined") {
   Bun.serve({
     port,
     fetch: app.fetch,
+    idleTimeout: 0,  // Disable idle timeout for SSE streaming
   });
   console.log(`DeepAnalyze server running on http://localhost:${port}`);
   console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
 } else {
   // Node.js runtime (fallback)
   import("@hono/node-server").then(({ serve }) => {
-    serve({ fetch: app.fetch, port });
+    const server = serve({ fetch: app.fetch, port });
+
+    // Set long timeouts for SSE streaming (agent runs can take minutes)
+    // Default Node.js requestTimeout is 5min which is too short for long agent runs
+    server.setTimeout(0);           // Disable socket timeout entirely
+    server.requestTimeout = 0;      // Disable request timeout (Node 18.0+)
+    server.headersTimeout = 0;      // Disable headers timeout (Node 18.0+)
+    server.keepAliveTimeout = 0;    // Disable keep-alive timeout
+
     console.log(`DeepAnalyze server running on http://localhost:${port}`);
     console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
   });

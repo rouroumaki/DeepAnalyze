@@ -3,13 +3,15 @@
 // Knowledge base browser with search, document management, and wiki browsing
 // =============================================================================
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useConfirm } from "../../hooks/useConfirm";
+import { useFileUpload } from "../../hooks/useFileUpload";
 import type { KnowledgeBase, DocumentInfo } from "../../types/index";
 import { WikiBrowser } from "./WikiBrowser";
 import { EntityPage } from "./EntityPage";
+import { DropZone } from "../ui/DropZone";
 import {
   Database,
   Plus,
@@ -26,6 +28,7 @@ import {
   FolderOpen,
   Settings,
   Eye,
+  Loader2,
 } from "lucide-react";
 
 interface KnowledgePanelProps {
@@ -77,6 +80,7 @@ const STATUS_CONFIG: Record<
 export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const { success, error: toastError } = useToast();
   const confirm = useConfirm();
+  const fileUpload = useFileUpload();
 
   // --- Data state ---
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -93,7 +97,6 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
 
   // --- UI state ---
   const [isSearching, setIsSearching] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("documents");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKbName, setNewKbName] = useState("");
@@ -102,18 +105,25 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [healthResults, setHealthResults] = useState<HealthCheckResult[]>([]);
   const [isHealthChecking, setIsHealthChecking] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoadingKbs, setIsLoadingKbs] = useState(true);
 
   // --- Load knowledge bases ---
   const loadKnowledgeBases = useCallback(async () => {
+    setIsLoadingKbs(true);
+    setLoadError(null);
     try {
       const kbs = await api.listKnowledgeBases();
-      setKnowledgeBases(kbs);
-      if (kbs.length > 0 && !kbId) {
+      setKnowledgeBases(Array.isArray(kbs) ? kbs : []);
+      if (Array.isArray(kbs) && kbs.length > 0 && !kbId) {
         onKbIdChange(kbs[0].id);
       }
-    } catch {
-      // Endpoint may not exist yet
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLoadError(msg);
+      console.error("[KnowledgePanel] Failed to load knowledge bases:", msg);
+    } finally {
+      setIsLoadingKbs(false);
     }
   }, [kbId, onKbIdChange]);
 
@@ -147,31 +157,30 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
     }
   };
 
-  const handleUpload = async (file: File) => {
-    if (!kbId) {
-      toastError("请先选择知识库");
-      return;
-    }
-    setIsUploading(true);
+
+  const refreshDocuments = useCallback(async () => {
+    if (!kbId) return;
     try {
-      await api.uploadDocument(kbId, file);
-      success(`文件 ${file.name} 上传成功`);
       const docs = await api.listDocuments(kbId);
       setDocuments(docs);
     } catch {
-      toastError("上传失败");
-    } finally {
-      setIsUploading(false);
+      // silently refresh
     }
-  };
+  }, [kbId]);
 
   const handleDeleteDocument = async (docId: string) => {
     if (!kbId) return;
+    const confirmed = await confirm({
+      title: "删除文档",
+      message: "确定要删除该文档吗？此操作不可撤销。",
+      confirmLabel: "删除",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     try {
       await api.deleteDocument(kbId, docId);
       success("文档已删除");
-      const docs = await api.listDocuments(kbId);
-      setDocuments(docs);
+      refreshDocuments();
     } catch {
       toastError("删除失败");
     }
@@ -219,13 +228,38 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
     setIsHealthChecking(true);
     setHealthResults([]);
     try {
-      // Placeholder health check logic
-      await new Promise((r) => setTimeout(r, 1500));
-      setHealthResults([
-        { name: "索引服务", status: "ok", message: "索引服务正常运行" },
-        { name: "向量数据库", status: "ok", message: "向量数据库连接正常" },
-        { name: "Wiki 解析器", status: "ok", message: "Wiki 解析器可用" },
-      ]);
+      const results: HealthCheckResult[] = [];
+      // Check backend health
+      try {
+        const health = await api.health();
+        results.push({
+          name: "后端服务",
+          status: "ok",
+          message: `服务正常运行 (${health.version || "unknown version"})`,
+        });
+      } catch {
+        results.push({
+          name: "后端服务",
+          status: "error",
+          message: "后端服务不可达",
+        });
+      }
+      // Check KB documents accessibility
+      try {
+        const docs = await api.listDocuments(kbId);
+        results.push({
+          name: "知识库索引",
+          status: "ok",
+          message: `索引正常，${docs.length} 个文档`,
+        });
+      } catch {
+        results.push({
+          name: "知识库索引",
+          status: "error",
+          message: "无法读取知识库文档列表",
+        });
+      }
+      setHealthResults(results);
     } catch {
       setHealthResults([
         { name: "健康检查", status: "error", message: "无法完成健康检查" },
@@ -326,7 +360,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               backgroundColor: "var(--interactive)",
               color: "#fff",
               fontSize: "var(--text-sm)",
-              fontWeight: "var(--font-medium)" as number,
+              fontWeight: "var(--font-medium)",
               borderRadius: "var(--radius-md)",
               border: "none",
               cursor: "pointer",
@@ -367,7 +401,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   gap: "var(--space-1)",
                   padding: "var(--space-1) var(--space-3)",
                   fontSize: "var(--text-xs)",
-                  fontWeight: "var(--font-medium)" as number,
+                  fontWeight: "var(--font-medium)",
                   borderRadius: "var(--radius-sm)",
                   border: "none",
                   cursor: "pointer",
@@ -417,15 +451,81 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               color: "var(--text-tertiary)",
             }}
           >
-            <FolderOpen
-              size={40}
-              style={{
-                margin: "0 auto var(--space-3)",
-                opacity: 0.4,
-                display: "block",
-              }}
-            />
-            <p style={{ fontSize: "var(--text-sm)" }}>请选择或创建一个知识库</p>
+            {isLoadingKbs ? (
+              <>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    border: "3px solid var(--border-primary)",
+                    borderTopColor: "var(--interactive)",
+                    borderRadius: "50%",
+                    animation: "spin 1s linear infinite",
+                    margin: "0 auto var(--space-3)",
+                  }}
+                />
+                <p style={{ fontSize: "var(--text-sm)" }}>加载知识库列表...</p>
+              </>
+            ) : loadError ? (
+              <>
+                <AlertCircle
+                  size={40}
+                  style={{
+                    margin: "0 auto var(--space-3)",
+                    display: "block",
+                    color: "var(--error)",
+                  }}
+                />
+                <p style={{ fontSize: "var(--text-sm)", color: "var(--error)" }}>
+                  加载知识库失败
+                </p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)", maxWidth: 400, margin: "var(--space-1) auto 0" }}>
+                  {loadError}
+                </p>
+                <button
+                  onClick={loadKnowledgeBases}
+                  style={{
+                    marginTop: "var(--space-3)",
+                    padding: "var(--space-2) var(--space-4)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-md)",
+                    background: "var(--surface-primary)",
+                    fontSize: "var(--text-sm)",
+                    cursor: "pointer",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  重试
+                </button>
+              </>
+            ) : knowledgeBases.length === 0 ? (
+              <>
+                <FolderOpen
+                  size={40}
+                  style={{
+                    margin: "0 auto var(--space-3)",
+                    opacity: 0.4,
+                    display: "block",
+                  }}
+                />
+                <p style={{ fontSize: "var(--text-sm)" }}>暂无知识库</p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  点击上方"新建"按钮创建一个知识库
+                </p>
+              </>
+            ) : (
+              <>
+                <FolderOpen
+                  size={40}
+                  style={{
+                    margin: "0 auto var(--space-3)",
+                    opacity: 0.4,
+                    display: "block",
+                  }}
+                />
+                <p style={{ fontSize: "var(--text-sm)" }}>请选择或创建一个知识库</p>
+              </>
+            )}
           </div>
         ) : navigatingEntity ? (
           /* Entity Navigation Page */
@@ -437,34 +537,119 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
           />
         ) : activeTab === "documents" ? (
           /* Documents Tab */
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-            {documents.length === 0 ? (
-              <div
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {/* Upload toolbar */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
+                {documents.length > 0 ? `${documents.length} 个文档` : ""}
+              </span>
+              <button
+                onClick={async () => {
+                  if (!kbId) { toastError("请先选择知识库"); return; }
+                  const files = await fileUpload.selectFiles(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
+                  if (files && files.length > 0) {
+                    const results = await fileUpload.uploadToKb(kbId);
+                    if (results.length > 0) {
+                      success(`成功上传 ${results.length} 个文件`);
+                      refreshDocuments();
+                    }
+                  }
+                }}
+                disabled={fileUpload.hasPending}
                 style={{
-                  textAlign: "center",
-                  padding: "var(--space-12) 0",
-                  color: "var(--text-tertiary)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-1)",
+                  padding: "var(--space-2) var(--space-3)",
+                  backgroundColor: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--interactive)",
+                  color: "#fff",
+                  fontSize: "var(--text-sm)",
+                  fontWeight: "var(--font-medium)",
+                  borderRadius: "var(--radius-md)",
+                  border: "none",
+                  cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
+                  opacity: fileUpload.hasPending ? 0.6 : 1,
+                  transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(e) => {
+                  if (!fileUpload.hasPending)
+                    e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
+                }}
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.backgroundColor = "var(--interactive)")
+                }
+              >
+                {fileUpload.hasPending ? (
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <Upload size={14} />
+                )}
+                {fileUpload.hasPending ? "上传中..." : "上传文档"}
+              </button>
+            </div>
+
+            {/* Upload progress indicators */}
+            {fileUpload.uploads.filter((u) => u.status === "uploading" || u.status === "error").map((upload) => (
+              <div
+                key={upload.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-3)",
+                  padding: "var(--space-3) var(--space-4)",
+                  backgroundColor: upload.status === "error" ? "var(--error-light)" : "var(--bg-tertiary)",
+                  border: upload.status === "error" ? "1px solid var(--error)" : "1px solid var(--border-primary)",
+                  borderRadius: "var(--radius-lg)",
                 }}
               >
-                <FileText
-                  size={40}
-                  style={{
-                    margin: "0 auto var(--space-3)",
-                    opacity: 0.4,
-                    display: "block",
+                {upload.status === "uploading" ? (
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--interactive)" }} />
+                ) : (
+                  <AlertCircle size={14} style={{ color: "var(--error)" }} />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: "var(--text-sm)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {upload.file.name}
+                  </p>
+                  {upload.status === "uploading" && (
+                    <div style={{ marginTop: "var(--space-1)", height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
+                      <div style={{ width: `${upload.progress}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
+                    </div>
+                  )}
+                  {upload.status === "error" && (
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--error)", margin: "var(--space-1) 0 0" }}>
+                      上传失败
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {documents.length === 0 && fileUpload.uploads.length === 0 ? (
+              /* Empty state with DropZone */
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", alignItems: "center" }}>
+                <DropZone
+                  onFiles={async (files) => {
+                    if (!kbId) { toastError("请先选择知识库"); return; }
+                    fileUpload.addFiles(files);
+                    const results = await fileUpload.uploadToKb(kbId);
+                    if (results.length > 0) {
+                      success(`成功上传 ${results.length} 个文件`);
+                      refreshDocuments();
+                    }
                   }}
+                  accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm"
+                  label="拖拽文件到此处上传"
+                  hint="或点击选择文件"
+                  style={{ width: "100%" }}
                 />
-                <p style={{ fontSize: "var(--text-sm)" }}>暂无文档</p>
-                <p
-                  style={{
-                    fontSize: "var(--text-xs)",
-                    marginTop: "var(--space-1)",
-                  }}
-                >
-                  切换到 Wiki 标签添加文档
+                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                  支持 PDF、Word、TXT、Markdown、CSV 等格式
                 </p>
               </div>
             ) : (
+              /* Document list */
               documents.map((doc) => {
                 const statusCfg = STATUS_CONFIG[doc.status] ?? {
                   label: doc.status,
@@ -542,7 +727,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                         gap: "var(--space-1)",
                         color: statusCfg.color,
                         fontSize: "var(--text-xs)",
-                        fontWeight: "var(--font-medium)" as number,
+                        fontWeight: "var(--font-medium)",
                         flexShrink: 0,
                       }}
                     >
@@ -620,7 +805,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                     flex: 1,
                     padding: "var(--space-1) var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)" as number,
+                    fontWeight: "var(--font-medium)",
                     borderRadius: "var(--radius-sm)",
                     border: "none",
                     cursor: "pointer",
@@ -707,7 +892,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   backgroundColor: "var(--interactive)",
                   color: "#fff",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)" as number,
+                  fontWeight: "var(--font-medium)",
                   borderRadius: "var(--radius-lg)",
                   border: "none",
                   cursor: isSearching ? "not-allowed" : "pointer",
@@ -770,7 +955,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                       <span
                         style={{
                           fontSize: "var(--text-xs)",
-                          fontWeight: "var(--font-semibold)" as number,
+                          fontWeight: "var(--font-semibold)",
                           padding: "2px var(--space-1)",
                           borderRadius: "var(--radius-sm)",
                           backgroundColor: "var(--interactive-light)",
@@ -847,7 +1032,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 style={{
                   margin: "0 0 var(--space-3)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                   display: "flex",
                   alignItems: "center",
@@ -971,7 +1156,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 style={{
                   margin: "0 0 var(--space-3)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                   display: "flex",
                   alignItems: "center",
@@ -992,7 +1177,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   backgroundColor: "var(--interactive)",
                   color: "#fff",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)" as number,
+                  fontWeight: "var(--font-medium)",
                   borderRadius: "var(--radius-md)",
                   border: "none",
                   cursor: isHealthChecking ? "not-allowed" : "pointer",
@@ -1077,7 +1262,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                       )}
                       <span
                         style={{
-                          fontWeight: "var(--font-medium)" as number,
+                          fontWeight: "var(--font-medium)",
                           color: "var(--text-primary)",
                           flexShrink: 0,
                         }}
@@ -1111,7 +1296,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 style={{
                   margin: "0 0 var(--space-2)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--error)",
                 }}
               >
@@ -1136,7 +1321,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   backgroundColor: "transparent",
                   color: "var(--error)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)" as number,
+                  fontWeight: "var(--font-medium)",
                   borderRadius: "var(--radius-md)",
                   border: "1px solid var(--error)",
                   cursor: "pointer",
@@ -1214,7 +1399,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 style={{
                   margin: 0,
                   fontSize: "var(--text-base)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                 }}
               >
@@ -1331,7 +1516,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   gap: "var(--space-1)",
                   padding: "var(--space-2) var(--space-4)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)" as number,
+                  fontWeight: "var(--font-medium)",
                   color: "#fff",
                   backgroundColor:
                     !newKbName.trim() || isCreating
@@ -1366,13 +1551,6 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
         </div>
       )}
 
-      {/* Spinner keyframe (used for upload spinner) */}
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }

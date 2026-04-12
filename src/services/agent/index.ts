@@ -27,6 +27,15 @@ export type {
   AgentEvent,
   AgentResult,
   AgentRunOptions,
+  SessionMemoryNote,
+  AgentSettings,
 } from "./types.js";
+export { DEFAULT_AGENT_SETTINGS } from "./types.js";
 export type { SubTask, OrchestratorResult } from "./orchestrator.js";
 export { getOrchestrator, getCompounder, getPluginManager, resetOrchestrator, isOrchestratorReady } from "./agent-system.js";
+export { ContextManager } from "./context-manager.js";
+export { CompactionEngine } from "./compaction.js";
+export { MicroCompactor } from "./micro-compact.js";
+export { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
+export { AutoDreamManager } from "./auto-dream.js";
+export { validateMessageSequence, repairMessageSequence } from "./message-utils.js";

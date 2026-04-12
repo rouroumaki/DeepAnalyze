@@ -35,7 +35,8 @@ let initPromise: Promise<Orchestrator> | null = null;
  *   3. Indexer, Linker, Retriever, Expander (wiki subsystem)
  *   4. ToolRegistry (via createConfiguredToolRegistry)
  *   5. AgentRunner (registers all built-in agents)
- *   6. Orchestrator
+ *   6. KnowledgeCompounder
+ *   7. Orchestrator (with auto-dream support)
  *
  * Subsequent calls return the same cached instance.
  */
@@ -170,22 +171,22 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   runner.registerAgents(BUILT_IN_AGENTS);
   console.log("[AgentSystem] AgentRunner initialized with built-in agents");
 
-  // Step 6: Orchestrator
-  const orchestrator = new Orchestrator(runner);
+  // Step 6: Knowledge Compounder (for write-back of agent results and auto-dream)
+  const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
+  compounderInstance = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
+  console.log("[AgentSystem] KnowledgeCompounder initialized");
+
+  // Step 7: Orchestrator (with auto-dream support)
+  const orchestrator = new Orchestrator(runner, modelRouter, compounderInstance, linker);
   console.log("[AgentSystem] Orchestrator ready");
 
-  // Step 7: Plugin Manager
+  // Step 8: Plugin Manager
   const { PluginManager } = await import("../plugins/plugin-manager.js");
   const pluginManager = new PluginManager(toolRegistry);
   pluginManager.setAgentRunner(runner);
   pluginManager.loadFromDatabase();
   pluginManagerInstance = pluginManager;
   console.log("[AgentSystem] PluginManager initialized");
-
-  // Step 8: Knowledge Compounder (for write-back of agent results)
-  const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
-  compounderInstance = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
-  console.log("[AgentSystem] KnowledgeCompounder initialized");
 
   // Step 9: Register built-in skills
   const { BUILT_IN_SKILLS } = await import("../skills/built-in-skills.js");

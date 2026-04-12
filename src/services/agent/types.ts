@@ -108,7 +108,9 @@ export type AgentEvent =
   | { type: "progress"; taskId: string; progress: AgentProgressEntry }
   | { type: "complete"; taskId: string; output: string }
   | { type: "error"; taskId: string; error: string }
-  | { type: "cancelled"; taskId: string };
+  | { type: "cancelled"; taskId: string }
+  | { type: "compaction"; taskId: string; turn: number; method: string; tokensSaved: number }
+  | { type: "advisory_limit_reached"; taskId: string; turn: number };
 
 // ---------------------------------------------------------------------------
 // Result
@@ -123,6 +125,7 @@ export interface AgentResult {
   toolCallsCount: number;
   turnsUsed: number;
   usage: { inputTokens: number; outputTokens: number };
+  compactionEvents?: Array<{ turn: number; method: string; tokensSaved: number }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +158,8 @@ export interface AgentRunOptions {
   systemPromptOverride?: string;
   /** Optional tool override (used for skill execution). */
   toolsOverride?: string[];
+  /** Enable continuous running mode (default: true). When true, uses while(true) loop. */
+  continuous?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,3 +171,59 @@ export interface AgentRunOptions {
 
 export type { ToolCall } from "../../models/provider.js";
 export type { ChatMessage, ChatResponse } from "../../models/provider.js";
+
+// ---------------------------------------------------------------------------
+// Session Memory
+// ---------------------------------------------------------------------------
+
+/**
+ * A structured memory note extracted from a conversation session.
+ * Stored in the session_memory table and injected into the system prompt.
+ */
+export interface SessionMemoryNote {
+  id: string;
+  sessionId: string;
+  content: string;
+  tokenCount: number;
+  lastTokenPosition: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Settings (configurable via frontend)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runtime-configurable agent parameters.
+ * Stored in the settings table under the 'agent_settings' key.
+ */
+export interface AgentSettings {
+  /** Maximum turns per agent task. -1 = unlimited. Default: 50 */
+  maxTurns: number;
+  /** Context window size in tokens. Default: 128000 */
+  contextWindow: number;
+  /** Compaction buffer in tokens. Default: 13000 */
+  compactionBuffer: number;
+  /** Token threshold to initialize session memory. Default: 10000 */
+  sessionMemoryInitThreshold: number;
+  /** Token increment between session memory updates. Default: 5000 */
+  sessionMemoryUpdateInterval: number;
+  /** Number of recent assistant turns to keep tool results for. Default: 10 */
+  microcompactKeepTurns: number;
+  /** Minimum hours between auto-dream runs. Default: 24 */
+  autoDreamIntervalHours: number;
+  /** Minimum sessions before auto-dream triggers. Default: 5 */
+  autoDreamSessionThreshold: number;
+}
+
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  maxTurns: 50,
+  contextWindow: 128_000,
+  compactionBuffer: 13_000,
+  sessionMemoryInitThreshold: 10_000,
+  sessionMemoryUpdateInterval: 5_000,
+  microcompactKeepTurns: 10,
+  autoDreamIntervalHours: 24,
+  autoDreamSessionThreshold: 5,
+};

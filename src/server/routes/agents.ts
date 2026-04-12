@@ -5,14 +5,14 @@
 // single agent tasks, coordinated multi-agent workflows, querying task status,
 // and cancelling running tasks.
 //
-// The routes receive an Orchestrator instance via the factory function
-// `createAgentRoutes` to avoid circular dependencies and allow lazy
-// initialization.
+// Context management (session memory, auto-compaction) is now handled
+// internally by AgentRunner — no external context loading needed here.
 // =============================================================================
 
 import { Hono } from "hono";
+import { stream } from "hono/streaming";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
-import type { AgentTask } from "../../services/agent/types.js";
+import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
 import { getCompounder, getPluginManager } from "../../services/agent/agent-system.js";
 import * as messageStore from "../../store/messages.js";
 import * as sessionStore from "../../store/sessions.js";
@@ -54,6 +54,7 @@ interface RunSkillRequest {
  *
  * Routes:
  *   POST /run              - Run a single agent task
+ *   POST /run-stream       - Run agent with SSE streaming
  *   POST /run-coordinated  - Run a coordinated multi-agent workflow
  *   POST /run-skill        - Run a skill as an agent task
  *   GET  /tasks/:sessionId - List agent tasks for a session
@@ -113,7 +114,6 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
             result.output,
           );
         } catch (compoundingErr) {
-          // Compounding failure should not break the response; log and continue
           console.warn(
             "[Agents] Knowledge compounding failed:",
             compoundingErr instanceof Error ? compoundingErr.message : String(compoundingErr),
@@ -128,6 +128,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         turnsUsed: result.turnsUsed,
         usage: result.usage,
         compoundedPageId,
+        compactionEvents: result.compactionEvents,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -140,6 +141,181 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         500,
       );
     }
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /run-stream - Run agent with SSE streaming
+  // -----------------------------------------------------------------------
+  router.post("/run-stream", async (c) => {
+    const body = await c.req.json<RunRequest>();
+
+    if (!body.sessionId || !body.input) {
+      return c.json({ error: "sessionId and input are required" }, 400);
+    }
+
+    const session = sessionStore.getSession(body.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+
+    // Save user message
+    messageStore.createMessage(body.sessionId, "user", body.input);
+
+    // Set up SSE response
+    c.header("Content-Type", "text/event-stream");
+    c.header("Cache-Control", "no-cache");
+    c.header("Connection", "keep-alive");
+    c.header("X-Accel-Buffering", "no");
+
+    return stream(c, async (s) => {
+      // Helper to send SSE events
+      const sendEvent = (event: string, data: unknown) => {
+        s.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      // Keepalive heartbeat to prevent proxy/server timeout on long-running agents.
+      let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+        s.write(": keepalive\n\n");
+      }, 15_000);
+
+      // Collect tool calls for the final message
+      const toolCalls: Array<{
+        id: string;
+        toolName: string;
+        input: Record<string, unknown>;
+        output?: string;
+        status: "running" | "completed" | "error";
+      }> = [];
+
+      let fullContent = "";
+      let taskId = "";
+
+      const onEvent = (event: AgentEvent) => {
+        switch (event.type) {
+          case "start":
+            taskId = event.taskId;
+            sendEvent("start", { taskId: event.taskId, agentType: event.agentType });
+            break;
+
+          case "turn":
+            sendEvent("turn", { turn: event.turn, taskId: event.taskId });
+            break;
+
+          case "tool_call": {
+            const tcId = `${event.taskId}-tc-${event.turn}-${event.toolName}`;
+            const tc = {
+              id: tcId,
+              toolName: event.toolName,
+              input: event.input,
+              status: "running" as const,
+            };
+            toolCalls.push(tc);
+            sendEvent("tool_call", tc);
+            break;
+          }
+
+          case "tool_result": {
+            const tcId = `${event.taskId}-tc-${event.turn}-${event.toolName}`;
+            const existingTc = toolCalls.find((tc) => tc.id === tcId);
+            const outputStr = typeof event.result === "string"
+              ? event.result
+              : JSON.stringify(event.result);
+            if (existingTc) {
+              existingTc.status = "completed";
+              existingTc.output = outputStr;
+            }
+            sendEvent("tool_result", { id: tcId, toolName: event.toolName, output: outputStr });
+            break;
+          }
+
+          case "progress":
+            if (event.progress.type === "text" && event.progress.content) {
+              fullContent += event.progress.content;
+              sendEvent("content", { content: event.progress.content, accumulated: fullContent });
+            }
+            sendEvent("progress", event.progress);
+            break;
+
+          case "compaction":
+            sendEvent("compaction", {
+              taskId: event.taskId,
+              turn: event.turn,
+              method: event.method,
+              tokensSaved: event.tokensSaved,
+            });
+            break;
+
+          case "advisory_limit_reached":
+            sendEvent("advisory_limit_reached", {
+              taskId: event.taskId,
+              turn: event.turn,
+            });
+            break;
+
+          case "complete":
+            sendEvent("complete", { taskId: event.taskId, output: event.output, toolCalls });
+            break;
+
+          case "error":
+            sendEvent("error", { taskId: event.taskId, error: event.error });
+            break;
+
+          case "cancelled":
+            sendEvent("cancelled", { taskId: event.taskId });
+            break;
+        }
+      };
+
+      try {
+        const result = await orchestrator.runSingle({
+          input: body.input,
+          agentType: body.agentType || "general",
+          sessionId: body.sessionId,
+          maxTurns: body.maxTurns,
+          onEvent,
+        });
+
+        // Save assistant response
+        const savedContent = fullContent || result.output;
+        if (savedContent) {
+          messageStore.createMessage(body.sessionId, "assistant", savedContent);
+        }
+
+        // Auto-compound if kbId provided
+        if (body.kbId && savedContent) {
+          try {
+            const compounder = await getCompounder();
+            compounder.compoundAgentResult(
+              body.kbId,
+              body.agentType || "general",
+              body.input,
+              savedContent,
+            );
+          } catch {
+            // Non-critical
+          }
+        }
+
+        // Send done event with final metadata
+        sendEvent("done", {
+          taskId: result.taskId,
+          status: "completed",
+          turnsUsed: result.turnsUsed,
+          usage: result.usage,
+          compactionEvents: result.compactionEvents,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        sendEvent("error", { taskId: taskId || "unknown", error: errorMsg });
+        sendEvent("done", { taskId: taskId || "unknown", status: "failed", error: errorMsg });
+      } finally {
+        // Stop keepalive heartbeat
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+      }
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -364,16 +540,6 @@ async function startCoordinatedRun(
   input: string,
   sessionId: string,
 ): Promise<string> {
-  // We need to start the run but return the ID before it completes.
-  // The Orchestrator's runCoordinated creates a parent task record at the
-  // start, so we use a two-phase approach:
-  //   1. Start the coordinated run asynchronously (fire-and-forget)
-  //   2. Give the orchestrator a moment to create the parent task record,
-  //      then look it up.
-  //
-  // A simpler approach: start the run and let the promise run in background.
-  // The client polls GET /tasks/:sessionId to see progress.
-
   // Fire off the coordinated run without awaiting it.
   const runPromise = orchestrator.runCoordinated(input, {
     sessionId,
@@ -394,8 +560,6 @@ async function startCoordinatedRun(
   });
 
   // Give the orchestrator a tick to create the parent task in the DB.
-  // The runCoordinated method creates the parent task record synchronously
-  // at the start, so after one microtask tick the row should exist.
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   // Look up the latest coordinator task for this session.

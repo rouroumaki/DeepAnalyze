@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { Spinner } from "../ui/Spinner";
+import { useToast } from "../../hooks/useToast";
 import {
   ArrowLeft,
   Tag,
@@ -47,7 +48,9 @@ export function EntityPage({
   // --- State ---
   const [results, setResults] = useState<WikiResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [relatedEntities, setRelatedEntities] = useState<string[]>([]);
+  const { error: toastError } = useToast();
 
   // --- Markdown rendering for top result content ---
   const topContent = results.length > 0 ? results[0].content : "";
@@ -59,6 +62,7 @@ export function EntityPage({
 
     const fetchData = async () => {
       setIsLoading(true);
+      setError(null);
       try {
         const resp = await api.searchWiki(kbId, entityName);
         if (cancelled) return;
@@ -85,8 +89,11 @@ export function EntityPage({
           }
         });
         setRelatedEntities(Array.from(entitySet));
-      } catch {
-        if (!cancelled) setResults([]);
+      } catch (err) {
+        if (!cancelled) {
+          setResults([]);
+          setError(err instanceof Error ? err.message : "加载实体数据失败");
+        }
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -177,7 +184,7 @@ export function EntityPage({
             style={{
               margin: 0,
               fontSize: "var(--text-lg)",
-              fontWeight: "var(--font-semibold)" as number,
+              fontWeight: "var(--font-semibold)",
               color: "var(--text-primary)",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -243,6 +250,49 @@ export function EntityPage({
           >
             <Spinner size="lg" />
           </div>
+        ) : error ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "var(--space-12) 0",
+              color: "var(--error)",
+            }}
+          >
+            <Tag
+              size={40}
+              style={{
+                margin: "0 auto var(--space-3)",
+                display: "block",
+              }}
+            />
+            <p style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-2)" }}>
+              加载失败
+            </p>
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: "0 0 var(--space-3)" }}>
+              {error}
+            </p>
+            <button
+              onClick={() => {
+                setError(null);
+                setIsLoading(true);
+                api.searchWiki(kbId, entityName)
+                  .then((resp) => { setResults(resp.results); })
+                  .catch((err) => { setError(err instanceof Error ? err.message : "加载失败"); })
+                  .finally(() => setIsLoading(false));
+              }}
+              style={{
+                padding: "var(--space-2) var(--space-4)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-md)",
+                background: "var(--surface-primary)",
+                fontSize: "var(--text-sm)",
+                cursor: "pointer",
+                color: "var(--text-secondary)",
+              }}
+            >
+              重试
+            </button>
+          </div>
         ) : results.length === 0 ? (
           <div
             style={{
@@ -281,7 +331,7 @@ export function EntityPage({
                   margin: 0,
                   marginBottom: "var(--space-2)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                 }}
               >
@@ -291,7 +341,7 @@ export function EntityPage({
                 style={{
                   fontSize: "var(--text-sm)",
                   color: "var(--text-secondary)",
-                  lineHeight: "var(--leading-relaxed)" as number,
+                  lineHeight: "var(--leading-relaxed)",
                   padding: "var(--space-3) var(--space-4)",
                   backgroundColor: "var(--bg-tertiary)",
                   borderRadius: "var(--radius-lg)",
@@ -310,7 +360,7 @@ export function EntityPage({
                   margin: 0,
                   marginBottom: "var(--space-2)",
                   fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                   display: "flex",
                   alignItems: "center",
@@ -340,7 +390,7 @@ export function EntityPage({
                     <p
                       style={{
                         fontSize: "var(--text-sm)",
-                        fontWeight: "var(--font-medium)" as number,
+                        fontWeight: "var(--font-medium)",
                         color: "var(--text-primary)",
                         margin: 0,
                         overflow: "hidden",
@@ -379,7 +429,7 @@ export function EntityPage({
                     margin: 0,
                     marginBottom: "var(--space-2)",
                     fontSize: "var(--text-sm)",
-                    fontWeight: "var(--font-semibold)" as number,
+                    fontWeight: "var(--font-semibold)",
                     color: "var(--text-primary)",
                     display: "flex",
                     alignItems: "center",
@@ -406,7 +456,7 @@ export function EntityPage({
                         gap: "var(--space-1)",
                         padding: "var(--space-1) var(--space-3)",
                         fontSize: "var(--text-xs)",
-                        fontWeight: "var(--font-medium)" as number,
+                        fontWeight: "var(--font-medium)",
                         backgroundColor: "var(--interactive-light)",
                         border: "1px solid transparent",
                         borderRadius: "var(--radius-full)",
@@ -437,13 +487,6 @@ export function EntityPage({
         )}
       </div>
 
-      {/* Inline keyframes */}
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(4px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }

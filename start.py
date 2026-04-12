@@ -285,6 +285,105 @@ def _kill_process(pid: int) -> None:
             pass
 
 
+def _kill_port_user(port: int) -> bool:
+    """Find and kill processes occupying the given port. Returns True if any were killed."""
+    pids = _get_port_pids(port)
+    if not pids:
+        return False
+
+    for pid in pids:
+        _info(f"  终止占用端口的进程 (PID: {pid})")
+        _kill_process(pid)
+
+    # Also kill any child processes
+    time.sleep(0.5)
+    for pid in pids:
+        _kill_child_processes(pid)
+
+    return True
+
+
+def _get_port_pids(port: int) -> list[int]:
+    """Get list of PIDs that are listening on the given port."""
+    pids: list[int] = []
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["netstat", "-aon"],
+            capture_output=True, text=True, check=False,
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                if parts:
+                    try:
+                        pids.append(int(parts[-1]))
+                    except ValueError:
+                        pass
+    else:
+        # Try lsof first (works on macOS and some Linux)
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                try:
+                    pids.append(int(line.strip()))
+                except ValueError:
+                    pass
+
+        # Try fuser if lsof didn't find anything
+        if not pids:
+            result = subprocess.run(
+                ["fuser", f"{port}/tcp"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.stdout.strip():
+                for token in result.stdout.strip().split():
+                    try:
+                        pids.append(int(token.strip()))
+                    except ValueError:
+                        pass
+
+        # Try ss as last resort (common on Linux)
+        if not pids:
+            result = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{port}"],
+                capture_output=True, text=True, check=False,
+            )
+            for line in result.stdout.splitlines():
+                # Extract pid from output like: users:(("node",pid=12345,fd=18))
+                import re as _re
+                match = _re.search(r'pid=(\d+)', line)
+                if match:
+                    try:
+                        pids.append(int(match.group(1)))
+                    except ValueError:
+                        pass
+
+    return list(dict.fromkeys(pids))  # deduplicate while preserving order
+
+
+def _kill_child_processes(parent_pid: int) -> None:
+    """Kill child processes of a given parent PID (Linux/macOS only)."""
+    if sys.platform == "win32":
+        return
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(parent_pid)],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                try:
+                    child_pid = int(line.strip())
+                    _kill_process(child_pid)
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+
 # ============================================================================
 # Phase 5: 检查端口
 # ============================================================================
@@ -299,10 +398,29 @@ def check_port(host: str, port: int) -> None:
             s.bind((host, port))
         _ok("端口空闲")
     except OSError:
-        _fail(f"端口 {port} 已被占用")
-        _info("  解决方法:")
-        _info(f"    使用 --port 指定其他端口")
-        sys.exit(1)
+        # Port is occupied — try to find and kill the process using it
+        _info(f"  端口 {port} 已被占用，尝试释放...")
+        killed = _kill_port_user(port)
+        if killed:
+            # Wait a moment for the port to be released
+            time.sleep(1.5)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind((host, port))
+                _ok(f"已释放端口 {port}")
+            except OSError:
+                _fail(f"端口 {port} 释放后仍被占用")
+                _info("  解决方法:")
+                _info(f"    使用 --port 指定其他端口")
+                _info(f"    或手动执行: fuser -k {port}/tcp")
+                sys.exit(1)
+        else:
+            _fail(f"端口 {port} 已被占用，无法自动释放")
+            _info("  解决方法:")
+            _info(f"    使用 --port 指定其他端口")
+            _info(f"    或手动执行: fuser -k {port}/tcp")
+            sys.exit(1)
 
 
 # ============================================================================

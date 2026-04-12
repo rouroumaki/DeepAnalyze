@@ -31,7 +31,7 @@ renderer.heading = function ({ text, depth }: { text: string; depth: number }) {
 };
 
 // Configure DOMPurify to allow code highlighting classes
-const purifyConfig: DOMPurify.Config = {
+const purifyConfig = {
   ALLOWED_TAGS: [
     "h1", "h2", "h3", "h4", "h5", "h6",
     "p", "br", "hr",

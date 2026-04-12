@@ -299,6 +299,19 @@ export interface WsError {
   code?: string;
 }
 
+// --- Agent Settings ---
+
+export interface AgentSettings {
+  maxTurns: number;
+  contextWindow: number;
+  compactionBuffer: number;
+  sessionMemoryInitThreshold: number;
+  sessionMemoryUpdateInterval: number;
+  microcompactKeepTurns: number;
+  autoDreamIntervalHours: number;
+  autoDreamSessionThreshold: number;
+}
+
 // --- UI State ---
 
 export type TabId = "chat" | "knowledge" | "reports" | "tasks" | "settings";

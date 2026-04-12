@@ -1,16 +1,23 @@
 // =============================================================================
 // DeepAnalyze - Agent Runner
 // =============================================================================
-// Core agent execution engine. Implements a TAOR (Think-Act-Observe-Reflect)
-// loop that uses ModelRouter for LLM calls and ToolRegistry for tool execution.
-//
-// This module does NOT import anything from the broken Claude Code copy.
-// It exclusively uses our own ModelRouter and ToolRegistry.
+// Core agent execution engine. Implements a continuous TAOR loop with:
+//   - while(true) loop (model decides when to stop, configurable turn limits)
+//   - Auto-compaction (SM-compact + Legacy compact)
+//   - Session memory extraction and injection
+//   - Microcompaction of old tool results
+//   - Emergency compaction for prompt_too_long errors
+//   - All key parameters configurable via AgentSettings
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
 import { ModelRouter } from "../../models/router.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { ContextManager } from "./context-manager.js";
+import { CompactionEngine } from "./compaction.js";
+import { MicroCompactor } from "./micro-compact.js";
+import { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
+import { SettingsStore } from "../../store/settings.js";
 import type {
   AgentDefinition,
   AgentRunOptions,
@@ -37,18 +44,23 @@ const DEFAULT_AGENT_DEFINITION: AgentDefinition = {
     "When you have completed the task, call the 'finish' tool with your final answer.",
   tools: ["*"],
   modelRole: "main",
-  maxTurns: 20,
+  maxTurns: 50,
   readOnly: false,
 };
+
+// Finish reasons that indicate the model stopped naturally (provider-agnostic)
+const STOP_FINISH_REASONS = new Set([
+  "stop",
+  "end_turn",
+  "STOP",
+  "EndTurn",
+  "ended",
+]);
 
 // ---------------------------------------------------------------------------
 // AgentRunner
 // ---------------------------------------------------------------------------
 
-/**
- * Core agent execution engine. Manages agent definitions and runs the
- * TAOR (Think-Act-Observe-Reflect) loop for each task.
- */
 export class AgentRunner {
   private modelRouter: ModelRouter;
   private toolRegistry: ToolRegistry;
@@ -57,8 +69,6 @@ export class AgentRunner {
   constructor(modelRouter: ModelRouter, toolRegistry: ToolRegistry) {
     this.modelRouter = modelRouter;
     this.toolRegistry = toolRegistry;
-
-    // Register the default "general" agent
     this.registerAgent(DEFAULT_AGENT_DEFINITION);
   }
 
@@ -66,33 +76,20 @@ export class AgentRunner {
   // Agent definition management
   // -----------------------------------------------------------------------
 
-  /**
-   * Register an agent definition. If one with the same agentType already
-   * exists, it will be replaced.
-   */
   registerAgent(definition: AgentDefinition): void {
     this.agentDefinitions.set(definition.agentType, definition);
   }
 
-  /**
-   * Register multiple agent definitions at once.
-   */
   registerAgents(definitions: AgentDefinition[]): void {
     for (const definition of definitions) {
       this.agentDefinitions.set(definition.agentType, definition);
     }
   }
 
-  /**
-   * Get a registered agent definition by type. Returns undefined if not found.
-   */
   getAgentDefinition(agentType: string): AgentDefinition | undefined {
     return this.agentDefinitions.get(agentType);
   }
 
-  /**
-   * Get all registered agent type names.
-   */
   getAgentTypes(): string[] {
     return Array.from(this.agentDefinitions.keys());
   }
@@ -101,36 +98,26 @@ export class AgentRunner {
   // Main execution loop
   // -----------------------------------------------------------------------
 
-  /**
-   * Run an agent task. This is the main entry point.
-   *
-   * Executes the TAOR loop:
-   *   1. Build initial messages from the agent definition and user input
-   *   2. Send messages to the LLM via ModelRouter
-   *   3. If the response contains tool calls, execute them
-   *   4. Add assistant message + tool results to the conversation
-   *   5. Repeat until done or max turns reached
-   *
-   * @param options - Execution options including the input prompt.
-   * @returns The result of the agent execution.
-   */
   async run(options: AgentRunOptions): Promise<AgentResult> {
     const taskId = randomUUID();
     const agentType = options.agentType ?? "general";
 
-    // Resolve the agent definition
     let definition = this.agentDefinitions.get(agentType);
     if (!definition) {
       definition = DEFAULT_AGENT_DEFINITION;
     }
 
-    // Resolve effective settings
-    const maxTurns = options.maxTurns ?? definition.maxTurns ?? 20;
-    const modelRole =
-      options.modelRole ?? definition.modelRole ?? "main";
-    const modelId = this.modelRouter.getDefaultModel(modelRole);
+    // Load agent settings from DB
+    const settingsStore = new SettingsStore();
+    const agentSettings = settingsStore.getAgentSettings();
 
-    // Determine effective system prompt (override takes precedence)
+    // Resolve effective turn limit (API override > settings > definition > default)
+    const advisoryLimit = options.maxTurns ?? definition.maxTurns ?? agentSettings.maxTurns;
+    const isUnlimited = advisoryLimit === -1;
+    const hardLimit = isUnlimited ? Infinity : advisoryLimit * 3;
+
+    const modelRole = options.modelRole ?? definition.modelRole ?? "main";
+    const modelId = this.modelRouter.getDefaultModel(modelRole);
     const effectiveSystemPrompt = options.systemPromptOverride ?? definition.systemPrompt;
 
     // Build initial messages
@@ -140,9 +127,7 @@ export class AgentRunner {
       options.contextMessages,
     );
 
-    // Determine effective tool list (override takes precedence)
     const effectiveTools = options.toolsOverride ?? definition.tools;
-    const availableTools = this.toolRegistry.filterByNames(effectiveTools);
     const toolDefs = this.toolRegistry.buildToolDefinitions(effectiveTools);
 
     // Track execution state
@@ -150,6 +135,22 @@ export class AgentRunner {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let lastAssistantContent = "";
+    const compactionEvents: Array<{ turn: number; method: string; tokensSaved: number }> = [];
+
+    // Initialize context management components (reused across turns, L1/L2 fix)
+    const contextManager = new ContextManager(this.modelRouter, modelId, toolDefs, agentSettings);
+    const microCompactor = new MicroCompactor();
+    const compactionEngine = new CompactionEngine(this.modelRouter, contextManager);
+
+    // Initialize SessionMemory (if sessionId is provided)
+    let sessionMemory: SessionMemoryManager | null = null;
+    if (options.sessionId) {
+      sessionMemory = new SessionMemoryManager(this.modelRouter, options.sessionId, agentSettings);
+      const memory = sessionMemory.load();
+      if (memory) {
+        messages[0].content += "\n\n" + sessionMemory.buildPromptInjection(memory);
+      }
+    }
 
     // Emit start event
     this.emitEvent(options.onEvent, {
@@ -159,22 +160,35 @@ export class AgentRunner {
     });
 
     // -------------------------------------------------------------------
-    // TAOR Loop
+    // Continuous TAOR Loop
     // -------------------------------------------------------------------
-    for (let turn = 0; turn < maxTurns; turn++) {
-      // Check for cancellation
+    let turn = 0;
+    let emergencyCompacted = false;
+
+    while (true) {
+      turn++;
+
+      // 1. Cancellation check
       if (options.signal?.aborted) {
         this.emitEvent(options.onEvent, { type: "cancelled", taskId });
-        return {
-          taskId,
-          output: lastAssistantContent || "Task was cancelled.",
-          toolCallsCount: totalToolCalls,
-          turnsUsed: turn,
-          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
-        };
+        return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
       }
 
-      // Call the model
+      // 2. Hard limit check (absolute safety valve, only for non-unlimited)
+      if (!isUnlimited && turn > hardLimit) {
+        break;
+      }
+
+      // 3. Advisory limit check — emit warning but don't stop
+      if (!isUnlimited && turn === advisoryLimit + 1) {
+        this.emitEvent(options.onEvent, {
+          type: "advisory_limit_reached",
+          taskId,
+          turn,
+        });
+      }
+
+      // 4. Call the LLM
       let response: ChatResponse;
       try {
         response = await this.modelRouter.chat(messages, {
@@ -185,172 +199,163 @@ export class AgentRunner {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
 
-        // Record error progress
-        this.recordProgress(
-          options.onEvent, taskId, turn, "error",
-          `Model call failed: ${errorMsg}`,
-        );
+        // Emergency compaction: detect prompt_too_long errors
+        if (this.isPromptTooLongError(errorMsg) && !emergencyCompacted) {
+          console.log("[AgentRunner] prompt_too_long detected, triggering emergency compaction");
+          emergencyCompacted = true;
+          try {
+            const result = await compactionEngine.compact(messages, sessionMemory, options.signal);
+            if (result.method !== "none") {
+              messages.length = 0;
+              messages.push(...result.messages);
+              compactionEvents.push({ turn, method: result.method, tokensSaved: result.tokensSaved });
+              this.emitEvent(options.onEvent, {
+                type: "compaction",
+                taskId,
+                turn,
+                method: `emergency-${result.method}`,
+                tokensSaved: result.tokensSaved,
+              });
+              // Retry the LLM call after compaction
+              continue;
+            }
+          } catch {
+            // Emergency compaction failed — fall through to error
+          }
+        }
 
-        this.emitEvent(options.onEvent, {
-          type: "error",
-          taskId,
-          error: errorMsg,
-        });
-
-        return {
-          taskId,
-          output: lastAssistantContent || `Agent failed: ${errorMsg}`,
-          toolCallsCount: totalToolCalls,
-          turnsUsed: turn,
-          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
-        };
+        this.recordProgress(options.onEvent, taskId, turn, "error", `Model call failed: ${errorMsg}`);
+        this.emitEvent(options.onEvent, { type: "error", taskId, error: errorMsg });
+        return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, `Agent failed: ${errorMsg}`, options.onEvent);
       }
 
-      // Track token usage
+      // 5. Track token usage
       if (response.usage) {
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
       }
 
-      // Capture assistant content
       const assistantContent = response.content ?? "";
       if (assistantContent) {
         lastAssistantContent = assistantContent;
       }
 
-      // Record text progress if there is content
       if (assistantContent) {
-        this.recordProgress(
-          options.onEvent, taskId, turn, "text", assistantContent,
-        );
+        this.recordProgress(options.onEvent, taskId, turn, "text", assistantContent);
       }
 
-      // Emit turn event
-      this.emitEvent(options.onEvent, {
-        type: "turn",
-        taskId,
-        turn,
-        content: assistantContent,
-      });
+      this.emitEvent(options.onEvent, { type: "turn", taskId, turn, content: assistantContent });
 
-      // Build the assistant message for the conversation history
+      // Build the assistant message
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: assistantContent,
       };
 
-      // Process tool calls if present
+      // Process tool calls
       const toolCalls = response.toolCalls;
       let agentCalledFinish = false;
 
       if (toolCalls && toolCalls.length > 0) {
-        // Include tool calls in the assistant message
         assistantMessage.toolCalls = toolCalls;
-
-        // Add assistant message to conversation
         messages.push(assistantMessage);
 
-        // Execute each tool call
         for (const toolCall of toolCalls) {
           totalToolCalls++;
-
-          // Check if this is a "finish" call
           if (toolCall.function.name === "finish") {
             agentCalledFinish = true;
           }
-
-          // Execute the tool and get the result message
-          const toolResultMessage = await this.executeToolCall(
-            toolCall,
-            taskId,
-            turn,
-            options.onEvent,
-          );
-
-          // Add tool result to conversation
+          const toolResultMessage = await this.executeToolCall(toolCall, taskId, turn, options.onEvent);
           messages.push(toolResultMessage);
         }
       } else {
-        // No tool calls - add assistant message and check if done
         messages.push(assistantMessage);
       }
 
-      // Check if the agent is done
+      // 6. Context management
+      // 6a. Microcompact
+      if (contextManager.shouldMicrocompact(messages)) {
+        const result = microCompactor.prune(messages, agentSettings.microcompactKeepTurns);
+        if (result.prunedCount > 0) {
+          messages.length = 0;
+          messages.push(...result.messages);
+        }
+      }
+
+      // 6b. Auto-compaction
+      if (contextManager.shouldCompact(messages)) {
+        try {
+          const result = await compactionEngine.compact(messages, sessionMemory, options.signal);
+          if (result.method !== "none") {
+            messages.length = 0;
+            messages.push(...result.messages);
+            compactionEvents.push({ turn, method: result.method, tokensSaved: result.tokensSaved });
+            this.emitEvent(options.onEvent, {
+              type: "compaction",
+              taskId,
+              turn,
+              method: result.method,
+              tokensSaved: result.tokensSaved,
+            });
+          }
+        } catch (err) {
+          console.warn("[AgentRunner] Compaction failed:", err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      // 6c. Session Memory update
+      if (sessionMemory && messages.length > 0) {
+        const totalTokens = totalInputTokens + totalOutputTokens;
+        try {
+          const memory = sessionMemory.load();
+          if (!memory && sessionMemory.shouldInitialize(totalTokens)) {
+            const newMemory = await sessionMemory.initialize(messages, options.signal);
+            // Set lastTokenPosition to actual session tokens
+            newMemory.lastTokenPosition = totalTokens;
+            sessionMemory.save(newMemory);
+            messages[0].content += "\n\n" + sessionMemory.buildPromptInjection(newMemory);
+          } else if (memory && sessionMemory.shouldUpdate(totalTokens, memory)) {
+            const updated = await sessionMemory.update(memory, messages, totalTokens, options.signal);
+            messages[0].content = replaceSessionMemoryInjection(
+              messages[0].content,
+              sessionMemory.buildPromptInjection(updated),
+            );
+          }
+        } catch (err) {
+          console.warn("[AgentRunner] Session memory update failed:", err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      // 7. Completion check
       if (this.isDone(assistantContent, toolCalls, response.finishReason, agentCalledFinish)) {
         break;
       }
     }
 
-    // -------------------------------------------------------------------
     // Build final result
-    // -------------------------------------------------------------------
-
-    // Extract the final output
-    // If the agent called "finish", try to parse the summary from the last tool result
-    let finalOutput = lastAssistantContent;
-
-    if (!finalOutput && messages.length > 0) {
-      // Fall back to the last user message if we somehow have no assistant content
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === "assistant" && messages[i].content) {
-          finalOutput = messages[i].content;
-          break;
-        }
-      }
-    }
-
-    this.emitEvent(options.onEvent, {
-      type: "complete",
-      taskId,
-      output: finalOutput || "Task completed with no output.",
-    });
-
-    return {
-      taskId,
-      output: finalOutput || "Task completed with no output.",
-      toolCallsCount: totalToolCalls,
-      turnsUsed: maxTurns,
-      usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
-    };
+    return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
   }
 
   // -----------------------------------------------------------------------
   // Message building
   // -----------------------------------------------------------------------
 
-  /**
-   * Build the initial messages array for an agent run.
-   * Consists of: system prompt + context messages + user input.
-   */
   private buildMessages(
     systemPrompt: string,
     input: string,
     contextMessages?: Array<{ role: "user" | "assistant"; content: string }>,
   ): ChatMessage[] {
-    const messages: ChatMessage[] = [];
+    const messages: ChatMessage[] = [
+      { role: "system", content: systemPrompt },
+    ];
 
-    // System prompt
-    messages.push({
-      role: "system",
-      content: systemPrompt,
-    });
-
-    // Context messages (prior conversation history, etc.)
     if (contextMessages && contextMessages.length > 0) {
       for (const msg of contextMessages) {
-        messages.push({
-          role: msg.role,
-          content: msg.content,
-        });
+        messages.push({ role: msg.role, content: msg.content });
       }
     }
 
-    // User input (the actual task)
-    messages.push({
-      role: "user",
-      content: input,
-    });
-
+    messages.push({ role: "user", content: input });
     return messages;
   }
 
@@ -358,11 +363,6 @@ export class AgentRunner {
   // Tool execution
   // -----------------------------------------------------------------------
 
-  /**
-   * Execute a single tool call from the LLM response.
-   *
-   * @returns A tool result message to append to the conversation.
-   */
   private async executeToolCall(
     toolCall: ToolCall,
     taskId: string,
@@ -372,84 +372,41 @@ export class AgentRunner {
     const toolName = toolCall.function.name;
     let toolInput: Record<string, unknown>;
 
-    // Parse the tool input arguments
     try {
       toolInput = JSON.parse(toolCall.function.arguments);
     } catch {
       const errorMsg = `Failed to parse tool arguments for "${toolName}"`;
       this.recordProgress(onEvent, taskId, turn, "error", errorMsg);
-
-      return {
-        role: "tool",
-        content: JSON.stringify({ error: errorMsg }),
-        toolCallId: toolCall.id,
-      };
+      return { role: "tool", content: JSON.stringify({ error: errorMsg }), toolCallId: toolCall.id };
     }
 
-    // Emit tool_call event
-    this.emitEvent(onEvent, {
-      type: "tool_call",
-      taskId,
-      turn,
-      toolName,
-      input: toolInput,
-    });
-
-    // Record tool_call progress
+    this.emitEvent(onEvent, { type: "tool_call", taskId, turn, toolName, input: toolInput });
     this.recordProgress(onEvent, taskId, turn, "tool_call", `Calling tool: ${toolName}`, toolName, toolInput);
 
-    // Look up and execute the tool
     const tool = this.toolRegistry.get(toolName);
     if (!tool) {
       const errorMsg = `Tool "${toolName}" not found in registry.`;
       const errorResult = { error: errorMsg };
-
-      this.emitEvent(onEvent, {
-        type: "tool_result",
-        taskId,
-        turn,
-        toolName,
-        result: errorResult,
-      });
-
+      this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result: errorResult });
       this.recordProgress(onEvent, taskId, turn, "error", errorMsg, toolName);
-
-      return {
-        role: "tool",
-        content: JSON.stringify(errorResult),
-        toolCallId: toolCall.id,
-      };
+      return { role: "tool", content: JSON.stringify(errorResult), toolCallId: toolCall.id };
     }
 
-    // Execute the tool
     let result: unknown;
     try {
       result = await tool.execute(toolInput);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       result = { error: `Tool "${toolName}" execution failed: ${errorMsg}` };
-
       this.recordProgress(onEvent, taskId, turn, "error", String(result), toolName);
     }
 
-    // Emit tool_result event
-    this.emitEvent(onEvent, {
-      type: "tool_result",
-      taskId,
-      turn,
-      toolName,
-      result,
-    });
-
-    // Record tool_result progress
+    this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result });
     this.recordProgress(onEvent, taskId, turn, "tool_result", `Tool ${toolName} completed`, toolName, undefined, result);
 
-    // Build the result message content.
-    // Serialize the result to JSON, handling large outputs by truncating.
     let resultContent: string;
     try {
       resultContent = JSON.stringify(result);
-      // Truncate if the result is very large (>100KB)
       if (resultContent.length > 100_000) {
         resultContent = resultContent.substring(0, 100_000) + "\n...[truncated]";
       }
@@ -457,75 +414,95 @@ export class AgentRunner {
       resultContent = String(result);
     }
 
-    return {
-      role: "tool",
-      content: resultContent,
-      toolCallId: toolCall.id,
-    };
+    return { role: "tool", content: resultContent, toolCallId: toolCall.id };
   }
 
   // -----------------------------------------------------------------------
   // Completion detection
   // -----------------------------------------------------------------------
 
-  /**
-   * Determine if the agent is done based on the response.
-   *
-   * The agent is considered done when:
-   * - The finishReason is "stop" (model decided to stop)
-   * - No tool calls were made AND there is text content (natural response)
-   * - The "finish" tool was called (agent explicitly signalled completion)
-   */
   private isDone(
     content: string,
     toolCalls: ToolCall[] | undefined,
     finishReason?: string,
     agentCalledFinish?: boolean,
   ): boolean {
-    // Agent explicitly called the finish tool
-    if (agentCalledFinish) {
-      return true;
-    }
-
-    // Model's finish reason indicates it stopped naturally
-    if (finishReason === "stop") {
-      return true;
-    }
-
-    // No tool calls and there is content - the model just gave a text answer
+    if (agentCalledFinish) return true;
+    if (finishReason && STOP_FINISH_REASONS.has(finishReason)) return true;
     if (!toolCalls || toolCalls.length === 0) {
-      if (content && content.trim().length > 0) {
-        return true;
+      if (content && content.trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
+  // Emergency compaction detection
+  // -----------------------------------------------------------------------
+
+  private isPromptTooLongError(errorMsg: string): boolean {
+    const lower = errorMsg.toLowerCase();
+    return (
+      lower.includes("prompt_too_long") ||
+      lower.includes("context_length_exceeded") ||
+      lower.includes("maximum context length") ||
+      lower.includes("too many tokens") ||
+      lower.includes("token limit exceeded")
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Result builder
+  // -----------------------------------------------------------------------
+
+  private buildResult(
+    taskId: string,
+    lastAssistantContent: string,
+    messages: ChatMessage[],
+    totalToolCalls: number,
+    turn: number,
+    totalInputTokens: number,
+    totalOutputTokens: number,
+    compactionEvents: Array<{ turn: number; method: string; tokensSaved: number }>,
+    overrideOutput?: string,
+    onEvent?: (event: AgentEvent) => void,
+  ): AgentResult {
+    let finalOutput = overrideOutput ?? lastAssistantContent;
+
+    if (!finalOutput) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant" && messages[i].content) {
+          finalOutput = messages[i].content;
+          break;
+        }
       }
     }
 
-    return false;
+    const output = finalOutput || "Task completed with no output.";
+    this.emitEvent(onEvent, { type: "complete", taskId, output });
+
+    return {
+      taskId,
+      output,
+      toolCallsCount: totalToolCalls,
+      turnsUsed: turn,
+      usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+      compactionEvents: compactionEvents.length > 0 ? compactionEvents : undefined,
+    };
   }
 
   // -----------------------------------------------------------------------
   // Event helpers
   // -----------------------------------------------------------------------
 
-  /**
-   * Emit an event to the callback if provided.
-   */
   private emitEvent(
     onEvent: ((event: AgentEvent) => void) | undefined,
     event: AgentEvent,
   ): void {
     if (onEvent) {
-      try {
-        onEvent(event);
-      } catch {
-        // Event callback errors should not crash the agent loop.
-        // Swallow silently to maintain stability.
-      }
+      try { onEvent(event); } catch { /* swallow */ }
     }
   }
 
-  /**
-   * Record a progress entry and emit a progress event.
-   */
   private recordProgress(
     onEvent: ((event: AgentEvent) => void) | undefined,
     taskId: string,
@@ -545,11 +522,6 @@ export class AgentRunner {
       toolInput,
       toolOutput,
     };
-
-    this.emitEvent(onEvent, {
-      type: "progress",
-      taskId,
-      progress: entry,
-    });
+    this.emitEvent(onEvent, { type: "progress", taskId, progress: entry });
   }
 }

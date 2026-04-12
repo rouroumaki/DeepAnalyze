@@ -3,8 +3,8 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import * as sessionStore from "../../store/sessions.ts";
-import * as messageStore from "../../store/messages.ts";
+import * as sessionStore from "../../store/sessions.js";
+import * as messageStore from "../../store/messages.js";
 
 export const sessionRoutes = new Hono();
 

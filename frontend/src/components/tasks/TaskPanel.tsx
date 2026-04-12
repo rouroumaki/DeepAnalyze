@@ -3,7 +3,7 @@
 // Shows all agent tasks across sessions
 // =============================================================================
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { api } from "../../api/client";
 import type { AgentTaskInfo, DocumentInfo, KnowledgeBase } from "../../types/index";
 import { useChatStore } from "../../store/chat";
@@ -57,6 +57,18 @@ export function TaskPanel() {
       setCompilingDocs(all);
     });
   }, [activeTab]);
+
+  // Stable progress values per doc (avoid Math.random on every render)
+  const progressMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const doc of compilingDocs) {
+      let hash = 0;
+      for (let i = 0; i < doc.id.length; i++) hash = ((hash << 5) - hash + doc.id.charCodeAt(i)) | 0;
+      const base = Math.abs(hash) % 100;
+      map.set(doc.id, doc.status === "parsing" ? (base % 30) + 10 : (base % 40) + 50);
+    }
+    return map;
+  }, [compilingDocs]);
 
   return (
     <div style={{
@@ -225,9 +237,7 @@ export function TaskPanel() {
                 </h4>
                 <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
                   {compilingDocs.map((doc) => {
-                    const progress = doc.status === "parsing"
-                      ? Math.floor(Math.random() * 30) + 10
-                      : Math.floor(Math.random() * 40) + 50;
+                    const progress = progressMap.get(doc.id) ?? 50;
                     return (
                       <div
                         key={doc.id}

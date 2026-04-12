@@ -118,15 +118,19 @@ export class ModelRouter {
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): Promise<ChatResponse> {
-    return this.getProvider(options.model).chat(messages, options);
+    // options.model is a provider lookup key (e.g. "minimax"), NOT the API model name.
+    // Strip it before forwarding to the provider so the provider uses its own defaultModel.
+    const { model: _providerKey, ...providerOptions } = options;
+    return this.getProvider(options.model).chat(messages, providerOptions);
   }
 
   async *chatStream(
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): AsyncGenerator<StreamChunk> {
+    const { model: _providerKey, ...providerOptions } = options;
     const provider = this.getProvider(options.model);
-    yield* provider.chatStream(messages, options);
+    yield* provider.chatStream(messages, providerOptions);
   }
 
   estimateTokens(text: string): number {

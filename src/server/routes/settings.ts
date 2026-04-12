@@ -13,6 +13,28 @@ export function createSettingsRoutes(): Hono {
   const store = new SettingsStore();
 
   // -----------------------------------------------------------------------
+  // Root — endpoint discovery
+  // -----------------------------------------------------------------------
+
+  router.get("/", (c) => c.json({
+    status: "ok",
+    message: "Settings API",
+    endpoints: [
+      "GET    /registry — List all known provider types",
+      "GET    /registry/:id — Get provider type metadata",
+      "GET    /providers — List configured providers",
+      "GET    /providers/:id — Get provider settings",
+      "PUT    /providers/:id — Create/update provider",
+      "DELETE /providers/:id — Delete provider",
+      "POST   /providers/:id/test — Test provider connectivity",
+      "GET    /defaults — Get default role assignments",
+      "PUT    /defaults — Update default role assignments",
+      "GET    /agent — Get agent runtime settings",
+      "PUT    /agent — Update agent runtime settings",
+    ],
+  }));
+
+  // -----------------------------------------------------------------------
   // Provider registry (read-only metadata about all known providers)
   // -----------------------------------------------------------------------
 
@@ -135,6 +157,22 @@ export function createSettingsRoutes(): Hono {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  // -----------------------------------------------------------------------
+  // Agent settings (runtime-configurable)
+  // -----------------------------------------------------------------------
+
+  /** Get agent runtime settings */
+  router.get("/agent", (c) => {
+    return c.json(store.getAgentSettings());
+  });
+
+  /** Update agent runtime settings */
+  router.put("/agent", async (c) => {
+    const body = await c.req.json<Partial<import("../../services/agent/types.js").AgentSettings>>();
+    const updated = store.saveAgentSettings(body);
+    return c.json({ success: true, settings: updated });
   });
 
   // -----------------------------------------------------------------------

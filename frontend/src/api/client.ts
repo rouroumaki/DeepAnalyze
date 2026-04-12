@@ -23,6 +23,7 @@ import type {
   KnowledgeBase,
   DocumentInfo,
   WikiPage,
+  AgentSettings,
 } from "../types/index.js";
 
 const BASE_URL = "";
@@ -71,6 +72,107 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ sessionId, input, agentType }),
     }),
+  runAgentStream: (
+    sessionId: string,
+    input: string,
+    agentType?: string,
+    callbacks?: {
+      onStart?: (taskId: string, agentType: string) => void;
+      onContent?: (content: string, accumulated: string) => void;
+      onToolCall?: (tc: { id: string; toolName: string; input: Record<string, unknown>; status: string }) => void;
+      onToolResult?: (data: { id: string; toolName: string; output: string }) => void;
+      onProgress?: (progress: { turn: number; type: string; content: string }) => void;
+      onComplete?: (data: { taskId: string; output: string; toolCalls: unknown[] }) => void;
+      onError?: (data: { taskId: string; error: string }) => void;
+      onDone?: (data: { taskId: string; status: string; turnsUsed?: number }) => void;
+      onAdvisoryLimit?: (data: { taskId: string; turn: number }) => void;
+      onCompaction?: (data: { taskId: string; turn: number; method: string; tokensSaved: number }) => void;
+    },
+  ) => {
+    const controller = new AbortController();
+    const fetchPromise = fetch(`${BASE_URL}/api/agents/run-stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, input, agentType }),
+      signal: controller.signal,
+    }).then(async (resp) => {
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`API error: ${resp.status} ${text}`);
+      }
+      if (!resp.body) throw new Error("No response body for stream");
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer
+        const lines = buffer.split("\n");
+        // Keep the last incomplete line in the buffer
+        buffer = lines.pop() || "";
+
+        let currentEvent = "";
+        let currentData = "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            currentData = line.slice(6);
+          } else if (line === "" && currentEvent && currentData) {
+            // Empty line = end of event
+            try {
+              const data = JSON.parse(currentData);
+              switch (currentEvent) {
+                case "start":
+                  callbacks?.onStart?.(data.taskId, data.agentType);
+                  break;
+                case "content":
+                  callbacks?.onContent?.(data.content, data.accumulated);
+                  break;
+                case "tool_call":
+                  callbacks?.onToolCall?.(data);
+                  break;
+                case "tool_result":
+                  callbacks?.onToolResult?.(data);
+                  break;
+                case "progress":
+                  callbacks?.onProgress?.(data);
+                  break;
+                case "complete":
+                  callbacks?.onComplete?.(data);
+                  break;
+                case "error":
+                  callbacks?.onError?.(data);
+                  break;
+                case "done":
+                  callbacks?.onDone?.(data);
+                  break;
+                case "advisory_limit_reached":
+                  callbacks?.onAdvisoryLimit?.(data);
+                  break;
+                case "compaction":
+                  callbacks?.onCompaction?.(data);
+                  break;
+              }
+            } catch {
+              // Ignore parse errors for individual events
+            }
+            currentEvent = "";
+            currentData = "";
+          }
+        }
+      }
+    });
+
+    return { abort: () => controller.abort(), promise: fetchPromise };
+  },
   runCoordinated: (sessionId: string, input: string) =>
     request<RunCoordinatedResponse>("/api/agents/run-coordinated", {
       method: "POST",
@@ -87,7 +189,9 @@ export const api = {
 
   // --- Knowledge Base ---
   listKnowledgeBases: () =>
-    request<KnowledgeBase[]>("/api/knowledge/kbs"),
+    request<{ knowledgeBases: KnowledgeBase[] }>("/api/knowledge/kbs").then(
+      (res) => Array.isArray(res.knowledgeBases) ? res.knowledgeBases : [],
+    ),
   createKnowledgeBase: (name: string, description?: string) =>
     request<KnowledgeBase>("/api/knowledge/kbs", {
       method: "POST",
@@ -98,7 +202,9 @@ export const api = {
 
   // --- Documents ---
   listDocuments: (kbId: string) =>
-    request<DocumentInfo[]>(`/api/knowledge/kbs/${kbId}/documents`),
+    request<{ documents: DocumentInfo[] }>(`/api/knowledge/kbs/${kbId}/documents`).then(
+      (res) => Array.isArray(res.documents) ? res.documents : [],
+    ),
   uploadDocument: (kbId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -184,7 +290,9 @@ export const api = {
 
   // --- Plugins ---
   listPlugins: () =>
-    request<{ plugins: PluginInfo[] }>("/api/plugins/plugins"),
+    request<{ plugins: PluginInfo[] }>("/api/plugins/plugins").then(
+      (res) => Array.isArray(res.plugins) ? res.plugins : [],
+    ),
   getPlugin: (id: string) =>
     request<PluginInfo>(`/api/plugins/plugins/${id}`),
   enablePlugin: (id: string) =>
@@ -205,7 +313,9 @@ export const api = {
 
   // --- Skills ---
   listSkills: () =>
-    request<{ skills: SkillInfo[] }>("/api/plugins/skills"),
+    request<{ skills: SkillInfo[] }>("/api/plugins/skills").then(
+      (res) => Array.isArray(res.skills) ? res.skills : [],
+    ),
   getSkill: (id: string) =>
     request<SkillInfo>(`/api/plugins/skills/${id}`),
   createSkill: (skill: {
@@ -273,6 +383,15 @@ export const api = {
         body: JSON.stringify(defaults),
       },
     ),
+
+  // --- Agent Settings ---
+  getAgentSettings: () =>
+    request<AgentSettings>("/api/settings/agent"),
+  saveAgentSettings: (settings: Partial<AgentSettings>) =>
+    request<{ success: boolean; settings: AgentSettings }>("/api/settings/agent", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
 
   // --- Health ---
   health: () => request<{ status: string; version: string }>("/api/health"),

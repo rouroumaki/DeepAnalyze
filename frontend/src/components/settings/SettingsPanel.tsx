@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
-import type { ProviderConfig, ProviderSettings, ProviderMetadata, ProviderDefaults } from "../../types/index";
+import type { ProviderConfig, ProviderSettings, ProviderMetadata, ProviderDefaults, AgentSettings } from "../../types/index";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore, type ThemeMode } from "../../store/ui";
 import {
@@ -21,6 +21,7 @@ import {
   Globe,
   Info,
   Cpu,
+  Settings2,
 } from "lucide-react";
 
 export function SettingsPanel() {
@@ -28,7 +29,7 @@ export function SettingsPanel() {
   const themeMode = useUIStore((s) => s.themeMode);
   const setThemeMode = useUIStore((s) => s.setThemeMode);
 
-  const [activeTab, setActiveTab] = useState<"models" | "embedding" | "general" | "about">("models");
+  const [activeTab, setActiveTab] = useState<"models" | "embedding" | "general" | "agent" | "about">("models");
   const [registry, setRegistry] = useState<ProviderMetadata[]>([]);
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -49,6 +50,10 @@ export function SettingsPanel() {
 
   // About tab state
   const [healthInfo, setHealthInfo] = useState<{ status: string; version: string } | null>(null);
+
+  // Agent settings tab state
+  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
+  const [agentSaving, setAgentSaving] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -114,6 +119,16 @@ export function SettingsPanel() {
       setHealthInfo(info);
     }).catch(() => {
       setHealthInfo(null);
+    });
+  }, [activeTab]);
+
+  // Load agent settings when agent tab is active
+  useEffect(() => {
+    if (activeTab !== "agent") return;
+    api.getAgentSettings().then((settings) => {
+      setAgentSettings(settings);
+    }).catch(() => {
+      setAgentSettings(null);
     });
   }, [activeTab]);
 
@@ -217,6 +232,20 @@ export function SettingsPanel() {
     }
   };
 
+  const handleAgentSave = async () => {
+    if (!agentSettings) return;
+    setAgentSaving(true);
+    try {
+      const result = await api.saveAgentSettings(agentSettings);
+      setAgentSettings(result.settings);
+      success("Agent 设置已保存，下次运行即时生效");
+    } catch {
+      showError("保存 Agent 设置失败");
+    } finally {
+      setAgentSaving(false);
+    }
+  };
+
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "var(--space-2) var(--space-3)",
@@ -241,6 +270,7 @@ export function SettingsPanel() {
   const tabs = [
     { id: "models", label: "模型配置", icon: <Server size={14} /> },
     { id: "embedding", label: "嵌入模型", icon: <Cpu size={14} /> },
+    { id: "agent", label: "Agent 设置", icon: <Settings2 size={14} /> },
     { id: "general", label: "通用设置", icon: <Globe size={14} /> },
     { id: "about", label: "关于", icon: <Info size={14} /> },
   ];
@@ -899,6 +929,245 @@ export function SettingsPanel() {
                   更多语言即将推出
                 </p>
               </div>
+            </div>
+          </>
+        )}
+
+        {/* Agent Settings Tab */}
+        {activeTab === "agent" && (
+          <>
+            <div style={{
+              padding: "var(--space-4)",
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "var(--radius-xl)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
+                <Settings2 size={16} style={{ color: "var(--interactive)" }} />
+                <h3 style={{
+                  fontSize: "var(--text-sm)",
+                  fontWeight: "var(--font-semibold)",
+                  color: "var(--text-primary)",
+                  margin: 0,
+                }}>
+                  Agent 运行参数
+                </h3>
+              </div>
+              <p style={{
+                fontSize: "var(--text-sm)",
+                color: "var(--text-secondary)",
+                marginTop: 0,
+                marginBottom: "var(--space-4)",
+              }}>
+                调整 Agent 引擎的核心运行参数。修改后即时生效，无需重启。
+              </p>
+
+              {agentSettings ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+                  {/* Max Turns */}
+                  <div>
+                    <label style={labelStyle}>最大轮次</label>
+                    <select
+                      value={agentSettings.maxTurns}
+                      onChange={(e) => setAgentSettings({ ...agentSettings, maxTurns: parseInt(e.target.value) })}
+                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                    >
+                      <option value={50}>50 轮（默认，适合短任务）</option>
+                      <option value={100}>100 轮（适合中等任务）</option>
+                      <option value={200}>200 轮（适合复杂分析）</option>
+                      <option value={500}>500 轮（适合深度长程任务）</option>
+                      <option value={-1}>无限制（仅靠模型自行停止或用户取消）</option>
+                    </select>
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
+                      建议轮次为软限制，达到后 Agent 继续运行但会发出提醒；硬限制为建议值的 3 倍
+                    </p>
+                  </div>
+
+                  {/* Context Window */}
+                  <div>
+                    <label style={labelStyle}>上下文窗口大小</label>
+                    <select
+                      value={agentSettings.contextWindow}
+                      onChange={(e) => setAgentSettings({ ...agentSettings, contextWindow: parseInt(e.target.value) })}
+                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                    >
+                      <option value={32000}>32K tokens</option>
+                      <option value={64000}>64K tokens</option>
+                      <option value={128000}>128K tokens（默认）</option>
+                      <option value={200000}>200K tokens</option>
+                      <option value={256000}>256K tokens</option>
+                    </select>
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
+                      需与所用模型的实际上下文窗口匹配，设置过大会导致 API 报错
+                    </p>
+                  </div>
+
+                  {/* Compaction Buffer */}
+                  <div>
+                    <label style={labelStyle}>压缩缓冲区</label>
+                    <select
+                      value={agentSettings.compactionBuffer}
+                      onChange={(e) => setAgentSettings({ ...agentSettings, compactionBuffer: parseInt(e.target.value) })}
+                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                    >
+                      <option value={8000}>8K tokens（激进压缩，更省空间）</option>
+                      <option value={13000}>13K tokens（默认，平衡选择）</option>
+                      <option value={20000}>20K tokens（保守，留更多空间）</option>
+                      <option value={30000}>30K tokens（非常保守）</option>
+                    </select>
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
+                      当剩余空间低于此值时触发上下文压缩
+                    </p>
+                  </div>
+
+                  {/* Session Memory */}
+                  <div style={{
+                    padding: "var(--space-3)",
+                    background: "var(--bg-primary)",
+                    borderRadius: "var(--radius-lg)",
+                    border: "1px solid var(--border-primary)",
+                  }}>
+                    <h4 style={{
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      color: "var(--text-primary)",
+                      margin: 0,
+                      marginBottom: "var(--space-3)",
+                    }}>
+                      会话记忆
+                    </h4>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                      <div>
+                        <label style={labelStyle}>初始化阈值</label>
+                        <select
+                          value={agentSettings.sessionMemoryInitThreshold}
+                          onChange={(e) => setAgentSettings({ ...agentSettings, sessionMemoryInitThreshold: parseInt(e.target.value) })}
+                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                        >
+                          <option value={5000}>5K tokens</option>
+                          <option value={10000}>10K tokens（默认）</option>
+                          <option value={20000}>20K tokens</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={labelStyle}>更新间隔</label>
+                        <select
+                          value={agentSettings.sessionMemoryUpdateInterval}
+                          onChange={(e) => setAgentSettings({ ...agentSettings, sessionMemoryUpdateInterval: parseInt(e.target.value) })}
+                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                        >
+                          <option value={3000}>3K tokens</option>
+                          <option value={5000}>5K tokens（默认）</option>
+                          <option value={10000}>10K tokens</option>
+                          <option value={20000}>20K tokens</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Microcompact */}
+                  <div>
+                    <label style={labelStyle}>Microcompact 保留轮次</label>
+                    <select
+                      value={agentSettings.microcompactKeepTurns}
+                      onChange={(e) => setAgentSettings({ ...agentSettings, microcompactKeepTurns: parseInt(e.target.value) })}
+                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                    >
+                      <option value={5}>5 轮（更积极修剪旧结果）</option>
+                      <option value={10}>10 轮（默认）</option>
+                      <option value={20}>20 轮（保留更多上下文）</option>
+                      <option value={30}>30 轮（最大保留）</option>
+                    </select>
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
+                      保留最近 N 轮工具调用的完整结果，更早的结果会被压缩
+                    </p>
+                  </div>
+
+                  {/* AutoDream */}
+                  <div style={{
+                    padding: "var(--space-3)",
+                    background: "var(--bg-primary)",
+                    borderRadius: "var(--radius-lg)",
+                    border: "1px solid var(--border-primary)",
+                  }}>
+                    <h4 style={{
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      color: "var(--text-primary)",
+                      margin: 0,
+                      marginBottom: "var(--space-3)",
+                    }}>
+                      跨会话知识整合 (AutoDream)
+                    </h4>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                      <div>
+                        <label style={labelStyle}>触发间隔</label>
+                        <select
+                          value={agentSettings.autoDreamIntervalHours}
+                          onChange={(e) => setAgentSettings({ ...agentSettings, autoDreamIntervalHours: parseInt(e.target.value) })}
+                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                        >
+                          <option value={1}>1 小时</option>
+                          <option value={6}>6 小时</option>
+                          <option value={12}>12 小时</option>
+                          <option value={24}>24 小时（默认）</option>
+                          <option value={48}>48 小时</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={labelStyle}>会话数量门槛</label>
+                        <select
+                          value={agentSettings.autoDreamSessionThreshold}
+                          onChange={(e) => setAgentSettings({ ...agentSettings, autoDreamSessionThreshold: parseInt(e.target.value) })}
+                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
+                        >
+                          <option value={3}>3 个会话</option>
+                          <option value={5}>5 个会话（默认）</option>
+                          <option value={10}>10 个会话</option>
+                          <option value={20}>20 个会话</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Save button */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", paddingTop: "var(--space-1)" }}>
+                    <button
+                      onClick={handleAgentSave}
+                      disabled={agentSaving}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "var(--space-1)",
+                        padding: "var(--space-2) var(--space-4)",
+                        background: "var(--interactive)",
+                        color: "#fff",
+                        fontSize: "var(--text-sm)",
+                        fontWeight: "var(--font-medium)",
+                        borderRadius: "var(--radius-lg)",
+                        border: "none",
+                        cursor: agentSaving ? "not-allowed" : "pointer",
+                        opacity: agentSaving ? 0.5 : 1,
+                        transition: "background var(--transition-fast)",
+                      }}
+                      onMouseEnter={(e) => { if (!agentSaving) e.currentTarget.style.background = "var(--interactive-hover)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
+                    >
+                      <Save size={14} />
+                      {agentSaving ? "保存中..." : "保存设置"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{
+                  textAlign: "center",
+                  padding: "var(--space-6) 0",
+                  color: "var(--text-tertiary)",
+                  fontSize: "var(--text-sm)",
+                }}>
+                  加载中...
+                </div>
+              )}
             </div>
           </>
         )}

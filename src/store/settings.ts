@@ -6,6 +6,8 @@
 // =============================================================================
 
 import { DB } from "./database.js";
+import type { AgentSettings } from "../services/agent/types.js";
+import { DEFAULT_AGENT_SETTINGS } from "../services/agent/types.js";
 
 // ---------------------------------------------------------------------------
 // Provider configuration types
@@ -21,6 +23,8 @@ export interface ProviderConfig {
   maxTokens: number;
   supportsToolUse: boolean;
   enabled: boolean;
+  /** Context window size in tokens (default: 128000) */
+  contextWindow?: number;
 }
 
 export interface ProviderDefaults {
@@ -130,5 +134,29 @@ export class SettingsStore {
   delete(key: string): boolean {
     const result = this.db.prepare("DELETE FROM settings WHERE key = ?").run(key);
     return result.changes > 0;
+  }
+
+  // -----------------------------------------------------------------------
+  // Agent settings
+  // -----------------------------------------------------------------------
+
+  /** Get agent runtime settings, merged with defaults. */
+  getAgentSettings(): AgentSettings {
+    const raw = this.get("agent_settings");
+    if (!raw) return { ...DEFAULT_AGENT_SETTINGS };
+    try {
+      const parsed = JSON.parse(raw) as Partial<AgentSettings>;
+      return { ...DEFAULT_AGENT_SETTINGS, ...parsed };
+    } catch {
+      return { ...DEFAULT_AGENT_SETTINGS };
+    }
+  }
+
+  /** Save agent runtime settings. */
+  saveAgentSettings(settings: Partial<AgentSettings>): AgentSettings {
+    const current = this.getAgentSettings();
+    const merged = { ...current, ...settings };
+    this.set("agent_settings", JSON.stringify(merged));
+    return merged;
   }
 }

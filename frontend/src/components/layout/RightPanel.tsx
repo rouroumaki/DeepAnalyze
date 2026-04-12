@@ -102,7 +102,7 @@ export function RightPanel({ children }: RightPanelProps) {
             style={{
               margin: 0,
               fontSize: "var(--text-base)",
-              fontWeight: "var(--font-semibold)" as number,
+              fontWeight: "var(--font-semibold)",
               color: "var(--text-primary)",
               overflow: "hidden",
               textOverflow: "ellipsis",

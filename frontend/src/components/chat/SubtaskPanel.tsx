@@ -208,13 +208,23 @@ function TaskItem({ node }: { node: TaskTreeNode }) {
 
 export function SubtaskPanel() {
   const agentTasks = useChatStore((s) => s.agentTasks);
-  const [collapsed, setCollapsed] = useState(false);
+  const hasRunning = agentTasks.some((t) => t.status === "running" || t.status === "pending");
+  // Default: collapsed when no running tasks, expanded when there are running tasks
+  const [collapsed, setCollapsed] = useState(!hasRunning);
 
   if (agentTasks.length === 0) return null;
+
+  // Auto-collapse when all tasks finish
+  const allDone = agentTasks.every((t) =>
+    t.status === "completed" || t.status === "failed" || t.status === "cancelled",
+  );
 
   const running = agentTasks.filter((t) => t.status === "running" || t.status === "pending").length;
   const completed = agentTasks.filter((t) => t.status === "completed").length;
   const failed = agentTasks.filter((t) => t.status === "failed").length;
+
+  // When all done, show collapsed by default and hide if desired
+  const shouldHide = allDone && collapsed;
 
   return (
     <div style={{
@@ -284,7 +294,7 @@ export function SubtaskPanel() {
           }} />
         )}
         <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-          {running > 0 ? `${running} 运行中` : `${completed} 完成`}
+          {running > 0 ? `${running} 运行中` : allDone ? `全部完成` : `${completed} 完成`}
         </span>
       </button>
 

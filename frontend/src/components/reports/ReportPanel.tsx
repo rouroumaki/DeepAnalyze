@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useMarkdown } from "../../hooks/useMarkdown";
+import { useUIStore } from "../../store/ui";
 import type { ReportInfo, ReportDetail, TimelineEvent, GraphNode, GraphEdge } from "../../types/index";
 import { ReportExport } from "./ReportExport";
 import {
@@ -30,6 +31,7 @@ type SubTab = "reports" | "timeline" | "graph";
 export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
   const { error: showError } = useToast();
   const { success } = useToast();
+  const resolvedTheme = useUIStore((s) => s.resolvedTheme);
   const [activeSubTab, setActiveSubTab] = useState<SubTab>("reports");
   const [reports, setReports] = useState<ReportInfo[]>([]);
   const [selectedReport, setSelectedReport] = useState<ReportDetail | null>(null);
@@ -157,11 +159,12 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 
       // Draw
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#0a0e1a";
+      const isDark = resolvedTheme === "dark";
+      ctx.fillStyle = isDark ? "#0a0e1a" : "#f8fafc";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Edges
-      ctx.strokeStyle = "rgba(100, 116, 139, 0.3)";
+      ctx.strokeStyle = isDark ? "rgba(100, 116, 139, 0.3)" : "rgba(100, 116, 139, 0.2)";
       ctx.lineWidth = 1;
       graphEdges.forEach((edge) => {
         const a = positions.get(edge.source);
@@ -176,7 +179,7 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
         if (edge.label) {
           const mx = (a.x + b.x) / 2;
           const my = (a.y + b.y) / 2;
-          ctx.fillStyle = "#64748b";
+          ctx.fillStyle = isDark ? "#64748b" : "#94a3b8";
           ctx.font = "9px sans-serif";
           ctx.textAlign = "center";
           ctx.fillText(edge.label, mx, my - 4);
@@ -194,7 +197,7 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
         ctx.fillStyle = color;
         ctx.fill();
 
-        ctx.fillStyle = "#e2e8f0";
+        ctx.fillStyle = isDark ? "#e2e8f0" : "#1e293b";
         ctx.font = "11px sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(node.label, p.x, p.y + 20);
@@ -205,7 +208,7 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 
     simulate();
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [activeSubTab, graphNodes, graphEdges, initGraphPositions]);
+  }, [activeSubTab, graphNodes, graphEdges, initGraphPositions, resolvedTheme]);
 
   const handleGenerateReport = async () => {
     if (!kbId || !genTitle.trim()) return;

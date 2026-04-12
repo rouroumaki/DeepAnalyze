@@ -6,6 +6,7 @@
 import React, { useState, useCallback } from "react";
 import { api } from "../../api/client";
 import { useMarkdown } from "../../hooks/useMarkdown";
+import { useToast } from "../../hooks/useToast";
 import { Spinner } from "../ui/Spinner";
 import {
   Search,
@@ -60,6 +61,7 @@ interface WikiBrowserProps {
 // =============================================================================
 
 export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
+  const { error: toastError } = useToast();
   // --- State ---
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<WikiResult[]>([]);
@@ -85,7 +87,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
       setExpandedLevel("L0");
       setExpandedContent(null);
     } catch {
-      // Search failed silently
+      toastError("搜索失败，请重试");
     } finally {
       setIsSearching(false);
     }
@@ -100,6 +102,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
         setExpandedLevel("L0");
         setExpandedContent(null);
       } catch {
+        toastError("页面加载失败");
         // Fallback: show raw content from search result
         setSelectedPage({
           id: result.docId,
@@ -126,6 +129,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
         setExpandedContent(resp);
         setExpandedLevel(level);
       } catch {
+        toastError("内容展开失败");
         // Expand failed
       } finally {
         setIsExpanding(false);
@@ -199,7 +203,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
             <p
               style={{
                 fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)" as number,
+                fontWeight: "var(--font-semibold)",
                 color: "var(--text-tertiary)",
                 marginBottom: "var(--space-1)",
                 margin: 0,
@@ -246,7 +250,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
             <p
               style={{
                 fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)" as number,
+                fontWeight: "var(--font-semibold)",
                 color: "var(--text-tertiary)",
                 marginBottom: "var(--space-1)",
                 margin: 0,
@@ -293,7 +297,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
             <p
               style={{
                 fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)" as number,
+                fontWeight: "var(--font-semibold)",
                 color: "var(--text-tertiary)",
                 margin: 0,
                 textTransform: "uppercase",
@@ -436,7 +440,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
               backgroundColor: "var(--interactive)",
               color: "#fff",
               fontSize: "var(--text-sm)",
-              fontWeight: "var(--font-medium)" as number,
+              fontWeight: "var(--font-medium)",
               borderRadius: "var(--radius-lg)",
               border: "none",
               cursor: isSearching ? "not-allowed" : "pointer",
@@ -504,7 +508,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                 style={{
                   margin: 0,
                   fontSize: "var(--text-xl)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   color: "var(--text-primary)",
                 }}
               >
@@ -541,7 +545,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                   gap: "var(--space-1)",
                   padding: "2px var(--space-2)",
                   fontSize: "var(--text-xs)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   borderRadius: "var(--radius-sm)",
                   backgroundColor:
                     expandedLevel === "L0"
@@ -565,7 +569,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                     gap: "var(--space-1)",
                     padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)" as number,
+                    fontWeight: "var(--font-medium)",
                     borderRadius: "var(--radius-sm)",
                     border: "1px solid var(--border-primary)",
                     backgroundColor: "var(--bg-tertiary)",
@@ -606,7 +610,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                       gap: "var(--space-1)",
                       padding: "2px var(--space-2)",
                       fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-semibold)" as number,
+                      fontWeight: "var(--font-semibold)",
                       borderRadius: "var(--radius-sm)",
                       backgroundColor: "var(--interactive)",
                       color: "#fff",
@@ -626,7 +630,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                       gap: "var(--space-1)",
                       padding: "2px var(--space-2)",
                       fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-medium)" as number,
+                      fontWeight: "var(--font-medium)",
                       borderRadius: "var(--radius-sm)",
                       border: "1px solid var(--border-primary)",
                       backgroundColor: "var(--bg-tertiary)",
@@ -668,7 +672,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                     gap: "var(--space-1)",
                     padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-semibold)" as number,
+                    fontWeight: "var(--font-semibold)",
                     borderRadius: "var(--radius-sm)",
                     backgroundColor: "var(--interactive)",
                     color: "#fff",
@@ -700,7 +704,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                 style={{
                   fontSize: "var(--text-sm)",
                   color: "var(--text-secondary)",
-                  lineHeight: "var(--leading-relaxed)" as number,
+                  lineHeight: "var(--leading-relaxed)",
                 }}
               >
                 {renderContent()}
@@ -767,7 +771,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                   <span
                     style={{
                       fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)" as number,
+                      fontWeight: "var(--font-medium)",
                       color: "var(--text-primary)",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -779,7 +783,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                   <span
                     style={{
                       fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-semibold)" as number,
+                      fontWeight: "var(--font-semibold)",
                       padding: "1px var(--space-2)",
                       borderRadius: "var(--radius-sm)",
                       backgroundColor: "var(--interactive-light)",
@@ -842,13 +846,6 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
         ) : null}
       </div>
 
-      {/* Inline keyframes for fadeIn animation */}
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(4px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }

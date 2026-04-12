@@ -148,20 +148,127 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     try {
-      // Use runAgent which handles: saving user msg → running agent → saving assistant response
-      await api.runAgent(currentSessionId, content);
+      // Create the streaming assistant message placeholder
+      const assistantId = `stream-${Date.now()}`;
+      get().startStreaming(assistantId);
 
-      // Reload messages from server to get the real user msg + assistant response
-      const messages = await api.getMessages(currentSessionId);
-      set({ messages });
+      // Use SSE streaming for real-time output
+      const { promise } = api.runAgentStream(
+        currentSessionId,
+        content,
+        undefined,
+        {
+          onStart: (_taskId, _agentType) => {
+            // Agent started
+          },
+          onContent: (_content, accumulated) => {
+            // Update the streaming message content
+            set((s) => {
+              const newContent = accumulated;
+              return {
+                streamingContent: newContent,
+                messages: s.messages.map((m) =>
+                  m.id === s.streamingMessageId ? { ...m, content: newContent } : m,
+                ),
+              };
+            });
+          },
+          onToolCall: (tc) => {
+            const toolCall: ToolCallInfo = {
+              id: tc.id,
+              toolName: tc.toolName,
+              input: tc.input,
+              status: "running",
+            };
+            get().addStreamToolCall(toolCall);
+          },
+          onToolResult: (data) => {
+            get().updateStreamToolResult(data.id, data.output, "completed");
+          },
+          onComplete: (_data) => {
+            // Agent completed with final output
+          },
+          onError: (data) => {
+            set({ error: data.error });
+          },
+          onDone: (data) => {
+            // Streaming finished — finalize the message
+            const state = get();
+            const finalContent = state.streamingContent;
+            const finalToolCalls = state.streamingToolCalls.map((tc) => ({
+              ...tc,
+              status: tc.status === "running" ? "completed" as const : tc.status,
+            }));
 
-      // Also reload agent tasks
-      const tasks = await api.getAgentTasks(currentSessionId).catch(() => []);
-      set({ agentTasks: tasks });
+            state.finishStreaming(finalContent, finalToolCalls);
+
+            // Don't reload messages from server here — the server only saves
+            // the final output text (not tool calls/progress), so reloading
+            // would replace the rich streamed content with just one line.
+            // The messages will be refreshed next time the session is loaded.
+
+            // Reload agent tasks
+            api.getAgentTasks(currentSessionId).then((tasks) => {
+              set({ agentTasks: tasks });
+            }).catch(() => {});
+
+            // Mark sending as done
+            set({ isSending: false });
+
+            if (data.status === "failed") {
+              set({ error: "Agent run failed" });
+            }
+          },
+        },
+      );
+
+      await promise;
     } catch (err) {
-      set({ error: String(err) });
-    } finally {
-      set({ isSending: false });
+      // SSE stream ended or was interrupted.
+      // The agent is likely still running on the server (or already finished).
+      // Don't re-run the agent — just poll for the result.
+      console.warn("[ChatStore] SSE stream ended, polling for final result:", err);
+
+      // If we have streaming content, finalize what we have
+      const state = get();
+      if (state.isStreaming && state.streamingMessageId) {
+        const partialContent = state.streamingContent;
+        const partialToolCalls = state.streamingToolCalls.map((tc) => ({
+          ...tc,
+          status: tc.status === "running" ? "completed" as const : tc.status,
+        }));
+        state.finishStreaming(partialContent, partialToolCalls);
+      }
+
+      // Poll for the final messages from the server (the agent may still be running)
+      const pollForResult = async (attempts = 0) => {
+        if (attempts > 60) { // Give up after ~60 seconds of polling
+          set({ isSending: false });
+          return;
+        }
+        try {
+          const messages = await api.getMessages(currentSessionId);
+          // Check if there's an assistant message after our user message
+          const hasAssistantResponse = messages.some(
+            (m) => m.role === "assistant" &&
+              messages.findIndex((msg) => msg === m) > messages.findIndex((msg) => msg.role === "user" && msg.content === content),
+          );
+          if (hasAssistantResponse) {
+            set({ messages, isSending: false });
+            // Also reload agent tasks
+            api.getAgentTasks(currentSessionId).then((tasks) => {
+              set({ agentTasks: tasks });
+            }).catch(() => {});
+            return;
+          }
+        } catch {
+          // Continue polling
+        }
+        setTimeout(() => pollForResult(attempts + 1), 1000);
+      };
+
+      // Start polling after a short delay to give the agent time to finish
+      setTimeout(() => pollForResult(), 2000);
     }
   },
 
@@ -310,17 +417,89 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, userMessage], isSending: true }));
 
     try {
-      const result = await api.runAgent(currentSessionId, input, agentType);
-      // Poll for updates
-      const poll = async (count = 0) => {
-        if (count > 120) { set({ isSending: false }); return; }
+      // Create streaming placeholder
+      const assistantId = `stream-agent-${Date.now()}`;
+      get().startStreaming(assistantId);
+
+      const { promise } = api.runAgentStream(
+        currentSessionId,
+        input,
+        agentType,
+        {
+          onContent: (_content, accumulated) => {
+            set((s) => ({
+              streamingContent: accumulated,
+              messages: s.messages.map((m) =>
+                m.id === s.streamingMessageId ? { ...m, content: accumulated } : m,
+              ),
+            }));
+          },
+          onToolCall: (tc) => {
+            get().addStreamToolCall({
+              id: tc.id,
+              toolName: tc.toolName,
+              input: tc.input,
+              status: "running",
+            });
+          },
+          onToolResult: (data) => {
+            get().updateStreamToolResult(data.id, data.output, "completed");
+          },
+          onError: (data) => {
+            set({ error: data.error });
+          },
+          onDone: (data) => {
+            const state = get();
+            const finalContent = state.streamingContent;
+            const finalToolCalls = state.streamingToolCalls.map((tc) => ({
+              ...tc,
+              status: tc.status === "running" ? "completed" as const : tc.status,
+            }));
+            state.finishStreaming(finalContent, finalToolCalls);
+
+            // Don't reload messages from server — would lose streamed content
+
+            api.getAgentTasks(currentSessionId).then((tasks) => {
+              set({ agentTasks: tasks });
+            }).catch(() => {});
+
+            set({ isSending: false });
+
+            if (data.status === "failed") {
+              set({ error: "Agent run failed" });
+            }
+          },
+        },
+      );
+
+      await promise;
+    } catch (err) {
+      // SSE stream ended or was interrupted — agent may still be running on server.
+      // Don't re-run. Poll for the result instead.
+      console.warn("[ChatStore] SSE stream ended for runAgent, polling for result:", err);
+
+      const state = get();
+      if (state.isStreaming && state.streamingMessageId) {
+        const partialContent = state.streamingContent;
+        const partialToolCalls = state.streamingToolCalls.map((tc) => ({
+          ...tc,
+          status: tc.status === "running" ? "completed" as const : tc.status,
+        }));
+        state.finishStreaming(partialContent, partialToolCalls);
+      }
+
+      // Poll for the final result
+      const pollForResult = async (attempts = 0) => {
+        if (attempts > 120) { set({ isSending: false }); return; }
         if (get().currentSessionId !== currentSessionId) { set({ isSending: false }); return; }
         try {
           const tasks = await api.getAgentTasks(currentSessionId);
           set({ agentTasks: tasks });
-          const current = tasks.find((t) => t.id === result.taskId);
-          if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
-            setTimeout(() => poll(count + 1), 1000);
+          const stillRunning = tasks.some(
+            (t) => t.status === "running" || t.status === "pending",
+          );
+          if (stillRunning) {
+            setTimeout(() => pollForResult(attempts + 1), 1000);
           } else {
             const messages = await api.getMessages(currentSessionId);
             set({ messages, isSending: false });
@@ -329,9 +508,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({ isSending: false });
         }
       };
-      setTimeout(() => poll(), 1000);
-    } catch (err) {
-      set({ error: String(err), isSending: false });
+      setTimeout(() => pollForResult(), 2000);
     }
   },
 

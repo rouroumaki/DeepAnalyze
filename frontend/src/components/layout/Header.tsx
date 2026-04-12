@@ -10,12 +10,14 @@ import { useKeyboard } from '../../hooks/useKeyboard';
 export function Header() {
   const { isDark, toggleTheme } = useTheme();
   const setActiveView = useUIStore((s) => s.setActiveView);
+  const setCurrentKbId = useUIStore((s) => s.setCurrentKbId);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<{ type: "session" | "kb"; id: string; label: string }[]>([]);
   const [healthStatus, setHealthStatus] = useState<"ok" | "error" | "loading">("loading");
   const searchRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Health polling
   useEffect(() => {
@@ -32,6 +34,7 @@ export function Header() {
   // Ctrl+K shortcut
   useKeyboard({ key: "k", ctrl: true }, () => {
     setSearchOpen(true);
+    setTimeout(() => searchInputRef.current?.focus(), 0);
   });
 
   // Search sessions + KBs
@@ -133,6 +136,7 @@ export function Header() {
           }}
         />
         <input
+          ref={searchInputRef}
           type="text"
           placeholder="搜索会话、文档、Wiki..."
           value={searchQuery}
@@ -175,6 +179,7 @@ export function Header() {
                     useChatStore.getState().selectSession(r.id);
                     useUIStore.getState().setActiveView("chat");
                   } else {
+                    useUIStore.getState().setCurrentKbId(r.id);
                     useUIStore.getState().setActiveView("knowledge");
                   }
                   setSearchOpen(false);

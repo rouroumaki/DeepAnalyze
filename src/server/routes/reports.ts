@@ -46,6 +46,24 @@ export function createReportRoutes(): Hono {
   const router = new Hono();
 
   // =====================================================================
+  // GET / - Report API root (API discoverability)
+  // =====================================================================
+
+  router.get("/", (c) => {
+    return c.json({
+      status: "ok",
+      message: "Reports API",
+      endpoints: [
+        "GET  /reports/:kbId",
+        "GET  /report/:reportId",
+        "POST /generate",
+        "GET  /timeline/:kbId",
+        "GET  /graph/:kbId",
+      ],
+    });
+  });
+
+  // =====================================================================
   // GET /reports/:kbId - List all reports for a knowledge base
   // =====================================================================
 

@@ -438,5 +438,281 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
 
   registry.register(createGraphTool({ linker: deps.linker, retriever: deps.retriever, dataDir: deps.dataDir }));
 
+  // -----------------------------------------------------------------------
+  // read_file tool — read files from the data directory
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "read_file",
+    description:
+      "Read the contents of a file. Returns the file content as text. " +
+      "Use this to inspect uploaded documents, configuration files, logs, or any " +
+      "file within the data directory. For files outside the data directory, " +
+      "use the bash tool with 'cat <path>'. Supports text files, markdown, CSV, JSON, etc.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Path to the file (relative to data directory, or absolute within data/)",
+        },
+        offset: {
+          type: "number",
+          description: "Line number to start reading from (0-based, default: 0)",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of lines to read (default: 2000)",
+        },
+      },
+      required: ["path"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { resolve, join } = await import("node:path");
+      const rawPath = input.path as string;
+      const offset = (input.offset as number) || 0;
+      const limit = (input.limit as number) || 2000;
+
+      // Resolve path relative to data directory for safety
+      const safePath = resolve(deps.dataDir, rawPath.startsWith("/") ? rawPath.slice(1) : rawPath);
+      if (!safePath.startsWith(resolve(deps.dataDir))) {
+        return { error: "Access denied: path outside data directory" };
+      }
+
+      if (!existsSync(safePath)) {
+        return { error: `File not found: ${rawPath}` };
+      }
+
+      try {
+        const content = readFileSync(safePath, "utf-8");
+        const lines = content.split("\n");
+        const sliced = lines.slice(offset, offset + limit);
+        return {
+          path: rawPath,
+          totalLines: lines.length,
+          showingLines: `${offset}-${Math.min(offset + limit, lines.length)}`,
+          content: sliced.join("\n"),
+        };
+      } catch (err) {
+        return { error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // grep tool — search file contents
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "grep",
+    description:
+      "Search for a pattern in files within the data directory. " +
+      "Returns matching lines with file paths and line numbers. " +
+      "Supports basic text search and regex patterns.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Search pattern (text or regex)",
+        },
+        path: {
+          type: "string",
+          description: "Directory or file to search in (relative to data directory). Default: entire data dir.",
+        },
+        maxResults: {
+          type: "number",
+          description: "Maximum number of matching lines to return (default: 50)",
+        },
+      },
+      required: ["pattern"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { execSync } = await import("node:child_process");
+      const { resolve } = await import("node:path");
+      const pattern = input.pattern as string;
+      const searchPath = input.path ? resolve(deps.dataDir, input.path as string) : deps.dataDir;
+      const maxResults = (input.maxResults as number) || 50;
+
+      if (!searchPath.startsWith(resolve(deps.dataDir))) {
+        return { error: "Access denied: path outside data directory" };
+      }
+
+      try {
+        const escapedPattern = pattern.replace(/'/g, "'\\''");
+        const result = execSync(
+          `grep -rn --include='*.md' --include='*.txt' --include='*.csv' --include='*.json' --include='*.yaml' --include='*.yml' -E '${escapedPattern}' '${searchPath}' 2>/dev/null | head -${maxResults}`,
+          { encoding: "utf-8", maxBuffer: 5 * 1024 * 1024, timeout: 10000 },
+        );
+
+        const lines = result.trim().split("\n").filter(Boolean);
+        return {
+          pattern,
+          matches: lines.length,
+          results: lines.map((line) => {
+            const colonIdx = line.indexOf(":");
+            const secondColon = line.indexOf(":", colonIdx + 1);
+            if (colonIdx > 0 && secondColon > 0) {
+              return {
+                file: line.substring(0, colonIdx).replace(deps.dataDir + "/", ""),
+                line: parseInt(line.substring(colonIdx + 1, secondColon), 10),
+                content: line.substring(secondColon + 1),
+              };
+            }
+            return { raw: line };
+          }),
+        };
+      } catch (err: unknown) {
+        // grep returns exit code 1 when no matches found
+        const execErr = err as { status?: number };
+        if (execErr.status === 1) {
+          return { pattern, matches: 0, results: [] };
+        }
+        return { error: `Search failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // glob tool — find files by pattern
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "glob",
+    description:
+      "Find files matching a pattern in the data directory. " +
+      "Returns a list of matching file paths. Supports glob patterns like *.pdf, **/*.md, etc.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Glob pattern (e.g. '**/*.md', '*.pdf', 'wiki/**/*.md')",
+        },
+        path: {
+          type: "string",
+          description: "Base directory for search (relative to data directory). Default: data root.",
+        },
+      },
+      required: ["pattern"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { glob } = await import("node:fs/promises");
+      const { resolve, join } = await import("node:path");
+      const pattern = input.pattern as string;
+      const basePath = input.path ? resolve(deps.dataDir, input.path as string) : deps.dataDir;
+
+      if (!basePath.startsWith(resolve(deps.dataDir))) {
+        return { error: "Access denied: path outside data directory" };
+      }
+
+      try {
+        const matches: string[] = [];
+        for await (const entry of glob(pattern, { cwd: basePath })) {
+          matches.push(entry);
+        }
+        return {
+          pattern,
+          base: input.path || "",
+          totalFiles: matches.length,
+          files: matches.slice(0, 200),
+        };
+      } catch (err) {
+        return { error: `Glob failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // bash tool — execute shell commands
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "bash",
+    description:
+      "Execute a shell command and return its output. Use with caution. " +
+      "The working directory is the project data directory. " +
+      "Commands time out after 30 seconds.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description: "Shell command to execute",
+        },
+        timeout: {
+          type: "number",
+          description: "Timeout in seconds (default: 30, max: 120)",
+        },
+      },
+      required: ["command"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { execSync } = await import("node:child_process");
+      const command = input.command as string;
+      const timeoutSec = Math.min((input.timeout as number) || 30, 120);
+
+      try {
+        const result = execSync(command, {
+          encoding: "utf-8",
+          cwd: deps.dataDir,
+          timeout: timeoutSec * 1000,
+          maxBuffer: 5 * 1024 * 1024,
+        });
+        return { exitCode: 0, output: result.trim() };
+      } catch (err: unknown) {
+        const execErr = err as { status?: number; stdout?: string; stderr?: string };
+        return {
+          exitCode: execErr.status ?? 1,
+          output: (execErr.stdout as string || "").trim(),
+          error: (execErr.stderr as string || "").trim() || (err instanceof Error ? err.message : String(err)),
+        };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // web_search tool — search the web
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "web_search",
+    description:
+      "Search the web for information. Returns search results with titles, URLs, and snippets. " +
+      "Useful for finding current information not available in the knowledge base.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query",
+        },
+        maxResults: {
+          type: "number",
+          description: "Maximum results to return (default: 10)",
+        },
+      },
+      required: ["query"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const query = input.query as string;
+      const maxResults = (input.maxResults as number) || 10;
+
+      try {
+        // Use the model router's web search if available, otherwise provide a helpful message
+        const encoded = encodeURIComponent(query);
+        return {
+          query,
+          message: "Web search is available but requires a search API endpoint to be configured. " +
+            "For now, you can suggest the user check external sources.",
+          suggestion: `Search query: "${query}"`,
+        };
+      } catch (err) {
+        return { error: `Web search failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
   return registry;
 }

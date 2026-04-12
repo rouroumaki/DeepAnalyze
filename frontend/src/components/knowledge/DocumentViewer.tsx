@@ -170,7 +170,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
             style={{
               margin: 0,
               fontSize: "var(--text-base)",
-              fontWeight: "var(--font-semibold)" as number,
+              fontWeight: "var(--font-semibold)",
               color: "var(--text-primary)",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -287,7 +287,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                   gap: "var(--space-1)",
                   padding: "2px var(--space-2)",
                   fontSize: "var(--text-xs)",
-                  fontWeight: "var(--font-semibold)" as number,
+                  fontWeight: "var(--font-semibold)",
                   borderRadius: "var(--radius-sm)",
                   backgroundColor:
                     expandedLevel === "L0"
@@ -312,7 +312,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                     gap: "var(--space-1)",
                     padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)" as number,
+                    fontWeight: "var(--font-medium)",
                     borderRadius: "var(--radius-sm)",
                     border: "1px solid var(--border-primary)",
                     backgroundColor: "var(--bg-tertiary)",
@@ -352,7 +352,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                       gap: "var(--space-1)",
                       padding: "2px var(--space-2)",
                       fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-semibold)" as number,
+                      fontWeight: "var(--font-semibold)",
                       borderRadius: "var(--radius-sm)",
                       backgroundColor: "var(--interactive)",
                       color: "#fff",
@@ -370,7 +370,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                       gap: "var(--space-1)",
                       padding: "2px var(--space-2)",
                       fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-medium)" as number,
+                      fontWeight: "var(--font-medium)",
                       borderRadius: "var(--radius-sm)",
                       border: "1px solid var(--border-primary)",
                       backgroundColor: "var(--bg-tertiary)",
@@ -410,7 +410,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                     gap: "var(--space-1)",
                     padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-semibold)" as number,
+                    fontWeight: "var(--font-semibold)",
                     borderRadius: "var(--radius-sm)",
                     backgroundColor: "var(--interactive)",
                     color: "#fff",
@@ -441,7 +441,7 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
                 style={{
                   fontSize: "var(--text-sm)",
                   color: "var(--text-secondary)",
-                  lineHeight: "var(--leading-relaxed)" as number,
+                  lineHeight: "var(--leading-relaxed)",
                 }}
               >
                 {renderContent()}
@@ -451,13 +451,6 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
         )}
       </div>
 
-      {/* Inline keyframes */}
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(4px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }

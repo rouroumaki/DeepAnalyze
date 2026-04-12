@@ -30,6 +30,10 @@ interface UIState {
   openRightPanel: (content: string) => void;
   closeRightPanel: () => void;
 
+  // Current knowledge base
+  currentKbId: string;
+  setCurrentKbId: (id: string) => void;
+
   // Toasts
   toasts: ToastItem[];
   addToast: (type: ToastItem['type'], message: string) => void;
@@ -109,6 +113,10 @@ export const useUIStore = create<UIState>((set, get) => {
     rightPanelContent: null,
     openRightPanel: (content) => set({ rightPanelOpen: true, rightPanelContent: content }),
     closeRightPanel: () => set({ rightPanelOpen: false, rightPanelContent: null }),
+
+    // Current knowledge base
+    currentKbId: "",
+    setCurrentKbId: (id) => set({ currentKbId: id }),
 
     // Toasts
     toasts: [],

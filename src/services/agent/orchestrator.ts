@@ -2,11 +2,14 @@
 // DeepAnalyze - Agent Orchestrator
 // =============================================================================
 // Manages parallel agent dispatch, task tracking in the database, result
-// collection, and coordinated workflows (coordinator pattern).
+// collection, coordinated workflows (coordinator pattern), and auto-dream
+// triggering after completed runs.
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
+import { ModelRouter } from "../../models/router.js";
 import { AgentRunner } from "./agent-runner.js";
+import { AutoDreamManager } from "./auto-dream.js";
 import type {
   AgentEvent,
   AgentResult,
@@ -14,6 +17,8 @@ import type {
   AgentStatus,
   AgentTask,
 } from "./types.js";
+import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
+import type { Linker } from "../../wiki/linker.js";
 import { DB } from "../../store/database.js";
 
 // ---------------------------------------------------------------------------
@@ -51,13 +56,29 @@ export interface OrchestratorResult {
 /**
  * Manages multi-agent orchestration: single runs, parallel dispatch, and
  * coordinator-driven workflows. Tracks all tasks in the agent_tasks DB table.
+ * Triggers auto-dream after successful runs when gating conditions are met.
  */
 export class Orchestrator {
   private runner: AgentRunner;
+  private modelRouter: ModelRouter;
+  private autoDream: AutoDreamManager | null;
   private activeControllers: Map<string, AbortController> = new Map();
 
-  constructor(runner: AgentRunner) {
+  constructor(
+    runner: AgentRunner,
+    modelRouter: ModelRouter,
+    compounder?: KnowledgeCompounder,
+    linker?: Linker,
+  ) {
     this.runner = runner;
+    this.modelRouter = modelRouter;
+
+    // Initialize AutoDreamManager if both compounder and linker are provided
+    if (compounder && linker) {
+      this.autoDream = new AutoDreamManager(modelRouter, compounder, linker);
+    } else {
+      this.autoDream = null;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -67,6 +88,7 @@ export class Orchestrator {
   /**
    * Run a single agent task and track it in the database.
    * This is the simplest form of orchestration -- one agent, one task.
+   * After completion, may trigger auto-dream if conditions are met.
    */
   async runSingle(options: AgentRunOptions): Promise<AgentResult> {
     const taskId = randomUUID();
@@ -101,6 +123,9 @@ export class Orchestrator {
 
       // Store the result
       this.updateTaskStatus(taskId, "completed", result.output);
+
+      // Trigger auto-dream asynchronously (fire-and-forget)
+      this.maybeTriggerAutoDream(options.sessionId);
 
       return result;
     } catch (err) {
@@ -246,6 +271,9 @@ export class Orchestrator {
 
     // Update parent task
     this.updateTaskStatus(parentTaskId, overallStatus === "failed" ? "failed" : "completed", synthesis);
+
+    // Trigger auto-dream asynchronously
+    this.maybeTriggerAutoDream(options?.sessionId);
 
     return {
       taskId: parentTaskId,
@@ -417,6 +445,32 @@ export class Orchestrator {
   }
 
   // -----------------------------------------------------------------------
+  // Private helpers - Auto-dream trigger
+  // -----------------------------------------------------------------------
+
+  /**
+   * Trigger auto-dream asynchronously if conditions are met.
+   * Does not block the caller — runs in the background.
+   */
+  private maybeTriggerAutoDream(sessionId?: string | null): void {
+    if (!this.autoDream) return;
+
+    // Increment session count
+    this.autoDream.incrementSessionCount();
+
+    // Check gates asynchronously
+    if (this.autoDream.shouldDream()) {
+      // Fire-and-forget — don't block the API response
+      this.autoDream.dream().catch((err) => {
+        console.warn(
+          "[Orchestrator] Auto-dream failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Private helpers - Database operations
   // -----------------------------------------------------------------------
 
@@ -523,7 +577,6 @@ export class Orchestrator {
     }
 
     // Strategy 3: Parse numbered list with agent type in brackets
-    // e.g. "1. [explore] Search for documents about X..."
     return this.parseListSubtasks(coordinatorOutput);
   }
 
@@ -554,29 +607,18 @@ export class Orchestrator {
 
   /**
    * Parse a numbered/bulleted list of subtasks from text.
-   * Looks for patterns like:
-   *   1. [explore] Search for...
-   *   - compile: Compile document...
-   *   * verify - Verify the analysis...
    */
   private parseListSubtasks(
     text: string,
   ): Array<{ agentType: string; input: string }> {
     const tasks: Array<{ agentType: string; input: string }> = [];
-
-    // Match lines that start with a number or bullet, possibly followed by
-    // an agent type identifier in brackets or before a colon/dash.
     const knownTypes = ["explore", "compile", "verify", "report", "general"];
 
     const lines = text.split("\n");
     for (const line of lines) {
       const trimmed = line.trim();
-
-      // Skip empty lines or lines that don't look like list items
       if (!trimmed) continue;
 
-      // Match: "1. [agentType] description" or "1. agentType: description"
-      // or "- agentType - description" or "* agentType: description"
       const listMatch = trimmed.match(
         /^(?:\d+[.)]\s*|[-*]\s+)(.+)$/,
       );
@@ -629,7 +671,6 @@ export class Orchestrator {
 
   /**
    * Synthesize results from multiple subtasks into a single summary string.
-   * Successful results are concatenated; failures are summarized.
    */
   private synthesizeResults(subTasks: SubTask[]): string {
     const sections: string[] = [];

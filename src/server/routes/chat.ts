@@ -3,8 +3,8 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import * as messageStore from "../../store/messages.ts";
-import * as sessionStore from "../../store/sessions.ts";
+import * as messageStore from "../../store/messages.js";
+import * as sessionStore from "../../store/sessions.js";
 
 export const chatRoutes = new Hono();
 

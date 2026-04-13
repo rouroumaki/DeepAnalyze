@@ -48,6 +48,9 @@ export interface Document {
   status: DocumentStatus;
   metadata: string | null; // JSON string
   createdAt: string;
+  processingStep: string | null;
+  processingProgress: number;
+  processingError: string | null;
 }
 
 export interface WikiPage {

@@ -14,6 +14,7 @@ import { migration as m003_vector_tables } from './migrations/003_vector_tables.
 import { migration as m004_settings } from './migrations/004_settings.ts';
 import { migration as m005_session_memory } from './migrations/005_session_memory.ts';
 import { migration as m006_cron_jobs } from './migrations/006_cron_jobs.ts';
+import { migration as m007_processing_steps } from './migrations/007_processing_steps.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
@@ -23,6 +24,7 @@ const MIGRATIONS = [
   m004_settings,
   m005_session_memory,
   m006_cron_jobs,
+  m007_processing_steps,
 ] as const;
 
 // ---------------------------------------------------------------------------

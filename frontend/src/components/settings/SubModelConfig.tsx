@@ -7,16 +7,17 @@ import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { ModelConfigCard } from "./ModelConfigCard";
-import type { ProviderConfig, ProviderDefaults } from "../../types/index";
+import type { ProviderConfig, ProviderDefaults, ProviderMetadata } from "../../types/index";
 import { ShieldCheck } from "lucide-react";
 
 interface SubModelConfigProps {
   providers: ProviderConfig[];
   defaults: ProviderDefaults | null;
+  registry: ProviderMetadata[];
   onSetDefault: (role: string, providerId: string) => void;
 }
 
-export function SubModelConfig({ providers, defaults, onSetDefault }: SubModelConfigProps) {
+export function SubModelConfig({ providers, defaults, registry, onSetDefault }: SubModelConfigProps) {
   const { success, error: showError } = useToast();
 
   const [providerId, setProviderId] = useState("");
@@ -94,6 +95,7 @@ export function SubModelConfig({ providers, defaults, onSetDefault }: SubModelCo
         enabled={enabled}
         showEnable={true}
         providers={providers}
+        registry={registry}
         onConfigChange={handleConfigChange}
         onTest={handleTest}
         testing={testing}

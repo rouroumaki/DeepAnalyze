@@ -10,7 +10,7 @@ import { MainModelConfig } from "./MainModelConfig";
 import { SubModelConfig } from "./SubModelConfig";
 import { EmbeddingModelConfig } from "./EmbeddingModelConfig";
 import { EnhancedModelsConfig } from "./EnhancedModelsConfig";
-import type { ProviderConfig, ProviderDefaults, ProviderSettings } from "../../types/index";
+import type { ProviderConfig, ProviderDefaults, ProviderSettings, ProviderMetadata } from "../../types/index";
 import {
   Bot,
   Sparkles,
@@ -30,10 +30,11 @@ const modelTabs: { id: ModelTabId; label: string; shortLabel: string; icon: Reac
 interface ModelsPanelProps {
   providers: ProviderConfig[];
   settings: ProviderSettings | null;
+  registry: ProviderMetadata[];
   onSettingsChanged: () => void;
 }
 
-export function ModelsPanel({ providers, settings, onSettingsChanged }: ModelsPanelProps) {
+export function ModelsPanel({ providers, settings, registry, onSettingsChanged }: ModelsPanelProps) {
   const { success, error: showError } = useToast();
   const [activeTab, setActiveTab] = useState<ModelTabId>("main");
 
@@ -99,10 +100,10 @@ export function ModelsPanel({ providers, settings, onSettingsChanged }: ModelsPa
 
       {/* Tab content */}
       {activeTab === "main" && (
-        <MainModelConfig providers={providers} defaults={defaults} onSetDefault={handleSetDefault} />
+        <MainModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} />
       )}
       {activeTab === "sub" && (
-        <SubModelConfig providers={providers} defaults={defaults} onSetDefault={handleSetDefault} />
+        <SubModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} />
       )}
       {activeTab === "embedding" && (
         <EmbeddingModelConfig providers={providers} defaults={defaults} onSave={handleEmbeddingSave} onTest={handleEmbeddingTest} />

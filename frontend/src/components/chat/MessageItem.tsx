@@ -3,6 +3,7 @@ import { ToolCallCard } from "./ToolCallCard";
 import { TraceabilityLink } from "./TraceabilityLink";
 import { FilePreview } from "../ui/FilePreview";
 import { useToast } from "../../hooks/useToast";
+import { useUIStore } from "../../store/ui";
 import { Copy, RefreshCw, FileDown } from "lucide-react";
 import { useState } from "react";
 import type { MessageInfo } from "../../types/index";
@@ -16,6 +17,8 @@ export function MessageItem({ message }: MessageItemProps) {
   const htmlContent = useMarkdown(message.content);
   const [showActions, setShowActions] = useState(false);
   const { success, error: toastError } = useToast();
+  const currentKbId = useUIStore((s) => s.currentKbId);
+  const navigateToDoc = useUIStore((s) => s.navigateToDoc);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -105,6 +108,14 @@ export function MessageItem({ message }: MessageItemProps) {
                   className="markdown-content"
                   style={{ fontSize: "var(--text-sm)", lineHeight: "var(--leading-relaxed)" }}
                   dangerouslySetInnerHTML={{ __html: htmlContent }}
+                  onClick={(e) => {
+                    const target = e.target as HTMLElement;
+                    // Handle clicks on document reference links
+                    const docRef = target.closest<HTMLElement>('[data-doc-id]');
+                    if (docRef && currentKbId) {
+                      navigateToDoc(currentKbId, docRef.dataset.docId!);
+                    }
+                  }}
                 />
                 {/* Traceability links extracted from content */}
                 {message.content && (
@@ -240,6 +251,9 @@ function ActionIcon({
 }
 
 function TraceabilityExtractor({ content }: { content: string }) {
+  const navigateToDoc = useUIStore((s) => s.navigateToDoc);
+  const currentKbId = useUIStore((s) => s.currentKbId);
+
   // Match patterns like [📄 第3.2条→] or [📄 来源→]
   const pattern = /\[📄\s*(.+?)→\]/g;
   const matches: { full: string; label: string }[] = [];
@@ -251,7 +265,9 @@ function TraceabilityExtractor({ content }: { content: string }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)", marginTop: "var(--space-1)" }}>
       {matches.map((m, i) => (
-        <TraceabilityLink key={i} label={m.label} confidence="confirmed" />
+        <span key={i} onClick={() => { if (currentKbId) navigateToDoc(currentKbId, ""); }} style={{ cursor: "pointer" }}>
+          <TraceabilityLink label={m.label} confidence="confirmed" />
+        </span>
       ))}
     </div>
   );

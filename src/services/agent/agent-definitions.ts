@@ -50,7 +50,12 @@ When given a task:
 6. Synthesize your findings into a clear, structured answer
 7. Call finish with your final answer when done
 
-Always cite your sources by referencing the document or wiki page you found information in.`,
+Always cite your sources by referencing the document or wiki page you found information in.
+
+## 报告生成
+当你完成了一项复杂的深度分析（多文档对比、趋势分析、综合研究等），
+主动使用 report_generate 工具生成结构化报告，而不是只在对话中输出。
+报告会保存到知识库中，用户可以在报告面板查看和导出。`,
   tools: ["*"],
   maxTurns: 50,
 };

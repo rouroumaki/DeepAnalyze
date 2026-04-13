@@ -7,7 +7,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import type { ProviderConfig, ProviderSettings, ProviderMetadata, ProviderDefaults, AgentSettings } from "../../types/index";
-import { CronManager } from "../cron/CronManager";
 import { ChannelsPanel } from "../channels/ChannelsPanel";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore, type ThemeMode } from "../../store/ui";
@@ -23,7 +22,6 @@ import {
   Server,
   Globe,
   Info,
-  Cpu,
   Settings2,
   Plus,
   MessageCircle,
@@ -33,12 +31,11 @@ import {
 // Settings tab type
 // ---------------------------------------------------------------------------
 
-type SettingsTabId = "models" | "channels" | "cron" | "general";
+type SettingsTabId = "models" | "channels" | "general";
 
 const settingsTabs: { id: SettingsTabId; label: string; icon: React.ReactNode }[] = [
   { id: "models", label: "模型配置", icon: <Server size={16} /> },
   { id: "channels", label: "通信渠道", icon: <MessageCircle size={16} /> },
-  { id: "cron", label: "定时任务", icon: <Cpu size={16} /> },
   { id: "general", label: "通用", icon: <Globe size={16} /> },
 ];
 
@@ -449,6 +446,7 @@ export function SettingsPanel() {
                 <ModelsPanel
                   providers={settings?.providers ?? []}
                   settings={settings}
+                  registry={registry}
                   onSettingsChanged={loadData}
                 />
               </div>
@@ -461,13 +459,6 @@ export function SettingsPanel() {
           {/* ============================================================= */}
           {activeTab === "channels" && (
             <ChannelsPanel />
-          )}
-
-          {/* ============================================================= */}
-          {/* Cron Tab */}
-          {/* ============================================================= */}
-          {activeTab === "cron" && (
-            <CronManager />
           )}
 
           {/* ============================================================= */}

@@ -19,6 +19,7 @@ import {
   Plus,
   X,
   FileDown,
+  ExternalLink,
 } from "lucide-react";
 
 interface ReportPanelProps {
@@ -496,7 +497,7 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
             加载中...
           </div>
         ) : selectedReport ? (
-          <ReportDetailPanel report={selectedReport} onBack={() => setSelectedReport(null)} onExport={(id, title) => { setExportingReportId(id); setExportingReportTitle(title); }} />
+          <ReportDetailPanel report={selectedReport} kbId={kbId} onBack={() => setSelectedReport(null)} onExport={(id, title) => { setExportingReportId(id); setExportingReportTitle(title); }} />
         ) : activeSubTab === "reports" ? (
           <div style={{
             height: "100%",
@@ -685,8 +686,9 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 }
 
 // Report Detail View
-function ReportDetailPanel({ report, onBack, onExport }: { report: ReportDetail; onBack: () => void; onExport: (id: string, title: string) => void }) {
+function ReportDetailPanel({ report, kbId, onBack, onExport }: { report: ReportDetail; kbId: string; onBack: () => void; onExport: (id: string, title: string) => void }) {
   const htmlContent = useMarkdown(report.content);
+  const navigateToWikiPage = useUIStore((s) => s.navigateToWikiPage);
 
   return (
     <div style={{ height: "100%", overflowY: "auto" }}>
@@ -732,13 +734,35 @@ function ReportDetailPanel({ report, onBack, onExport }: { report: ReportDetail;
             background: "transparent",
             color: "var(--text-secondary)",
             transition: "all var(--transition-fast)",
-            marginLeft: "auto",
           }}
           onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; e.currentTarget.style.color = "var(--interactive)"; }}
           onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
         >
           <FileDown size={14} />
           导出
+        </button>
+        <button
+          onClick={() => navigateToWikiPage(kbId, report.id)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-1)",
+            padding: "4px 10px",
+            fontSize: "var(--text-xs)",
+            fontWeight: "var(--font-medium)",
+            borderRadius: "var(--radius-md)",
+            cursor: "pointer",
+            border: "1px solid var(--border-primary)",
+            background: "transparent",
+            color: "var(--text-secondary)",
+            transition: "all var(--transition-fast)",
+            marginLeft: "auto",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; e.currentTarget.style.color = "var(--interactive)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+        >
+          <ExternalLink size={14} />
+          在知识库中查看
         </button>
         <div>
           <h3 style={{

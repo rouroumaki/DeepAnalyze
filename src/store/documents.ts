@@ -62,6 +62,9 @@ function rowToDocument(row: Record<string, unknown>): Document {
     status: row.status as Document["status"],
     metadata: row.metadata as string | null,
     createdAt: row.created_at as string,
+    processingStep: row.processing_step as string | null ?? null,
+    processingProgress: row.processing_progress as number ?? 0.0,
+    processingError: row.processing_error as string | null ?? null,
   };
 }
 
@@ -116,6 +119,9 @@ export function createDocument(
     status: "uploaded",
     metadata: null,
     createdAt: new Date().toISOString(),
+    processingStep: null,
+    processingProgress: 0.0,
+    processingError: null,
   };
 }
 

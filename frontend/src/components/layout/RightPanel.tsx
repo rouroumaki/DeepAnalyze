@@ -16,9 +16,6 @@ import { Spinner } from "../ui/Spinner";
 const SessionsPanel = lazy(() =>
   import("../sessions/SessionsPanel").then((m) => ({ default: m.SessionsPanel }))
 );
-const SkillBrowser = lazy(() =>
-  import("../plugins/SkillBrowser").then((m) => ({ default: m.SkillBrowser }))
-);
 const PluginManager = lazy(() =>
   import("../plugins/PluginManager").then((m) => ({ default: m.PluginManager }))
 );
@@ -35,7 +32,6 @@ const CronManager = lazy(() =>
 
 const PANEL_TITLES: Record<PanelContentType, string> = {
   sessions: "会话历史",
-  skills: "技能库",
   plugins: "插件管理",
   cron: "定时任务",
   settings: "设置",
@@ -43,7 +39,6 @@ const PANEL_TITLES: Record<PanelContentType, string> = {
 
 const PANEL_WIDTHS: Record<PanelContentType, number> = {
   sessions: 420,
-  skills: 480,
   plugins: 480,
   cron: 560,
   settings: 640,
@@ -66,8 +61,6 @@ function PanelContent({ type }: { type: PanelContentType }) {
         switch (type) {
           case "sessions":
             return <SessionsPanel />;
-          case "skills":
-            return <SkillBrowser />;
           case "plugins":
             return <PluginManager />;
           case "cron":

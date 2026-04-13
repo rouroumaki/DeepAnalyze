@@ -4,7 +4,7 @@
 // =============================================================================
 
 import { useState, useEffect } from "react";
-import type { ProviderConfig } from "../../types/index";
+import type { ProviderConfig, ProviderMetadata } from "../../types/index";
 import { CheckCircle2, XCircle, Wifi } from "lucide-react";
 
 export interface ModelConfigCardProps {
@@ -18,6 +18,8 @@ export interface ModelConfigCardProps {
   enabled: boolean;
   showEnable?: boolean;
   providers: ProviderConfig[];
+  /** Provider registry entries for auto-filling defaults when a provider is selected */
+  registry?: ProviderMetadata[];
   onConfigChange: (config: {
     providerId: string;
     model: string;
@@ -63,6 +65,7 @@ export function ModelConfigCard({
   enabled,
   showEnable = false,
   providers,
+  registry = [],
   onConfigChange,
   onTest,
   testing = false,
@@ -71,6 +74,12 @@ export function ModelConfigCard({
 }: ModelConfigCardProps) {
   const emit = (patch: Partial<Parameters<ModelConfigCardProps["onConfigChange"]>[0]>) => {
     onConfigChange({ providerId, model, temperature, maxTokens, enabled, ...patch });
+  };
+
+  /** Look up default model from the provider registry for a given provider ID */
+  const getDefaultModel = (pid: string): string => {
+    const meta = registry.find((r) => r.id === pid);
+    return meta?.defaultModel ?? "";
   };
 
   return (
@@ -117,8 +126,11 @@ export function ModelConfigCard({
           <select
             value={providerId}
             onChange={(e) => {
-              const p = providers.find((pr) => pr.id === e.target.value);
-              emit({ providerId: e.target.value, model: p?.model ?? "" });
+              const selectedId = e.target.value;
+              const configured = providers.find((pr) => pr.id === selectedId);
+              // Use the configured model if available, otherwise fall back to registry default
+              const newModel = configured?.model || getDefaultModel(selectedId);
+              emit({ providerId: selectedId, model: newModel });
             }}
             style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}
           >

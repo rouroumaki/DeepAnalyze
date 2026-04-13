@@ -258,6 +258,98 @@ export class KnowledgeCompounder {
   }
 
   // -----------------------------------------------------------------------
+  // Compound with source tracing and confidence scoring
+  // -----------------------------------------------------------------------
+
+  /**
+   * Compound an agent result with source tracing and confidence scoring.
+   * Creates a report page that includes a "来源溯源" (source tracing) section
+   * linking back to the wiki pages that informed the analysis.
+   *
+   * @param kbId      Knowledge base to save into
+   * @param agentType The agent type tag (e.g. "explore", "compile")
+   * @param input     The original task prompt / input text
+   * @param output    The agent's output text
+   * @param sources   Array of source pages that were accessed during the run
+   * @returns The created page ID, or `null` if nothing was written.
+   */
+  compoundWithTracing(
+    kbId: string,
+    agentType: string,
+    input: string,
+    output: string,
+    sources: Array<{ pageId: string; title: string }>,
+  ): string | null {
+    // Skip if output is too short to be worth compounding
+    if (!output || output.trim().length < 100) return null;
+
+    const title = `[${agentType}] ${input.slice(0, 60)}...`;
+    const timestamp = new Date().toISOString();
+    const confidence = this.assessConfidence(output, sources);
+
+    // Build source tracing section
+    const tracingSection = sources.length > 0
+      ? `\n\n## 来源溯源\n${sources.map(s => `- [[${s.title}]]`).join("\n")}`
+      : "";
+
+    const content = [
+      `# ${title}`,
+      "",
+      `> **Agent Type:** ${agentType}  `,
+      `> **Generated:** ${timestamp}  `,
+      `> **Confidence:** ${confidence}`,
+      "",
+      "## Input Summary",
+      "",
+      input.length > 500 ? input.slice(0, 500) + "..." : input,
+      "",
+      "## Analysis Result",
+      "",
+      output,
+      tracingSection,
+    ].join("\n");
+
+    // Save as wiki report page (same pattern as compoundAgentResult)
+    const wikiDir = join(this.dataDir, "wiki");
+    const page = createWikiPage(
+      kbId,
+      null,          // reports are not tied to a specific document
+      "report",
+      title,
+      content,
+      wikiDir,
+    );
+
+    console.log(
+      `[KnowledgeCompounder] Saved traced report page ${page.id} for KB ${kbId} (confidence: ${confidence}, sources: ${sources.length})`,
+    );
+
+    // Emit event
+    if (page.id) {
+      try {
+        const { eventBus } = require("../services/event-bus.js");
+        eventBus.emit({ type: "compound_written", kbId, pageId: page.id, title });
+      } catch {
+        // eventBus not available
+      }
+    }
+
+    return page.id;
+  }
+
+  /**
+   * Assess confidence level based on number of sources.
+   */
+  private assessConfidence(
+    _output: string,
+    sources: Array<{ pageId: string; title: string }>,
+  ): "high" | "medium" | "low" {
+    if (sources.length >= 3) return "high";
+    if (sources.length >= 1) return "medium";
+    return "low";
+  }
+
+  // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
 

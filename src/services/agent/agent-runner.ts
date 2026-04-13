@@ -137,6 +137,9 @@ export class AgentRunner {
     let lastAssistantContent = "";
     const compactionEvents: Array<{ turn: number; method: string; tokensSaved: number }> = [];
 
+    // Track accessed wiki pages for source tracing
+    const accessedPages = new Map<string, { pageId: string; title: string }>();
+
     // Initialize context management components (reused across turns, L1/L2 fix)
     const contextManager = new ContextManager(this.modelRouter, modelId, toolDefs, agentSettings);
     const microCompactor = new MicroCompactor();
@@ -265,7 +268,13 @@ export class AgentRunner {
           if (toolCall.function.name === "finish") {
             agentCalledFinish = true;
           }
-          const toolResultMessage = await this.executeToolCall(toolCall, taskId, turn, options.onEvent);
+          const toolResultMessage = await this.executeToolCall(
+            toolCall,
+            taskId,
+            turn,
+            options.onEvent,
+            accessedPages,
+          );
           messages.push(toolResultMessage);
         }
       } else {
@@ -333,7 +342,40 @@ export class AgentRunner {
     }
 
     // Build final result
-    return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
+    const result = this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
+
+    // Auto-compound on task completion
+    const finalOutput = result.output;
+    const kbId = options.kbId;
+    if (finalOutput && finalOutput.trim().length >= 100 && kbId) {
+      try {
+        const { eventBus } = require("../event-bus.js");
+        eventBus.emit({
+          type: "agent_task_complete",
+          sessionId: options.sessionId ?? "",
+          taskId,
+          agentType,
+          output: finalOutput,
+        });
+
+        // Trigger compound with source tracing
+        const { KnowledgeCompounder } = require("../../wiki/knowledge-compound.js");
+        const { DEEPANALYZE_CONFIG } = require("../../core/config.js");
+        const compounder = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
+        compounder.compoundWithTracing(
+          kbId,
+          agentType,
+          options.input,
+          finalOutput,
+          Array.from(accessedPages.values()),
+        );
+      } catch (err) {
+        // Compound failure should not break the agent flow
+        console.warn("[AgentRunner] Auto-compound failed:", err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -368,6 +410,7 @@ export class AgentRunner {
     taskId: string,
     turn: number,
     onEvent?: (event: AgentEvent) => void,
+    accessedPages?: Map<string, { pageId: string; title: string }>,
   ): Promise<ChatMessage> {
     const toolName = toolCall.function.name;
     let toolInput: Record<string, unknown>;
@@ -404,6 +447,11 @@ export class AgentRunner {
     this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result });
     this.recordProgress(onEvent, taskId, turn, "tool_result", `Tool ${toolName} completed`, toolName, undefined, result);
 
+    // Collect accessed page IDs for source tracing
+    if (accessedPages) {
+      this.collectAccessedPages(toolName, result, accessedPages);
+    }
+
     let resultContent: string;
     try {
       resultContent = JSON.stringify(result);
@@ -415,6 +463,54 @@ export class AgentRunner {
     }
 
     return { role: "tool", content: resultContent, toolCallId: toolCall.id };
+  }
+
+  // -----------------------------------------------------------------------
+  // Source tracing: collect accessed page IDs from tool results
+  // -----------------------------------------------------------------------
+
+  /**
+   * Extract page IDs and titles from tool results (kb_search, wiki_browse,
+   * expand) and add them to the accessedPages map for source tracing.
+   */
+  private collectAccessedPages(
+    toolName: string,
+    result: unknown,
+    accessedPages: Map<string, { pageId: string; title: string }>,
+  ): void {
+    try {
+      const obj = result as Record<string, unknown>;
+      if (!obj || typeof obj !== "object") return;
+
+      if (toolName === "kb_search" && Array.isArray(obj.results)) {
+        for (const r of obj.results as Array<Record<string, unknown>>) {
+          if (typeof r.pageId === "string" && typeof r.title === "string") {
+            accessedPages.set(r.pageId, { pageId: r.pageId, title: r.title });
+          }
+        }
+      } else if (toolName === "wiki_browse") {
+        // wiki_browse returns { page: { id, title } } when viewing a specific page
+        const page = obj.page as Record<string, unknown> | undefined;
+        if (page && typeof page.id === "string" && typeof page.title === "string") {
+          accessedPages.set(page.id, { pageId: page.id, title: page.title });
+        }
+        // Also collect pages from listed results
+        if (Array.isArray(obj.pages)) {
+          for (const p of obj.pages as Array<Record<string, unknown>>) {
+            if (typeof p.id === "string" && typeof p.title === "string") {
+              accessedPages.set(p.id, { pageId: p.id, title: p.title });
+            }
+          }
+        }
+      } else if (toolName === "expand" && obj.result) {
+        const expandResult = obj.result as Record<string, unknown>;
+        if (typeof expandResult.pageId === "string" && typeof expandResult.title === "string") {
+          accessedPages.set(expandResult.pageId, { pageId: expandResult.pageId, title: expandResult.title });
+        }
+      }
+    } catch {
+      // Non-critical: source tracing should never break tool execution
+    }
   }
 
   // -----------------------------------------------------------------------

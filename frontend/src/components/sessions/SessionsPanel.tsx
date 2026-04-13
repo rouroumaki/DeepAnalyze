@@ -3,7 +3,7 @@
 // Session list for the right-side panel
 // =============================================================================
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from "react";
 import { useChatStore } from "../../store/chat";
 import { useUIStore } from "../../store/ui";
 import { useToast } from "../../hooks/useToast";
@@ -22,7 +22,7 @@ import {
   Inbox,
 } from "lucide-react";
 
-export function SessionsPanel() {
+function SessionsPanelInner() {
   const { success, error: toastError } = useToast();
   const confirm = useConfirm();
   const selectSession = useChatStore((s) => s.selectSession);
@@ -88,12 +88,15 @@ export function SessionsPanel() {
     }
   };
 
-  // Filter sessions by search query
-  const filteredSessions = searchQuery.trim()
-    ? sessions.filter((s) =>
-        (s.title || "新对话").toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : sessions;
+  // Filter sessions by search query (deferred for performance)
+  const deferredQuery = useDeferredValue(searchQuery);
+  const filteredSessions = useMemo(() => {
+    if (!deferredQuery.trim()) return sessions;
+    const q = deferredQuery.toLowerCase();
+    return sessions.filter((s) =>
+      (s.title || "新对话").toLowerCase().includes(q)
+    );
+  }, [sessions, deferredQuery]);
 
   // --- Loading state ---
   if (loading) {
@@ -259,3 +262,5 @@ export function SessionsPanel() {
     </div>
   );
 }
+
+export const SessionsPanel = React.memo(SessionsPanelInner);

@@ -144,7 +144,7 @@ export interface DocumentInfo {
   filename: string;
   fileType: string;
   fileSize: number;
-  status: "uploaded" | "parsing" | "compiling" | "ready" | "error";
+  status: "uploaded" | "parsing" | "compiling" | "indexing" | "linking" | "ready" | "error";
   createdAt: string;
 }
 

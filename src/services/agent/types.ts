@@ -160,6 +160,8 @@ export interface AgentRunOptions {
   toolsOverride?: string[];
   /** Enable continuous running mode (default: true). When true, uses while(true) loop. */
   continuous?: boolean;
+  /** Knowledge base ID for auto-compounding results after task completion. */
+  kbId?: string;
 }
 
 // ---------------------------------------------------------------------------

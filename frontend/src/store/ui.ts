@@ -3,7 +3,7 @@ import { storage } from '../utils/storage';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type ViewId = 'chat' | 'knowledge' | 'reports' | 'tasks';
-export type PanelContentType = 'sessions' | 'skills' | 'plugins' | 'cron' | 'settings';
+export type PanelContentType = 'sessions' | 'plugins' | 'cron' | 'settings';
 
 interface ToastItem {
   id: string;
@@ -34,6 +34,10 @@ interface UIState {
   // Current knowledge base
   currentKbId: string;
   setCurrentKbId: (id: string) => void;
+
+  // Cross-module navigation
+  navigateToDoc: (kbId: string, docId: string) => void;
+  navigateToWikiPage: (kbId: string, pageId: string) => void;
 
   // Toasts
   toasts: ToastItem[];
@@ -124,6 +128,10 @@ export const useUIStore = create<UIState>((set, get) => {
     // Current knowledge base
     currentKbId: "",
     setCurrentKbId: (id) => set({ currentKbId: id }),
+
+    // Cross-module navigation
+    navigateToDoc: (kbId, _docId) => set({ currentKbId: kbId, activeView: 'knowledge' }),
+    navigateToWikiPage: (kbId, _pageId) => set({ currentKbId: kbId, activeView: 'knowledge' }),
 
     // Toasts
     toasts: [],

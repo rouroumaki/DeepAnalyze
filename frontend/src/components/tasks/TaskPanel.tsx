@@ -1,12 +1,14 @@
 // =============================================================================
 // DeepAnalyze - TaskPanel Component
-// Shows all agent tasks across sessions
+// Shows all agent tasks and document processing tasks across sessions
 // =============================================================================
 
 import { useState, useEffect, useMemo } from "react";
 import { api } from "../../api/client";
-import type { AgentTaskInfo, DocumentInfo, KnowledgeBase } from "../../types/index";
+import type { AgentTaskInfo, DocumentInfo } from "../../types/index";
 import { useChatStore } from "../../store/chat";
+import { useUIStore } from "../../store/ui";
+import { useDocProcessing } from "../../hooks/useDocProcessing";
 import {
   Loader2,
   CheckCircle2,
@@ -21,9 +23,14 @@ export function TaskPanel() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
   const sessionTasks = useChatStore((s) => s.agentTasks);
   const cancelAgentTask = useChatStore((s) => s.cancelAgentTask);
+  const currentKbId = useUIStore((s) => s.currentKbId);
+  const navigateToDoc = useUIStore((s) => s.navigateToDoc);
   const [allTasks, setAllTasks] = useState<AgentTaskInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"running" | "queue" | "history">("running");
+
+  // Use WebSocket for real-time doc processing updates
+  const { processingDocs } = useDocProcessing(currentKbId || null);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -37,38 +44,66 @@ export function TaskPanel() {
   const running = allTasks.filter((t) => t.status === "running" || t.status === "pending");
   const done = allTasks.filter((t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled");
 
-  // --- Queue tab: fetching compiling documents ---
-  const [compilingDocs, setCompilingDocs] = useState<(DocumentInfo & { kbName: string })[]>([]);
+  // --- Queue tab: use WebSocket processing docs + fallback polling for all KBs ---
+  const [pollingDocs, setPollingDocs] = useState<(DocumentInfo & { kbName: string })[]>([]);
+
+  // Load doc names for processing docs (for display)
+  const [docNames, setDocNames] = useState<Map<string, { filename: string; kbName: string }>>(new Map());
 
   useEffect(() => {
     if (activeTab !== "queue") return;
     api.listKnowledgeBases().then(async (kbs) => {
       const all: (DocumentInfo & { kbName: string })[] = [];
+      const nameMap = new Map<string, { filename: string; kbName: string }>();
       for (const kb of kbs) {
         try {
           const docs = await api.listDocuments(kb.id);
           for (const doc of docs) {
-            if (doc.status === "parsing" || doc.status === "compiling") {
+            nameMap.set(doc.id, { filename: doc.filename, kbName: kb.name });
+            if (doc.status === "parsing" || doc.status === "compiling" || doc.status === "indexing" || doc.status === "linking") {
               all.push({ ...doc, kbName: kb.name });
             }
           }
         } catch {}
       }
-      setCompilingDocs(all);
+      setPollingDocs(all);
+      setDocNames(nameMap);
     });
   }, [activeTab]);
 
-  // Stable progress values per doc (avoid Math.random on every render)
-  const progressMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const doc of compilingDocs) {
-      let hash = 0;
-      for (let i = 0; i < doc.id.length; i++) hash = ((hash << 5) - hash + doc.id.charCodeAt(i)) | 0;
-      const base = Math.abs(hash) % 100;
-      map.set(doc.id, doc.status === "parsing" ? (base % 30) + 10 : (base % 40) + 50);
+  // Merge: WebSocket processingDocs take precedence for active processing
+  const queueItems = useMemo(() => {
+    const items: Array<{ docId: string; filename: string; kbName: string; step: string; progress: number; error?: string }> = [];
+
+    // Add docs from WebSocket (real-time)
+    for (const [docId, state] of processingDocs) {
+      const info = docNames.get(docId);
+      items.push({
+        docId,
+        filename: info?.filename ?? docId,
+        kbName: info?.kbName ?? currentKbId,
+        step: state.step,
+        progress: Math.round(state.progress * 100),
+        error: state.error,
+      });
     }
-    return map;
-  }, [compilingDocs]);
+
+    // Add docs from polling that aren't already tracked by WebSocket
+    const wsIds = new Set(processingDocs.keys());
+    for (const doc of pollingDocs) {
+      if (!wsIds.has(doc.id)) {
+        items.push({
+          docId: doc.id,
+          filename: doc.filename,
+          kbName: doc.kbName,
+          step: doc.status,
+          progress: 50,
+        });
+      }
+    }
+
+    return items;
+  }, [processingDocs, pollingDocs, docNames, currentKbId]);
 
   return (
     <div style={{
@@ -214,7 +249,7 @@ export function TaskPanel() {
         {/* Queue Tab */}
         {activeTab === "queue" && (
           <>
-            {compilingDocs.length === 0 ? (
+            {queueItems.length === 0 ? (
               <div style={{
                 textAlign: "center",
                 padding: "48px 0",
@@ -233,20 +268,38 @@ export function TaskPanel() {
                   color: "var(--text-tertiary)",
                   marginBottom: "var(--space-2)",
                 }}>
-                  编译队列 ({compilingDocs.length})
+                  处理队列 ({queueItems.length})
                 </h4>
                 <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                  {compilingDocs.map((doc) => {
-                    const progress = progressMap.get(doc.id) ?? 50;
+                  {queueItems.map((item) => {
+                    const stepLabel: Record<string, string> = {
+                      parsing: "解析中",
+                      compiling: "编译中",
+                      indexing: "索引中",
+                      linking: "关联中",
+                      uploading: "上传中",
+                    };
+                    const stepColor: Record<string, string> = {
+                      parsing: "var(--warning, #d97706)",
+                      uploading: "var(--warning, #d97706)",
+                    };
+                    const label = stepLabel[item.step] ?? item.step;
+                    const color = stepColor[item.step] ?? "var(--interactive)";
+                    const bgColor = stepColor[item.step] ? "var(--warning-light, #fef3c7)" : "var(--interactive-light)";
                     return (
                       <div
-                        key={doc.id}
+                        key={item.docId}
+                        onClick={() => navigateToDoc(currentKbId, item.docId)}
                         style={{
                           border: "1px solid var(--border-primary)",
                           borderRadius: "var(--radius-lg)",
                           padding: "var(--space-3) var(--space-4)",
                           background: "var(--bg-secondary)",
+                          cursor: "pointer",
+                          transition: "border-color var(--transition-fast)",
                         }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
                       >
                         <div style={{
                           display: "flex",
@@ -264,20 +317,20 @@ export function TaskPanel() {
                               textOverflow: "ellipsis",
                               whiteSpace: "nowrap",
                             }}>
-                              {doc.filename}
+                              {item.filename}
                             </span>
                           </div>
                           <span style={{
                             fontSize: "var(--text-xs)",
                             padding: "2px 8px",
                             borderRadius: "var(--radius-sm)",
-                            background: doc.status === "parsing" ? "var(--warning-light, #fef3c7)" : "var(--interactive-light)",
-                            color: doc.status === "parsing" ? "var(--warning, #d97706)" : "var(--interactive)",
+                            background: bgColor,
+                            color: color,
                             fontWeight: 500,
                             flexShrink: 0,
                             marginLeft: "var(--space-2)",
                           }}>
-                            {doc.status === "parsing" ? "解析中" : "编译中"}
+                            {label}
                           </span>
                         </div>
                         <div style={{
@@ -285,7 +338,7 @@ export function TaskPanel() {
                           color: "var(--text-tertiary)",
                           marginBottom: "var(--space-2)",
                         }}>
-                          知识库: {doc.kbName}
+                          知识库: {item.kbName}
                         </div>
                         {/* Progress bar */}
                         <div style={{
@@ -296,9 +349,9 @@ export function TaskPanel() {
                           overflow: "hidden",
                         }}>
                           <div style={{
-                            width: `${progress}%`,
+                            width: `${item.progress}%`,
                             height: "100%",
-                            background: doc.status === "parsing" ? "var(--warning, #d97706)" : "var(--interactive)",
+                            background: color,
                             borderRadius: "var(--radius-full)",
                             transition: "width var(--transition-fast)",
                           }} />

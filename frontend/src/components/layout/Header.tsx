@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Search, Sun, Moon, Settings, Activity,
-  History, Zap, Puzzle, Clock,
+  Search, Sun, Moon, Settings,
+  History, Puzzle, Clock,
 } from 'lucide-react';
 import { useTheme } from '../../hooks/useTheme';
 import { useUIStore, type PanelContentType } from '../../store/ui';
@@ -11,12 +11,20 @@ import type { SessionInfo, KnowledgeBase } from '../../types/index';
 import { useKeyboard } from '../../hooks/useKeyboard';
 
 // ---------------------------------------------------------------------------
+// Search result types
+// ---------------------------------------------------------------------------
+
+type SearchItemType =
+  | { kind: "session"; id: string; label: string }
+  | { kind: "document"; id: string; label: string; kbId: string; kbName: string }
+  | { kind: "wiki"; id: string; label: string; kbId: string; kbName: string };
+
+// ---------------------------------------------------------------------------
 // Header action buttons config
 // ---------------------------------------------------------------------------
 
 const headerActions: { id: PanelContentType; icon: typeof History; title: string }[] = [
   { id: 'sessions', icon: History, title: '会话历史' },
-  { id: 'skills', icon: Zap, title: '技能库' },
   { id: 'plugins', icon: Puzzle, title: '插件管理' },
   { id: 'cron', icon: Clock, title: '定时任务' },
   { id: 'settings', icon: Settings, title: '设置' },
@@ -34,10 +42,12 @@ export function Header() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [searchResults, setSearchResults] = useState<{ type: "session" | "kb"; id: string; label: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchItemType[]>([]);
+  const [searching, setSearching] = useState(false);
   const [healthStatus, setHealthStatus] = useState<"ok" | "error" | "loading">("loading");
   const searchRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Health polling
   useEffect(() => {
@@ -57,24 +67,105 @@ export function Header() {
     setTimeout(() => searchInputRef.current?.focus(), 0);
   });
 
-  // Search sessions + KBs
-  useEffect(() => {
-    if (!searchQuery.trim()) { setSearchResults([]); return; }
-    const q = searchQuery.toLowerCase();
-    Promise.all([
-      api.listSessions().catch(() => [] as SessionInfo[]),
-      api.listKnowledgeBases().catch(() => [] as KnowledgeBase[]),
-    ]).then(([sessions, kbs]) => {
-      const results: typeof searchResults = [];
+  // Debounced search: sessions + knowledge API
+  const doSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const q = query.toLowerCase();
+
+    try {
+      const [sessions, kbs] = await Promise.all([
+        api.listSessions().catch(() => [] as SessionInfo[]),
+        api.listKnowledgeBases().catch(() => [] as KnowledgeBase[]),
+      ]);
+
+      const results: SearchItemType[] = [];
+
+      // 1. Session matches
       for (const s of sessions) {
-        if (s.title?.toLowerCase().includes(q)) results.push({ type: "session", id: s.id, label: s.title });
+        if (s.title?.toLowerCase().includes(q)) {
+          results.push({ kind: "session", id: s.id, label: s.title ?? "未命名" });
+        }
       }
-      for (const kb of kbs) {
-        if (kb.name.toLowerCase().includes(q)) results.push({ type: "kb", id: kb.id, label: kb.name });
+
+      // 2. For each KB, run document title match + wiki search in parallel
+      const kbSearchPromises = kbs.map(async (kb) => {
+        const kbResults: SearchItemType[] = [];
+
+        // Search documents in this KB
+        try {
+          const docs = await api.listDocuments(kb.id);
+          for (const doc of docs) {
+            if (doc.filename.toLowerCase().includes(q)) {
+              kbResults.push({
+                kind: "document",
+                id: doc.id,
+                label: doc.filename,
+                kbId: kb.id,
+                kbName: kb.name,
+              });
+            }
+          }
+        } catch {
+          // ignore per-KB errors
+        }
+
+        // Search wiki in this KB
+        try {
+          const wikiRes = await api.searchWiki(kb.id, query, undefined, 3);
+          for (const wr of wikiRes.results) {
+            kbResults.push({
+              kind: "wiki",
+              id: wr.docId,
+              label: wr.metadata?.title as string || wr.level || wr.docId,
+              kbId: kb.id,
+              kbName: kb.name,
+            });
+          }
+        } catch {
+          // ignore per-KB errors
+        }
+
+        return kbResults;
+      });
+
+      const kbResults = await Promise.all(kbSearchPromises);
+      for (const kbr of kbResults) {
+        results.push(...kbr);
       }
-      setSearchResults(results.slice(0, 8));
-    });
-  }, [searchQuery]);
+
+      setSearchResults(results.slice(0, 12));
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  // Debounce input by 300ms
+  useEffect(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(() => {
+      doSearch(searchQuery);
+    }, 300);
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [searchQuery, doSearch]);
 
   // Click outside to close search dropdown
   useEffect(() => {
@@ -87,6 +178,25 @@ export function Header() {
   }, [searchOpen]);
 
   const healthColor = healthStatus === "ok" ? "var(--success)" : healthStatus === "error" ? "var(--error)" : "var(--warning)";
+
+  const handleResultClick = (r: SearchItemType) => {
+    if (r.kind === "session") {
+      useChatStore.getState().selectSession(r.id);
+      useUIStore.getState().setActiveView("chat");
+    } else {
+      // document or wiki -> switch to knowledge view
+      setCurrentKbId(r.kbId);
+      useUIStore.getState().setActiveView("knowledge");
+    }
+    setSearchOpen(false);
+    setSearchQuery("");
+  };
+
+  // Group results by kind for display
+  const sessionResults = searchResults.filter((r) => r.kind === "session");
+  const documentResults = searchResults.filter((r) => r.kind === "document");
+  const wikiResults = searchResults.filter((r) => r.kind === "wiki");
+  const hasResults = searchResults.length > 0;
 
   // Action button style helper
   const actionBtnBase: React.CSSProperties = {
@@ -112,6 +222,59 @@ export function Header() {
   const handleActionLeave = (e: React.MouseEvent<HTMLButtonElement>, isActive: boolean) => {
     e.currentTarget.style.background = isActive ? 'var(--bg-tertiary)' : 'transparent';
     e.currentTarget.style.color = isActive ? 'var(--interactive)' : 'var(--text-secondary)';
+  };
+
+  // Helper to render a group of results
+  const renderGroup = (label: string, items: SearchItemType[]) => {
+    if (items.length === 0) return null;
+    return (
+      <>
+        <div style={{
+          padding: "6px 12px",
+          fontSize: 10,
+          fontWeight: 600,
+          color: "var(--text-tertiary)",
+          textTransform: "uppercase" as const,
+          letterSpacing: "0.05em",
+          borderBottom: "1px solid var(--border-primary)",
+        }}>
+          {label}
+        </div>
+        {items.map((r) => {
+          const kbLabel = r.kind !== "session" ? r.kbName : "";
+          return (
+            <button
+              key={`${r.kind}-${r.id}-${r.kind !== "session" ? r.kbId : ""}`}
+              onClick={() => handleResultClick(r)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center", gap: "var(--space-2)",
+                padding: "8px 12px", border: "none", background: "transparent",
+                color: "var(--text-primary)", fontSize: "var(--text-xs)", cursor: "pointer", textAlign: "left",
+                borderBottom: "1px solid var(--border-primary)",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              <span style={{
+                fontSize: 9, padding: "1px 4px", borderRadius: "var(--radius-sm)",
+                background: "var(--bg-tertiary)", color: "var(--text-tertiary)",
+                whiteSpace: "nowrap" as const,
+              }}>
+                {r.kind === "session" ? "会话" : r.kind === "document" ? "文档" : "Wiki"}
+              </span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                {r.label}
+              </span>
+              {r.kind !== "session" && (
+                <span style={{ fontSize: 9, color: "var(--text-tertiary)", marginLeft: "auto", flexShrink: 0 }}>
+                  {kbLabel}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </>
+    );
   };
 
   return (
@@ -221,41 +384,28 @@ export function Header() {
             e.currentTarget.style.boxShadow = 'none';
           }}
         />
-        {searchOpen && searchResults.length > 0 && (
+        {searchOpen && (searchQuery.trim().length > 0) && (
           <div style={{
             position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4,
             background: "var(--surface-primary)", border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-lg)",
-            zIndex: "var(--z-dropdown)", overflow: "hidden", maxHeight: 300, overflowY: "auto",
+            zIndex: "var(--z-dropdown)", overflow: "hidden", maxHeight: 400, overflowY: "auto",
           }}>
-            {searchResults.map((r) => (
-              <button key={`${r.type}-${r.id}`}
-                onClick={() => {
-                  if (r.type === "session") {
-                    useChatStore.getState().selectSession(r.id);
-                    useUIStore.getState().setActiveView("chat");
-                  } else {
-                    useUIStore.getState().setCurrentKbId(r.id);
-                    useUIStore.getState().setActiveView("knowledge");
-                  }
-                  setSearchOpen(false);
-                  setSearchQuery("");
-                }}
-                style={{
-                  width: "100%", display: "flex", alignItems: "center", gap: "var(--space-2)",
-                  padding: "8px 12px", border: "none", background: "transparent",
-                  color: "var(--text-primary)", fontSize: "var(--text-xs)", cursor: "pointer", textAlign: "left",
-                  borderBottom: "1px solid var(--border-primary)",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              >
-                <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: "var(--radius-sm)", background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}>
-                  {r.type === "session" ? "会话" : "知识库"}
-                </span>
-                {r.label}
-              </button>
-            ))}
+            {searching ? (
+              <div style={{ padding: "var(--space-3)", textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                搜索中...
+              </div>
+            ) : !hasResults ? (
+              <div style={{ padding: "var(--space-3)", textAlign: "center", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                未找到匹配
+              </div>
+            ) : (
+              <>
+                {renderGroup("会话", sessionResults)}
+                {renderGroup("文档", documentResults)}
+                {renderGroup("Wiki", wikiResults)}
+              </>
+            )}
           </div>
         )}
       </div>

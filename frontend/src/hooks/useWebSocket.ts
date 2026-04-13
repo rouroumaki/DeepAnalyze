@@ -1,68 +1,94 @@
 // =============================================================================
-// DeepAnalyze - WebSocket Client
-// Handles real-time communication with the Agent backend
+// DeepAnalyze - Knowledge Base WebSocket Hook
+// Manages a WebSocket connection for document processing status updates.
+// Auto-connects, auto-reconnects with exponential backoff, sends heartbeats.
 // =============================================================================
 
 import { useRef, useCallback, useEffect, useState } from "react";
-import type {
-  WsEvent,
-  WsMessageChunk,
-  WsMessageComplete,
-  WsToolCall,
-  WsToolResult,
-  WsSubtaskStart,
-  WsSubtaskProgress,
-  WsSubtaskComplete,
-  WsError,
-} from "../types/index.js";
 
-type WsHandler = (event: WsEvent) => void;
+// ---------------------------------------------------------------------------
+// Types — Server-to-client message variants
+// ---------------------------------------------------------------------------
+
+export type WsServerMessage =
+  | { type: "doc_upload_progress"; kbId: string; docId: string; progress: number }
+  | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
+  | { type: "doc_ready"; kbId: string; docId: string; filename: string }
+  | { type: "doc_error"; kbId: string; docId: string; error: string }
+  | { type: "pong" };
+
+// ---------------------------------------------------------------------------
+// Types — Client-to-server message variants
+// ---------------------------------------------------------------------------
+
+type WsClientMessage =
+  | { type: "subscribe"; kbId: string }
+  | { type: "unsubscribe"; kbId: string }
+  | { type: "ping" };
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
 
 interface UseWebSocketOptions {
-  onMessageChunk?: (e: WsMessageChunk) => void;
-  onMessageComplete?: (e: WsMessageComplete) => void;
-  onToolCall?: (e: WsToolCall) => void;
-  onToolResult?: (e: WsToolResult) => void;
-  onSubtaskStart?: (e: WsSubtaskStart) => void;
-  onSubtaskProgress?: (e: WsSubtaskProgress) => void;
-  onSubtaskComplete?: (e: WsSubtaskComplete) => void;
-  onError?: (e: WsError) => void;
-  onOpen?: () => void;
-  onClose?: () => void;
+  /** Called when a server message arrives (except pong). */
+  onMessage?: (msg: WsServerMessage) => void;
+  /** Override the default WebSocket URL. */
+  url?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Return type
+// ---------------------------------------------------------------------------
 
 interface UseWebSocketReturn {
-  isConnected: boolean;
-  isReconnecting: boolean;
-  connect: (sessionId: string) => void;
-  disconnect: () => void;
-  send: (data: Record<string, unknown>) => void;
-  reconnectAttempts: number;
+  /** True when the WebSocket is open and ready. */
+  connected: boolean;
+  /** Subscribe to processing events for the given KB IDs. */
+  subscribe: (kbIds: string[]) => void;
+  /** Unsubscribe from processing events for the given KB IDs. */
+  unsubscribe: (kbIds: string[]) => void;
 }
 
-const MAX_RECONNECT_ATTEMPTS = 3;
-const BASE_DELAY = 5000;
-const MAX_DELAY = 30000;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const BASE_DELAY_MS = 1_000;
+const MAX_DELAY_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
 
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
+  const { onMessage, url } = options;
+
   const wsRef = useRef<WebSocket | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptsRef = useRef(0);
   const mountedRef = useRef(true);
+  const subscriptionsRef = useRef<Set<string>>(new Set());
 
-  const [isConnected, setIsConnected] = useState(false);
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [connected, setConnected] = useState(false);
 
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
+  // Keep onMessage ref current without triggering reconnects
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
 
-  const getWsUrl = useCallback(() => {
+  // Resolve the WebSocket URL
+  const wsUrl = useRef(url);
+  if (url !== undefined && wsUrl.current !== url) {
+    wsUrl.current = url;
+  }
+  if (!wsUrl.current) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}/ws/chat`;
-  }, []);
+    wsUrl.current = `${proto}//${window.location.host}/ws`;
+  }
+
+  // ----- helpers -----
 
   const clearHeartbeat = useCallback(() => {
     if (heartbeatRef.current) {
@@ -78,164 +104,123 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     }
   }, []);
 
-  const handleMessage = useCallback((event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data) as WsEvent;
+  // ----- connect -----
 
-      switch (data.type) {
-        case "pong":
-          break;
-        case "message_chunk":
-          optionsRef.current.onMessageChunk?.(data as unknown as WsMessageChunk);
-          break;
-        case "message_complete":
-          optionsRef.current.onMessageComplete?.(data as unknown as WsMessageComplete);
-          break;
-        case "tool_call":
-          optionsRef.current.onToolCall?.(data as unknown as WsToolCall);
-          break;
-        case "tool_result":
-          optionsRef.current.onToolResult?.(data as unknown as WsToolResult);
-          break;
-        case "subtask_start":
-          optionsRef.current.onSubtaskStart?.(data as unknown as WsSubtaskStart);
-          break;
-        case "subtask_progress":
-          optionsRef.current.onSubtaskProgress?.(data as unknown as WsSubtaskProgress);
-          break;
-        case "subtask_complete":
-          optionsRef.current.onSubtaskComplete?.(data as unknown as WsSubtaskComplete);
-          break;
-        case "error":
-          optionsRef.current.onError?.(data as unknown as WsError);
-          break;
-      }
-    } catch (err) {
-      console.error("[WebSocket] Failed to parse message:", err);
-    }
-  }, []);
+  const connect = useCallback(() => {
+    // Prevent duplicate connections
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-  const connect = useCallback(
-    (sessionId: string) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN && sessionIdRef.current === sessionId) {
-        return;
-      }
-
-      // Clean up existing connection
-      if (wsRef.current) {
-        wsRef.current.onopen = null;
-        wsRef.current.onclose = null;
-        wsRef.current.onerror = null;
-        wsRef.current.close();
-      }
-
-      clearHeartbeat();
-      clearReconnectTimer();
-      sessionIdRef.current = sessionId;
-      attemptsRef.current = 0;
-      setReconnectAttempts(0);
-      setIsReconnecting(false);
-
-      const ws = new WebSocket(getWsUrl());
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (!mountedRef.current) return;
-        setIsConnected(true);
-        setIsReconnecting(false);
-        attemptsRef.current = 0;
-        setReconnectAttempts(0);
-
-        // Subscribe to session
-        ws.send(JSON.stringify({ type: "subscribe", sessionId }));
-
-        // Start heartbeat
-        heartbeatRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
-          }
-        }, 30000);
-
-        optionsRef.current.onOpen?.();
-      };
-
-      ws.onmessage = handleMessage;
-
-      ws.onclose = (event) => {
-        if (!mountedRef.current) return;
-        setIsConnected(false);
-        clearHeartbeat();
-        optionsRef.current.onClose?.();
-
-        // Auto-reconnect unless intentionally closed
-        if (sessionIdRef.current && !event.wasClean && attemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-          const delay = Math.min(BASE_DELAY * Math.pow(2, attemptsRef.current), MAX_DELAY);
-          attemptsRef.current += 1;
-          setReconnectAttempts(attemptsRef.current);
-          setIsReconnecting(true);
-
-          if (attemptsRef.current === 1) {
-            console.warn("[WebSocket] Connection lost. Reconnecting...");
-          }
-
-          reconnectTimerRef.current = setTimeout(() => {
-            if (sessionIdRef.current && mountedRef.current) {
-              connect(sessionIdRef.current);
-            }
-          }, delay);
-        }
-
-        if (attemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-          console.warn("[WebSocket] Max reconnect attempts reached. Use HTTP for messaging.");
-        }
-      };
-
-      ws.onerror = () => {
-        console.error("[WebSocket] Connection error");
-      };
-    },
-    [getWsUrl, handleMessage, clearHeartbeat, clearReconnectTimer],
-  );
-
-  const disconnect = useCallback(() => {
-    sessionIdRef.current = null;
-    clearHeartbeat();
-    clearReconnectTimer();
-    setIsReconnecting(false);
-    setReconnectAttempts(0);
-
+    // Clean up any existing socket
     if (wsRef.current) {
       wsRef.current.onopen = null;
       wsRef.current.onclose = null;
       wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
       wsRef.current.close();
       wsRef.current = null;
     }
-    setIsConnected(false);
+
+    clearHeartbeat();
+    clearReconnectTimer();
+
+    const ws = new WebSocket(wsUrl.current!);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (!mountedRef.current) return;
+      setConnected(true);
+      attemptsRef.current = 0;
+
+      // Re-subscribe to any previously tracked KB IDs
+      if (subscriptionsRef.current.size > 0) {
+        for (const kbId of subscriptionsRef.current) {
+          ws.send(JSON.stringify({ type: "subscribe", kbId } satisfies WsClientMessage));
+        }
+      }
+
+      // Start heartbeat
+      heartbeatRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" } satisfies WsClientMessage));
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data) as WsServerMessage;
+        if (msg.type !== "pong") {
+          onMessageRef.current?.(msg);
+        }
+      } catch (err) {
+        console.error("[KnowledgeWS] Failed to parse message:", err);
+      }
+    };
+
+    ws.onclose = () => {
+      if (!mountedRef.current) return;
+      setConnected(false);
+      clearHeartbeat();
+
+      // Exponential backoff: 1s -> 2s -> 4s -> ... -> max 30s
+      const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attemptsRef.current), MAX_DELAY_MS);
+      attemptsRef.current += 1;
+
+      reconnectTimerRef.current = setTimeout(() => {
+        if (mountedRef.current) {
+          connect();
+        }
+      }, delay);
+    };
+
+    ws.onerror = () => {
+      console.error("[KnowledgeWS] Connection error");
+    };
   }, [clearHeartbeat, clearReconnectTimer]);
 
-  const send = useCallback((data: Record<string, unknown>) => {
+  // ----- subscribe / unsubscribe -----
+
+  const subscribe = useCallback((kbIds: string[]) => {
+    for (const kbId of kbIds) {
+      subscriptionsRef.current.add(kbId);
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    } else {
-      console.warn("[WebSocket] Cannot send, not connected");
+      for (const kbId of kbIds) {
+        wsRef.current.send(JSON.stringify({ type: "subscribe", kbId } satisfies WsClientMessage));
+      }
     }
   }, []);
 
+  const unsubscribe = useCallback((kbIds: string[]) => {
+    for (const kbId of kbIds) {
+      subscriptionsRef.current.delete(kbId);
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      for (const kbId of kbIds) {
+        wsRef.current.send(JSON.stringify({ type: "unsubscribe", kbId } satisfies WsClientMessage));
+      }
+    }
+  }, []);
+
+  // ----- lifecycle -----
+
   useEffect(() => {
     mountedRef.current = true;
+    connect();
     return () => {
       mountedRef.current = false;
-      disconnect();
+      clearHeartbeat();
+      clearReconnectTimer();
+      if (wsRef.current) {
+        wsRef.current.onopen = null;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  }, [disconnect]);
+  }, [connect, clearHeartbeat, clearReconnectTimer]);
 
-  return {
-    isConnected,
-    isReconnecting,
-    connect,
-    disconnect,
-    send,
-    reconnectAttempts,
-  };
+  return { connected, subscribe, unsubscribe };
 }

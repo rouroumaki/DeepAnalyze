@@ -7,16 +7,17 @@ import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { ModelConfigCard } from "./ModelConfigCard";
-import type { ProviderConfig, ProviderDefaults } from "../../types/index";
+import type { ProviderConfig, ProviderDefaults, ProviderMetadata } from "../../types/index";
 import { ShieldCheck } from "lucide-react";
 
 interface MainModelConfigProps {
   providers: ProviderConfig[];
   defaults: ProviderDefaults | null;
+  registry: ProviderMetadata[];
   onSetDefault: (role: string, providerId: string) => void;
 }
 
-export function MainModelConfig({ providers, defaults, onSetDefault }: MainModelConfigProps) {
+export function MainModelConfig({ providers, defaults, registry, onSetDefault }: MainModelConfigProps) {
   const { success, error: showError } = useToast();
 
   const [providerId, setProviderId] = useState("");
@@ -95,6 +96,7 @@ export function MainModelConfig({ providers, defaults, onSetDefault }: MainModel
         maxTokensLimit={128000}
         enabled={true}
         providers={providers}
+        registry={registry}
         onConfigChange={handleConfigChange}
         onTest={handleTest}
         testing={testing}

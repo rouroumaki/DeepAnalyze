@@ -32,23 +32,44 @@ Session transcripts: \`${transcriptDir}\` (large JSONL files — grep narrowly, 
 
 ## Phase 2 — Gather recent signal
 
-Look for new information worth persisting. Sources in rough priority order:
+Only gather new information from the following vetted sources:
 
-1. **Daily logs** (\`logs/YYYY/MM/YYYY-MM-DD.md\`) if present — these are the append-only stream
-2. **Existing memories that drifted** — facts that contradict something you see in the codebase now
-3. **Transcript search** — if you need specific context (e.g., "what was the error message from yesterday's build failure?"), grep the JSONL transcripts for narrow terms:
+1. **Wiki report pages** (pages where \`page_type = 'report'\`) — these are already curated, structured analysis outputs
+2. **Session memory notes** — high-level summaries written by agents during sessions
+
+**Do NOT extract "new knowledge" from raw session transcripts.**
+Transcripts are only for understanding context (e.g., what task was being performed), not for extracting facts or conclusions. Raw transcripts may contain mistakes, hallucinations, or unfinished reasoning that should not be persisted.
+
+If you need to understand the context behind a report or memory, you may grep transcripts for narrow terms:
    \`grep -rn "<narrow term>" ${transcriptDir}/ --include="*.jsonl" | tail -50\`
-
-Don't exhaustively read transcripts. Look only for things you already suspect matter.
+But use the result only for context, never as a source of truth for memory content.
 
 ## Phase 3 — Consolidate
 
 For each thing worth remembering, write or update a memory file at the top level of the memory directory. Use the memory file format and type conventions from your system prompt's auto-memory section — it's the source of truth for what to save, how to structure it, and what NOT to save.
 
+Every consolidated memory **must** include:
+
+- **Source annotation**: which wiki report page or session memory supports this memory
+- **Confidence level**:
+  - `HIGH` — directly stated in a source document (verbatim fact)
+  - `MED` — Agent analysis conclusion (synthesized from multiple signals)
+  - `LOW` — Speculation or unverified inference
+- **Timestamp**: when the memory was produced (ISO 8601 date)
+
+Format each memory entry as:
+\`[HIGH/MED/LOW] content — 来源: [[source_title]]\`
+
+Example:
+\`[HIGH] The project uses React 18.2 with TypeScript 5.1 — 来源: [[技术栈分析报告]]\`
+\`[MED] Performance degrades significantly above 10k concurrent users — 来源: [[负载测试报告]]\`
+\`[LOW] The team may switch to Vue 3 in Q3 — 来源: [[技术选型讨论记录]]\`
+
 Focus on:
 - Merging new signal into existing topic files rather than creating near-duplicates
 - Converting relative dates ("yesterday", "last week") to absolute dates so they remain interpretable after time passes
 - Deleting contradicted facts — if today's investigation disproves an old memory, fix it at the source
+- Preserving source annotations and confidence tags so future sessions can assess reliability
 
 ## Phase 4 — Prune and index
 

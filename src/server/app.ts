@@ -170,6 +170,129 @@ export function createApp(): Hono {
   });
 
   // -----------------------------------------------------------------------
+  // Cron routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
+  let cronRoutes: Hono | null = null;
+
+  app.use("/api/cron/*", async (c, next) => {
+    if (!cronRoutes) {
+      try {
+        console.log("[CronSystem] Initializing cron routes...");
+        const { createCronRoutes } = await import("./routes/cron.js");
+        cronRoutes = createCronRoutes();
+        console.log("[CronSystem] Cron routes ready.");
+      } catch (err) {
+        console.error("[CronSystem] Initialization failed:", err);
+      }
+    }
+    await next();
+  });
+
+  // Cron root — endpoint discovery
+  app.get("/api/cron", (c) => c.json({
+    status: "ok",
+    message: "Cron Job API",
+    endpoints: [
+      "GET    /jobs",
+      "GET    /jobs/:id",
+      "POST   /jobs",
+      "PUT    /jobs/:id",
+      "DELETE /jobs/:id",
+      "POST   /jobs/:id/run",
+      "POST   /validate",
+    ],
+  }));
+
+  // Cron sub-routes
+  app.all("/api/cron/*", async (c) => {
+    if (!cronRoutes) {
+      return c.json({ error: "Cron system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/cron", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return cronRoutes.fetch(newRequest);
+  });
+
+  // -----------------------------------------------------------------------
+  // Channel routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
+  let channelRoutes: Hono | null = null;
+
+  app.use("/api/channels/*", async (c, next) => {
+    if (!channelRoutes) {
+      try {
+        console.log("[ChannelSystem] Initializing channel routes...");
+        const { createChannelRoutes } = await import("./routes/channels.js");
+        channelRoutes = createChannelRoutes();
+        console.log("[ChannelSystem] Channel routes ready.");
+      } catch (err) {
+        console.error("[ChannelSystem] Initialization failed:", err);
+      }
+    }
+    await next();
+  });
+
+  // Channel root — endpoint discovery
+  app.get("/api/channels", (c) => c.json({
+    status: "ok",
+    message: "Channel Management API",
+    endpoints: [
+      "GET  /list",
+      "GET  /configs",
+      "GET  /:id/config",
+      "POST /update",
+      "POST /test",
+      "POST /:id/start",
+      "POST /:id/stop",
+      "GET  /status",
+    ],
+  }));
+
+  // Channel sub-routes
+  app.all("/api/channels/*", async (c) => {
+    if (!channelRoutes) {
+      return c.json({ error: "Channel system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/channels", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return channelRoutes.fetch(newRequest);
+  });
+
+  // -----------------------------------------------------------------------
   // Health check & convenience routes
   // -----------------------------------------------------------------------
 

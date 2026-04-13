@@ -1,30 +1,94 @@
 // =============================================================================
 // DeepAnalyze - RightPanel Component
-// Right-side slide-out panel with overlay
+// Content-aware right-side slide-out panel
 // =============================================================================
 
-import React, { useEffect, useCallback, useRef } from "react";
+import React, { useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
-import { useUIStore } from "../../store/ui";
+import { useUIStore, type PanelContentType } from "../../store/ui";
 import { X } from "lucide-react";
+import { Spinner } from "../ui/Spinner";
 
-// =============================================================================
-// Types
-// =============================================================================
+// ---------------------------------------------------------------------------
+// Lazy-loaded panel content components
+// ---------------------------------------------------------------------------
 
-interface RightPanelProps {
-  children?: React.ReactNode;
+const SessionsPanel = lazy(() =>
+  import("../sessions/SessionsPanel").then((m) => ({ default: m.SessionsPanel }))
+);
+const SkillBrowser = lazy(() =>
+  import("../plugins/SkillBrowser").then((m) => ({ default: m.SkillBrowser }))
+);
+const PluginManager = lazy(() =>
+  import("../plugins/PluginManager").then((m) => ({ default: m.PluginManager }))
+);
+const SettingsPanel = lazy(() =>
+  import("../settings/SettingsPanel").then((m) => ({ default: m.SettingsPanel }))
+);
+const CronManager = lazy(() =>
+  import("../cron/CronManager").then((m) => ({ default: m.CronManager }))
+);
+
+// ---------------------------------------------------------------------------
+// Panel configuration
+// ---------------------------------------------------------------------------
+
+const PANEL_TITLES: Record<PanelContentType, string> = {
+  sessions: "会话历史",
+  skills: "技能库",
+  plugins: "插件管理",
+  cron: "定时任务",
+  settings: "设置",
+};
+
+const PANEL_WIDTHS: Record<PanelContentType, number> = {
+  sessions: 420,
+  skills: 480,
+  plugins: 480,
+  cron: 560,
+  settings: 640,
+};
+
+// ---------------------------------------------------------------------------
+// Panel content renderer
+// ---------------------------------------------------------------------------
+
+function PanelContent({ type }: { type: PanelContentType }) {
+  return (
+    <Suspense
+      fallback={
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200 }}>
+          <Spinner size="md" />
+        </div>
+      }
+    >
+      {(() => {
+        switch (type) {
+          case "sessions":
+            return <SessionsPanel />;
+          case "skills":
+            return <SkillBrowser />;
+          case "plugins":
+            return <PluginManager />;
+          case "cron":
+            return <CronManager />;
+          case "settings":
+            return <SettingsPanel />;
+        }
+      })()}
+    </Suspense>
+  );
 }
 
-// =============================================================================
-// Component
-// =============================================================================
+// ---------------------------------------------------------------------------
+// RightPanel component
+// ---------------------------------------------------------------------------
 
-export function RightPanel({ children }: RightPanelProps) {
-  const { rightPanelOpen, closeRightPanel, rightPanelContent } = useUIStore();
+export function RightPanel() {
+  const { rightPanelOpen, closeRightPanel, rightPanelContentType } = useUIStore();
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // --- Close on Escape ---
+  // Close on Escape
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === "Escape") closeRightPanel();
@@ -43,8 +107,11 @@ export function RightPanel({ children }: RightPanelProps) {
     };
   }, [rightPanelOpen, handleKeyDown]);
 
-  // --- Not open: render nothing ---
-  if (!rightPanelOpen) return null;
+  // Not open: render nothing
+  if (!rightPanelOpen || !rightPanelContentType) return null;
+
+  const width = PANEL_WIDTHS[rightPanelContentType] ?? 480;
+  const title = PANEL_TITLES[rightPanelContentType] ?? "";
 
   // =====================================================================
   // Render
@@ -52,9 +119,7 @@ export function RightPanel({ children }: RightPanelProps) {
 
   const content = (
     <>
-      {/* ================================================================ */}
-      {/* Overlay                                                          */}
-      {/* ================================================================ */}
+      {/* Overlay */}
       <div
         onClick={closeRightPanel}
         style={{
@@ -66,9 +131,7 @@ export function RightPanel({ children }: RightPanelProps) {
         }}
       />
 
-      {/* ================================================================ */}
-      {/* Panel                                                            */}
-      {/* ================================================================ */}
+      {/* Panel */}
       <div
         ref={panelRef}
         style={{
@@ -76,7 +139,7 @@ export function RightPanel({ children }: RightPanelProps) {
           top: 0,
           right: 0,
           bottom: 0,
-          width: 400,
+          width,
           backgroundColor: "var(--bg-primary)",
           borderLeft: "1px solid var(--border-primary)",
           boxShadow: "var(--shadow-2xl)",
@@ -86,7 +149,7 @@ export function RightPanel({ children }: RightPanelProps) {
           animation: "rightPanelSlideIn var(--transition-slow) ease-out",
         }}
       >
-        {/* ---- Header ---- */}
+        {/* Header */}
         <div
           style={{
             flexShrink: 0,
@@ -109,7 +172,7 @@ export function RightPanel({ children }: RightPanelProps) {
               whiteSpace: "nowrap",
             }}
           >
-            {rightPanelContent ?? ""}
+            {title}
           </h3>
           <button
             onClick={closeRightPanel}
@@ -141,15 +204,14 @@ export function RightPanel({ children }: RightPanelProps) {
           </button>
         </div>
 
-        {/* ---- Scrollable content area ---- */}
+        {/* Scrollable content area */}
         <div
           style={{
             flex: 1,
             overflow: "auto",
-            padding: "var(--space-4)",
           }}
         >
-          {children}
+          <PanelContent type={rightPanelContentType} />
         </div>
       </div>
 

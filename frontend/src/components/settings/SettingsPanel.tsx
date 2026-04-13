@@ -1,17 +1,20 @@
 // =============================================================================
 // DeepAnalyze - SettingsPanel Component
-// Provider configuration with registry-based selection
+// Settings panel with internal left sidebar navigation
+// Designed for rendering inside the RightPanel
 // =============================================================================
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import type { ProviderConfig, ProviderSettings, ProviderMetadata, ProviderDefaults, AgentSettings } from "../../types/index";
+import { CronManager } from "../cron/CronManager";
+import { ChannelsPanel } from "../channels/ChannelsPanel";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore, type ThemeMode } from "../../store/ui";
+import { ModelsPanel } from "./ModelsPanel";
 import {
   CheckCircle2,
   XCircle,
-  Loader2,
   Trash2,
   Star,
   Save,
@@ -22,14 +25,60 @@ import {
   Info,
   Cpu,
   Settings2,
+  Plus,
+  MessageCircle,
 } from "lucide-react";
+
+// ---------------------------------------------------------------------------
+// Settings tab type
+// ---------------------------------------------------------------------------
+
+type SettingsTabId = "models" | "channels" | "cron" | "general";
+
+const settingsTabs: { id: SettingsTabId; label: string; icon: React.ReactNode }[] = [
+  { id: "models", label: "模型配置", icon: <Server size={16} /> },
+  { id: "channels", label: "通信渠道", icon: <MessageCircle size={16} /> },
+  { id: "cron", label: "定时任务", icon: <Cpu size={16} /> },
+  { id: "general", label: "通用", icon: <Globe size={16} /> },
+];
+
+// ---------------------------------------------------------------------------
+// Shared styles
+// ---------------------------------------------------------------------------
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "var(--space-2) var(--space-3)",
+  border: "1px solid var(--border-primary)",
+  borderRadius: "var(--radius-lg)",
+  fontSize: "var(--text-sm)",
+  background: "var(--bg-primary)",
+  color: "var(--text-primary)",
+  outline: "none",
+  boxSizing: "border-box",
+  transition: "border-color var(--transition-fast)",
+};
+
+const labelStyle: React.CSSProperties = {
+  display: "block",
+  fontSize: "var(--text-sm)",
+  fontWeight: "var(--font-medium)",
+  color: "var(--text-secondary)",
+  marginBottom: "var(--space-1)",
+};
+
+// ---------------------------------------------------------------------------
+// SettingsPanel
+// ---------------------------------------------------------------------------
 
 export function SettingsPanel() {
   const { success, error: showError } = useToast();
   const themeMode = useUIStore((s) => s.themeMode);
   const setThemeMode = useUIStore((s) => s.setThemeMode);
 
-  const [activeTab, setActiveTab] = useState<"models" | "embedding" | "general" | "agent" | "about">("models");
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("models");
+
+  // Provider data (shared across sub-tabs)
   const [registry, setRegistry] = useState<ProviderMetadata[]>([]);
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -42,19 +91,14 @@ export function SettingsPanel() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Embedding tab state
-  const [embeddingDefaults, setEmbeddingDefaults] = useState<ProviderDefaults | null>(null);
-  const [embeddingProvider, setEmbeddingProvider] = useState("");
-  const [embeddingTestResult, setEmbeddingTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [embeddingTesting, setEmbeddingTesting] = useState(false);
-
   // About tab state
   const [healthInfo, setHealthInfo] = useState<{ status: string; version: string } | null>(null);
 
-  // Agent settings tab state
+  // Agent settings
   const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
   const [agentSaving, setAgentSaving] = useState(false);
 
+  // Load data
   const loadData = useCallback(async () => {
     try {
       const [regData, settingsData] = await Promise.all([
@@ -103,37 +147,21 @@ export function SettingsPanel() {
     }
   }, [settings, selectedProvider]);
 
-  // Load embedding defaults when tab is active
+  // Load health info
   useEffect(() => {
-    if (activeTab !== "embedding") return;
-    api.getDefaults().then((defaults) => {
-      setEmbeddingDefaults(defaults);
-      setEmbeddingProvider(defaults.embedding ?? "");
-    }).catch(() => {});
-  }, [activeTab]);
+    api.health().then((info) => setHealthInfo(info)).catch(() => setHealthInfo(null));
+  }, []);
 
-  // Load health info when about tab is active
+  // Load agent settings when general tab is active
   useEffect(() => {
-    if (activeTab !== "about") return;
-    api.health().then((info) => {
-      setHealthInfo(info);
-    }).catch(() => {
-      setHealthInfo(null);
-    });
-  }, [activeTab]);
-
-  // Load agent settings when agent tab is active
-  useEffect(() => {
-    if (activeTab !== "agent") return;
-    api.getAgentSettings().then((settings) => {
-      setAgentSettings(settings);
-    }).catch(() => {
-      setAgentSettings(null);
-    });
+    if (activeTab !== "general") return;
+    api.getAgentSettings().then((s) => setAgentSettings(s)).catch(() => setAgentSettings(null));
   }, [activeTab]);
 
   const currentMeta = registry.find((p) => p.id === selectedProvider);
   const isLocal = currentMeta?.isLocal ?? false;
+
+  // --- Provider CRUD handlers ---
 
   const handleSave = async () => {
     if (!selectedProvider) return;
@@ -203,42 +231,13 @@ export function SettingsPanel() {
     }
   };
 
-  const handleEmbeddingSave = async () => {
-    try {
-      await api.saveDefaults({ embedding: embeddingProvider });
-      success("嵌入模型已更新");
-      const defaults = await api.getDefaults();
-      setEmbeddingDefaults(defaults);
-    } catch {
-      showError("更新嵌入模型失败");
-    }
-  };
-
-  const handleEmbeddingTest = async () => {
-    if (!embeddingProvider) return;
-    setEmbeddingTesting(true);
-    setEmbeddingTestResult(null);
-    try {
-      await handleEmbeddingSave();
-      const result = await api.testProvider(embeddingProvider);
-      setEmbeddingTestResult({
-        success: result.success,
-        message: result.success ? "嵌入模型连接成功!" : (result.error ?? "连接失败"),
-      });
-    } catch (err) {
-      setEmbeddingTestResult({ success: false, message: err instanceof Error ? err.message : "连接失败" });
-    } finally {
-      setEmbeddingTesting(false);
-    }
-  };
-
   const handleAgentSave = async () => {
     if (!agentSettings) return;
     setAgentSaving(true);
     try {
       const result = await api.saveAgentSettings(agentSettings);
       setAgentSettings(result.settings);
-      success("Agent 设置已保存，下次运行即时生效");
+      success("Agent 设置已保存");
     } catch {
       showError("保存 Agent 设置失败");
     } finally {
@@ -246,1052 +245,343 @@ export function SettingsPanel() {
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "var(--space-2) var(--space-3)",
-    border: "1px solid var(--border-primary)",
-    borderRadius: "var(--radius-lg)",
-    fontSize: "var(--text-sm)",
-    background: "var(--bg-primary)",
-    color: "var(--text-primary)",
-    outline: "none",
-    boxSizing: "border-box",
-    transition: "border-color var(--transition-fast)",
-  };
-
-  const labelStyle: React.CSSProperties = {
-    display: "block",
-    fontSize: "var(--text-sm)",
-    fontWeight: "var(--font-medium)",
-    color: "var(--text-secondary)",
-    marginBottom: "var(--space-1)",
-  };
-
-  const tabs = [
-    { id: "models", label: "模型配置", icon: <Server size={14} /> },
-    { id: "embedding", label: "嵌入模型", icon: <Cpu size={14} /> },
-    { id: "agent", label: "Agent 设置", icon: <Settings2 size={14} /> },
-    { id: "general", label: "通用设置", icon: <Globe size={14} /> },
-    { id: "about", label: "关于", icon: <Info size={14} /> },
-  ];
+  // =====================================================================
+  // Render
+  // =====================================================================
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "var(--space-6)" }}>
-      <div style={{ maxWidth: 768, margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-        {/* Header */}
-        <div>
-          <h2 style={{
-            fontSize: "var(--text-lg)",
-            fontWeight: "var(--font-semibold)",
-            color: "var(--text-primary)",
-            margin: 0,
-          }}>
-            设置
-          </h2>
-          <p style={{
-            fontSize: "var(--text-sm)",
-            color: "var(--text-secondary)",
-            marginTop: "var(--space-1)",
-            margin: 0,
-          }}>
-            管理模型配置、嵌入模型和通用设置。
-          </p>
-        </div>
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
+      {/* Left sidebar navigation */}
+      <nav style={{
+        width: 64,
+        minWidth: 64,
+        borderRight: "1px solid var(--border-primary)",
+        background: "var(--bg-secondary)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        padding: "var(--space-2) var(--space-1)",
+        overflowY: "auto",
+      }}>
+        {settingsTabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            title={tab.label}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
+              padding: "var(--space-2) var(--space-1)",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: activeTab === tab.id ? "var(--interactive-light)" : "transparent",
+              color: activeTab === tab.id ? "var(--interactive)" : "var(--text-secondary)",
+              cursor: "pointer",
+              transition: "all var(--transition-fast)",
+              position: "relative" as const,
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== tab.id) {
+                e.currentTarget.style.background = "var(--bg-hover)";
+                e.currentTarget.style.color = "var(--text-primary)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== tab.id) {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = "var(--text-secondary)";
+              }
+            }}
+          >
+            {tab.icon}
+            <span style={{ fontSize: "var(--text-xs)", lineHeight: 1 }}>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
 
-        {/* Sub-tab bar */}
-        <div style={{
-          display: "flex",
-          gap: "var(--space-1)",
-          borderBottom: "1px solid var(--border-primary)",
-          paddingBottom: "var(--space-1)",
-        }}>
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "var(--space-1)",
-                padding: "var(--space-2) var(--space-3)",
-                border: "none",
-                borderBottom: activeTab === tab.id ? "2px solid var(--interactive)" : "2px solid transparent",
-                borderRadius: "var(--radius-md) var(--radius-md) 0 0",
-                background: activeTab === tab.id ? "var(--interactive-light)" : "transparent",
-                color: activeTab === tab.id ? "var(--interactive)" : "var(--text-secondary)",
-                fontSize: "var(--text-sm)",
-                fontWeight: activeTab === tab.id ? 500 : 400,
-                cursor: "pointer",
-                transition: "all var(--transition-fast)",
-              }}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      {/* Main content area */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "var(--space-4)" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
 
-        {/* Models Tab */}
-        {activeTab === "models" && (
-          <>
-            {settings?.defaults.main && (
-              <div style={{
-                padding: "var(--space-2) var(--space-3)",
-                background: "var(--interactive-light)",
-                border: "1px solid var(--interactive-light)",
-                borderRadius: "var(--radius-lg)",
-                fontSize: "var(--text-sm)",
-              }}>
-                <span style={{ color: "var(--text-tertiary)" }}>当前使用:</span>{" "}
-                <span style={{
-                  fontWeight: "var(--font-medium)",
-                  color: "var(--interactive)",
-                }}>
-                  {settings.providers.find((p) => p.id === settings!.defaults.main)?.name ?? settings.defaults.main}
-                  {" / "}
-                  {settings.providers.find((p) => p.id === settings!.defaults.main)?.model ?? ""}
-                </span>
-              </div>
-            )}
-
-            {/* Provider Selection */}
-            <div>
-              <label style={labelStyle}>选择提供商</label>
-              <select
-                value={selectedProvider}
-                onChange={(e) => setSelectedProvider(e.target.value)}
-                style={{
-                  ...inputStyle,
-                  padding: "10px var(--space-3)",
-                  cursor: "pointer",
-                }}
-              >
-                <option value="">-- 选择一个提供商 --</option>
-                <optgroup label="远端 API">
-                  {registry.filter((p) => !p.isLocal).map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="本地模型">
-                  {registry.filter((p) => p.isLocal).map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </optgroup>
-              </select>
-            </div>
-
-            {/* Configuration Form */}
-            {selectedProvider ? (
-              <div style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-4)",
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border-primary)",
-                borderRadius: "var(--radius-xl)",
-                padding: "var(--space-5)",
-              }}>
-                {/* Model Name */}
-                <div>
-                  <label style={labelStyle}>模型名称</label>
-                  <input
-                    type="text"
-                    value={modelName}
-                    onChange={(e) => setModelName(e.target.value)}
-                    placeholder={currentMeta?.defaultModel || "模型 ID"}
-                    style={inputStyle}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
-                  />
-                  <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                    填写模型 ID，如 gpt-4o, deepseek-chat, qwen-plus 等
-                  </p>
-                </div>
-
-                {/* API Key */}
-                <div>
-                  <label style={labelStyle}>
-                    API Key {isLocal && <span style={{ color: "var(--text-tertiary)" }}>(可选)</span>}
-                  </label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={isLocal ? "本地模型无需 API Key" : "sk-..."}
-                    style={inputStyle}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
-                  />
-                </div>
-
-                {/* API Base URL */}
-                <div>
-                  <label style={labelStyle}>
-                    API 地址 {currentMeta?.defaultApiBase && <span style={{ color: "var(--text-tertiary)" }}>(可选)</span>}
-                  </label>
-                  <input
-                    type="text"
-                    value={apiBase}
-                    onChange={(e) => setApiBase(e.target.value)}
-                    placeholder={currentMeta?.defaultApiBase || "https://..."}
-                    style={inputStyle}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
-                  />
-                  {currentMeta?.defaultApiBase && (
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                      默认: {currentMeta.defaultApiBase}
-                    </p>
-                  )}
-                </div>
-
-                {/* Max Tokens */}
-                <div>
-                  <label style={labelStyle}>最大 Token 数</label>
-                  <input
-                    type="number"
-                    value={maxTokens}
-                    onChange={(e) => setMaxTokens(parseInt(e.target.value) || 32768)}
-                    style={inputStyle}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
-                  />
-                </div>
-
-                {/* Enabled */}
-                <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(e) => setEnabled(e.target.checked)}
-                    style={{ width: 16, height: 16 }}
-                  />
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>启用此提供商</span>
-                </label>
-
-                {/* Test Result */}
-                {testResult && (
-                  <div style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: "var(--space-2)",
-                    padding: "10px var(--space-3)",
-                    borderRadius: "var(--radius-lg)",
-                    fontSize: "var(--text-sm)",
-                    background: testResult.success ? "var(--success-light)" : "var(--error-light)",
-                    border: `1px solid ${testResult.success ? "var(--success)" : "var(--error)"}`,
-                    color: testResult.success ? "var(--success)" : "var(--error)",
-                  }}>
-                    {testResult.success
-                      ? <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                      : <XCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                    }
-                    <span>{testResult.message}</span>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", paddingTop: "var(--space-1)" }}>
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "var(--space-2) var(--space-4)",
-                      background: "var(--interactive)",
-                      color: "#fff",
-                      fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)",
-                      borderRadius: "var(--radius-lg)",
-                      border: "none",
-                      cursor: "pointer",
-                      opacity: saving ? 0.5 : 1,
-                      transition: "background var(--transition-fast)",
-                    }}
-                    onMouseEnter={(e) => { if (!saving) e.currentTarget.style.background = "var(--interactive-hover)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
-                  >
-                    <Save size={14} />
-                    {saving ? "保存中..." : "保存配置"}
-                  </button>
-                  <button
-                    onClick={handleTest}
-                    disabled={testing || (!isLocal && !apiKey)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "var(--space-2) var(--space-4)",
-                      background: "var(--bg-hover)",
-                      color: "var(--text-secondary)",
-                      fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)",
-                      borderRadius: "var(--radius-lg)",
-                      border: "none",
-                      cursor: testing || (!isLocal && !apiKey) ? "not-allowed" : "pointer",
-                      opacity: testing || (!isLocal && !apiKey) ? 0.5 : 1,
-                      transition: "background var(--transition-fast)",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  >
-                    <Wifi size={14} />
-                    {testing ? "测试中..." : "测试连接"}
-                  </button>
-                  <button
-                    onClick={() => handleSetDefault("main")}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "var(--space-2) var(--space-4)",
-                      background: "var(--success-light)",
-                      color: "var(--success)",
-                      fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)",
-                      borderRadius: "var(--radius-lg)",
-                      border: "none",
-                      cursor: "pointer",
-                      transition: "background var(--transition-fast)",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
-                  >
-                    <ShieldCheck size={14} />
-                    设为默认
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div style={{
-                textAlign: "center",
-                padding: "48px 0",
-                background: "var(--bg-secondary)",
-                borderRadius: "var(--radius-xl)",
-                border: "1px solid var(--border-primary)",
-              }}>
-                <p style={{ color: "var(--text-tertiary)", margin: 0 }}>请选择一个提供商进行配置</p>
-              </div>
-            )}
-
-            {/* Configured Providers */}
-            {settings && settings.providers.length > 0 && (
+          {/* ============================================================= */}
+          {/* Models Tab */}
+          {/* ============================================================= */}
+          {activeTab === "models" && (
+            <>
+              {/* Provider management section */}
               <div>
-                <h3 style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-secondary)",
-                  marginBottom: "var(--space-3)",
-                  margin: 0,
-                }}>
-                  已配置的提供商
+                <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0, marginBottom: "var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <Server size={14} />
+                  Provider 管理
                 </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                  {settings.providers.map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => setSelectedProvider(p.id)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "var(--space-3) var(--space-4)",
-                        background: "var(--bg-secondary)",
-                        border: "1px solid",
-                        borderColor: p.id === selectedProvider ? "var(--interactive-light)" : "var(--border-primary)",
-                        borderRadius: "var(--radius-lg)",
-                        cursor: "pointer",
-                        transition: "border-color var(--transition-fast)",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (p.id !== selectedProvider) {
-                          e.currentTarget.style.borderColor = "var(--border-secondary)";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (p.id !== selectedProvider) {
-                          e.currentTarget.style.borderColor = "var(--border-primary)";
-                        }
-                      }}
+
+                {/* Provider selection + config form */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                  <div>
+                    <label style={labelStyle}>选择提供商</label>
+                    <select
+                      value={selectedProvider}
+                      onChange={(e) => setSelectedProvider(e.target.value)}
+                      style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-                        <div style={{
-                          width: 10,
-                          height: 10,
-                          borderRadius: "var(--radius-full)",
-                          background: p.enabled ? "var(--success)" : "var(--text-tertiary)",
-                          flexShrink: 0,
-                        }} />
-                        <div>
-                          <p style={{
-                            fontSize: "var(--text-sm)",
-                            fontWeight: "var(--font-medium)",
-                            color: "var(--text-primary)",
-                            margin: 0,
-                          }}>
-                            {p.name}
-                            {settings.defaults.main === p.id && (
-                              <span style={{
-                                marginLeft: "var(--space-2)",
-                                fontSize: "var(--text-xs)",
-                                color: "var(--interactive)",
-                                fontWeight: "normal",
-                              }}>
-                                (默认)
-                              </span>
-                            )}
-                          </p>
-                          <p style={{
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-tertiary)",
-                            margin: 0,
-                            marginTop: 2,
-                          }}>
-                            {p.model} | {p.endpoint.replace(/https?:\/\//, "").split("/")[0]}
-                          </p>
-                        </div>
+                      <option value="">-- 选择 --</option>
+                      <optgroup label="远端 API">
+                        {registry.filter((p) => !p.isLocal).map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="本地模型">
+                        {registry.filter((p) => p.isLocal).map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  {selectedProvider && (
+                    <div style={{
+                      display: "flex", flexDirection: "column", gap: "var(--space-3)",
+                      background: "var(--bg-secondary)", border: "1px solid var(--border-primary)",
+                      borderRadius: "var(--radius-xl)", padding: "var(--space-4)",
+                    }}>
+                      <div>
+                        <label style={labelStyle}>模型名称</label>
+                        <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder={currentMeta?.defaultModel || "模型 ID"} style={inputStyle} />
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleSetDefault("main"); }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            padding: "4px 8px",
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-tertiary)",
-                            background: "transparent",
-                            border: "none",
-                            cursor: "pointer",
-                            transition: "color var(--transition-fast)",
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--interactive)"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
-                        >
-                          <Star size={12} />
-                          设为默认
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 4,
-                            padding: "4px 8px",
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-tertiary)",
-                            background: "transparent",
-                            border: "none",
-                            cursor: "pointer",
-                            transition: "color var(--transition-fast)",
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error)"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
-                        >
-                          <Trash2 size={12} />
-                          删除
-                        </button>
+                      <div>
+                        <label style={labelStyle}>API Key {isLocal && <span style={{ color: "var(--text-tertiary)" }}>(可选)</span>}</label>
+                        <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={isLocal ? "本地模型无需 API Key" : "sk-..."} style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>API 地址</label>
+                        <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={currentMeta?.defaultApiBase || "https://..."} style={inputStyle} />
+                        {currentMeta?.defaultApiBase && <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: 0, marginTop: 2 }}>默认: {currentMeta.defaultApiBase}</p>}
+                      </div>
+                      <div>
+                        <label style={labelStyle}>最大 Tokens</label>
+                        <input type="number" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value) || 32768)} style={inputStyle} />
+                      </div>
+                      <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer" }}>
+                        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+                        <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>启用</span>
+                      </label>
+
+                      {testResult && (
+                        <div style={{
+                          display: "flex", alignItems: "flex-start", gap: "var(--space-2)",
+                          padding: "8px var(--space-3)", borderRadius: "var(--radius-lg)", fontSize: "var(--text-sm)",
+                          background: testResult.success ? "var(--success-light)" : "var(--error-light)",
+                          border: `1px solid ${testResult.success ? "var(--success)" : "var(--error)"}`,
+                          color: testResult.success ? "var(--success)" : "var(--error)",
+                        }}>
+                          {testResult.success ? <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 1 }} /> : <XCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />}
+                          <span>{testResult.message}</span>
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" as const }}>
+                        <button onClick={handleSave} disabled={saving} style={{
+                          display: "flex", alignItems: "center", gap: "var(--space-1)",
+                          padding: "var(--space-2) var(--space-4)", background: "var(--interactive)", color: "#fff",
+                          fontSize: "var(--text-sm)", fontWeight: "var(--font-medium)", borderRadius: "var(--radius-lg)",
+                          border: "none", cursor: "pointer", opacity: saving ? 0.5 : 1,
+                        }}><Save size={14} />{saving ? "保存中..." : "保存"}</button>
+                        <button onClick={handleTest} disabled={testing || (!isLocal && !apiKey)} style={{
+                          display: "flex", alignItems: "center", gap: "var(--space-1)",
+                          padding: "var(--space-2) var(--space-4)", background: "var(--bg-hover)", color: "var(--text-secondary)",
+                          fontSize: "var(--text-sm)", fontWeight: "var(--font-medium)", borderRadius: "var(--radius-lg)",
+                          border: "none", cursor: "pointer", opacity: testing || (!isLocal && !apiKey) ? 0.5 : 1,
+                        }}><Wifi size={14} />{testing ? "测试中..." : "测试连接"}</button>
+                        <button onClick={() => handleSetDefault("main")} style={{
+                          display: "flex", alignItems: "center", gap: "var(--space-1)",
+                          padding: "var(--space-2) var(--space-4)", background: "var(--success-light)", color: "var(--success)",
+                          fontSize: "var(--text-sm)", fontWeight: "var(--font-medium)", borderRadius: "var(--radius-lg)",
+                          border: "none", cursor: "pointer",
+                        }}><ShieldCheck size={14} />设为默认</button>
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Configured providers list */}
+                  {settings && settings.providers.length > 0 && (
+                    <div style={{ marginTop: "var(--space-3)" }}>
+                      <h4 style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text-tertiary)", margin: 0, marginBottom: "var(--space-2)", textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>
+                        已配置 ({settings.providers.length})
+                      </h4>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {settings.providers.map((p) => (
+                          <div key={p.id} onClick={() => setSelectedProvider(p.id)} style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between",
+                            padding: "var(--space-2) var(--space-3)", background: "var(--bg-secondary)",
+                            border: "1px solid", borderColor: p.id === selectedProvider ? "var(--interactive-light)" : "var(--border-primary)",
+                            borderRadius: "var(--radius-md)", cursor: "pointer", transition: "border-color var(--transition-fast)",
+                          }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                              <div style={{ width: 8, height: 8, borderRadius: "50%", background: p.enabled ? "var(--success)" : "var(--text-tertiary)" }} />
+                              <div>
+                                <span style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 500 }}>
+                                  {p.name}
+                                  {settings.defaults.main === p.id && <span style={{ marginLeft: "var(--space-1)", fontSize: "var(--text-xs)", color: "var(--interactive)" }}>★</span>}
+                                </span>
+                                <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginLeft: "var(--space-2)" }}>
+                                  {p.model}
+                                </span>
+                              </div>
+                            </div>
+                            <button onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }} style={{
+                              padding: 2, border: "none", background: "transparent", color: "var(--text-tertiary)", cursor: "pointer",
+                            }} onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error)"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}>
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
-          </>
-        )}
 
-        {/* Embedding Tab */}
-        {activeTab === "embedding" && (
-          <>
-            {/* Current embedding model */}
-            <div style={{
-              padding: "var(--space-4)",
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "var(--radius-xl)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
-                <Cpu size={16} style={{ color: "var(--interactive)" }} />
-                <h3 style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
-                  margin: 0,
-                }}>
-                  嵌入模型配置
+              {/* Model role configuration section */}
+              <div style={{ borderTop: "1px solid var(--border-primary)", paddingTop: "var(--space-4)" }}>
+                <ModelsPanel
+                  providers={settings?.providers ?? []}
+                  settings={settings}
+                  onSettingsChanged={loadData}
+                />
+              </div>
+            </>
+          )}
+
+          {/* ============================================================= */}
+          {/* ============================================================= */}
+          {/* Channels Tab */}
+          {/* ============================================================= */}
+          {activeTab === "channels" && (
+            <ChannelsPanel />
+          )}
+
+          {/* ============================================================= */}
+          {/* Cron Tab */}
+          {/* ============================================================= */}
+          {activeTab === "cron" && (
+            <CronManager />
+          )}
+
+          {/* ============================================================= */}
+          {/* General Tab */}
+          {/* ============================================================= */}
+          {activeTab === "general" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+              {/* Theme */}
+              <div style={{ padding: "var(--space-4)", background: "var(--bg-secondary)", border: "1px solid var(--border-primary)", borderRadius: "var(--radius-xl)" }}>
+                <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0, marginBottom: "var(--space-3)" }}>
+                  主题
                 </h3>
-              </div>
-              <p style={{
-                fontSize: "var(--text-sm)",
-                color: "var(--text-secondary)",
-                marginTop: 0,
-                marginBottom: "var(--space-4)",
-              }}>
-                嵌入模型用于文档向量化，直接影响知识库检索质量。
-              </p>
-
-              {embeddingDefaults && (
-                <div style={{
-                  padding: "var(--space-2) var(--space-3)",
-                  background: "var(--interactive-light)",
-                  border: "1px solid var(--interactive-light)",
-                  borderRadius: "var(--radius-lg)",
-                  fontSize: "var(--text-sm)",
-                  marginBottom: "var(--space-4)",
-                }}>
-                  <span style={{ color: "var(--text-tertiary)" }}>当前嵌入模型:</span>{" "}
-                  <span style={{
-                    fontWeight: "var(--font-medium)",
-                    color: "var(--interactive)",
-                  }}>
-                    {(() => {
-                      const p = settings?.providers.find((pr) => pr.id === embeddingDefaults.embedding);
-                      return p ? `${p.name} / ${p.model}` : (embeddingDefaults.embedding || "未设置");
-                    })()}
-                  </span>
-                </div>
-              )}
-
-              {/* Provider selector */}
-              <div style={{ marginBottom: "var(--space-3)" }}>
-                <label style={labelStyle}>选择嵌入模型提供商</label>
-                <select
-                  value={embeddingProvider}
-                  onChange={(e) => setEmbeddingProvider(e.target.value)}
-                  style={{
-                    ...inputStyle,
-                    padding: "10px var(--space-3)",
-                    cursor: "pointer",
-                  }}
-                >
-                  <option value="">-- 选择提供商 --</option>
-                  <optgroup label="远端 API">
-                    {registry.filter((p) => !p.isLocal).map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="本地模型">
-                    {registry.filter((p) => p.isLocal).map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
-
-              {/* Test result */}
-              {embeddingTestResult && (
-                <div style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: "var(--space-2)",
-                  padding: "10px var(--space-3)",
-                  borderRadius: "var(--radius-lg)",
-                  fontSize: "var(--text-sm)",
-                  background: embeddingTestResult.success ? "var(--success-light)" : "var(--error-light)",
-                  border: `1px solid ${embeddingTestResult.success ? "var(--success)" : "var(--error)"}`,
-                  color: embeddingTestResult.success ? "var(--success)" : "var(--error)",
-                  marginBottom: "var(--space-3)",
-                }}>
-                  {embeddingTestResult.success
-                    ? <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                    : <XCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                  }
-                  <span>{embeddingTestResult.message}</span>
-                </div>
-              )}
-
-              {/* Actions */}
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-                <button
-                  onClick={handleEmbeddingSave}
-                  disabled={!embeddingProvider}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "var(--space-2) var(--space-4)",
-                    background: "var(--interactive)",
-                    color: "#fff",
-                    fontSize: "var(--text-sm)",
-                    fontWeight: "var(--font-medium)",
-                    borderRadius: "var(--radius-lg)",
-                    border: "none",
-                    cursor: embeddingProvider ? "pointer" : "not-allowed",
-                    opacity: embeddingProvider ? 1 : 0.5,
-                    transition: "background var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => { if (embeddingProvider) e.currentTarget.style.background = "var(--interactive-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
-                >
-                  <Save size={14} />
-                  保存
-                </button>
-                <button
-                  onClick={handleEmbeddingTest}
-                  disabled={embeddingTesting || !embeddingProvider}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "var(--space-2) var(--space-4)",
-                    background: "var(--bg-hover)",
-                    color: "var(--text-secondary)",
-                    fontSize: "var(--text-sm)",
-                    fontWeight: "var(--font-medium)",
-                    borderRadius: "var(--radius-lg)",
-                    border: "none",
-                    cursor: embeddingTesting || !embeddingProvider ? "not-allowed" : "pointer",
-                    opacity: embeddingTesting || !embeddingProvider ? 0.5 : 1,
-                    transition: "background var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                >
-                  <Wifi size={14} />
-                  {embeddingTesting ? "测试中..." : "测试"}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* General Tab */}
-        {activeTab === "general" && (
-          <>
-            <div style={{
-              padding: "var(--space-4)",
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "var(--radius-xl)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-4)" }}>
-                <Globe size={16} style={{ color: "var(--interactive)" }} />
-                <h3 style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
-                  margin: 0,
-                }}>
-                  通用设置
-                </h3>
-              </div>
-
-              {/* Theme selection */}
-              <div style={{ marginBottom: "var(--space-5)" }}>
-                <label style={labelStyle}>主题</label>
                 <div style={{ display: "flex", gap: "var(--space-2)" }}>
                   {([
                     { value: "light", label: "浅色" },
                     { value: "dark", label: "深色" },
                     { value: "system", label: "跟随系统" },
                   ] as const).map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setThemeMode(opt.value)}
-                      style={{
-                        padding: "var(--space-2) var(--space-4)",
-                        border: "1px solid",
-                        borderColor: themeMode === opt.value ? "var(--interactive)" : "var(--border-primary)",
-                        borderRadius: "var(--radius-lg)",
-                        background: themeMode === opt.value ? "var(--interactive-light)" : "var(--bg-primary)",
-                        color: themeMode === opt.value ? "var(--interactive)" : "var(--text-secondary)",
-                        fontSize: "var(--text-sm)",
-                        fontWeight: themeMode === opt.value ? 500 : 400,
-                        cursor: "pointer",
-                        transition: "all var(--transition-fast)",
-                      }}
-                    >
+                    <button key={opt.value} onClick={() => setThemeMode(opt.value)} style={{
+                      padding: "var(--space-2) var(--space-4)", border: "1px solid",
+                      borderColor: themeMode === opt.value ? "var(--interactive)" : "var(--border-primary)",
+                      borderRadius: "var(--radius-lg)",
+                      background: themeMode === opt.value ? "var(--interactive-light)" : "var(--bg-primary)",
+                      color: themeMode === opt.value ? "var(--interactive)" : "var(--text-secondary)",
+                      fontSize: "var(--text-sm)", fontWeight: themeMode === opt.value ? 500 : 400,
+                      cursor: "pointer", transition: "all var(--transition-fast)",
+                    }}>
                       {opt.label}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Language */}
-              <div>
-                <label style={labelStyle}>语言</label>
-                <select
-                  value="zh"
-                  disabled
-                  style={{
-                    ...inputStyle,
-                    padding: "10px var(--space-3)",
-                    cursor: "not-allowed",
-                    opacity: 0.7,
-                  }}
-                >
-                  <option value="zh">中文</option>
-                </select>
-                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                  更多语言即将推出
+              {/* Agent settings */}
+              <div style={{ padding: "var(--space-4)", background: "var(--bg-secondary)", border: "1px solid var(--border-primary)", borderRadius: "var(--radius-xl)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
+                  <Settings2 size={16} style={{ color: "var(--interactive)" }} />
+                  <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0 }}>
+                    Agent 运行参数
+                  </h3>
+                </div>
+                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginTop: 0, marginBottom: "var(--space-4)" }}>
+                  修改后即时生效，无需重启。
                 </p>
-              </div>
-            </div>
-          </>
-        )}
 
-        {/* Agent Settings Tab */}
-        {activeTab === "agent" && (
-          <>
-            <div style={{
-              padding: "var(--space-4)",
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "var(--radius-xl)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
-                <Settings2 size={16} style={{ color: "var(--interactive)" }} />
-                <h3 style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
-                  margin: 0,
-                }}>
-                  Agent 运行参数
-                </h3>
-              </div>
-              <p style={{
-                fontSize: "var(--text-sm)",
-                color: "var(--text-secondary)",
-                marginTop: 0,
-                marginBottom: "var(--space-4)",
-              }}>
-                调整 Agent 引擎的核心运行参数。修改后即时生效，无需重启。
-              </p>
-
-              {agentSettings ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-                  {/* Max Turns */}
-                  <div>
-                    <label style={labelStyle}>最大轮次</label>
-                    <select
-                      value={agentSettings.maxTurns}
-                      onChange={(e) => setAgentSettings({ ...agentSettings, maxTurns: parseInt(e.target.value) })}
-                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                    >
-                      <option value={50}>50 轮（默认，适合短任务）</option>
-                      <option value={100}>100 轮（适合中等任务）</option>
-                      <option value={200}>200 轮（适合复杂分析）</option>
-                      <option value={500}>500 轮（适合深度长程任务）</option>
-                      <option value={-1}>无限制（仅靠模型自行停止或用户取消）</option>
-                    </select>
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                      建议轮次为软限制，达到后 Agent 继续运行但会发出提醒；硬限制为建议值的 3 倍
-                    </p>
-                  </div>
-
-                  {/* Context Window */}
-                  <div>
-                    <label style={labelStyle}>上下文窗口大小</label>
-                    <select
-                      value={agentSettings.contextWindow}
-                      onChange={(e) => setAgentSettings({ ...agentSettings, contextWindow: parseInt(e.target.value) })}
-                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                    >
-                      <option value={32000}>32K tokens</option>
-                      <option value={64000}>64K tokens</option>
-                      <option value={128000}>128K tokens（默认）</option>
-                      <option value={200000}>200K tokens</option>
-                      <option value={256000}>256K tokens</option>
-                    </select>
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                      需与所用模型的实际上下文窗口匹配，设置过大会导致 API 报错
-                    </p>
-                  </div>
-
-                  {/* Compaction Buffer */}
-                  <div>
-                    <label style={labelStyle}>压缩缓冲区</label>
-                    <select
-                      value={agentSettings.compactionBuffer}
-                      onChange={(e) => setAgentSettings({ ...agentSettings, compactionBuffer: parseInt(e.target.value) })}
-                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                    >
-                      <option value={8000}>8K tokens（激进压缩，更省空间）</option>
-                      <option value={13000}>13K tokens（默认，平衡选择）</option>
-                      <option value={20000}>20K tokens（保守，留更多空间）</option>
-                      <option value={30000}>30K tokens（非常保守）</option>
-                    </select>
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                      当剩余空间低于此值时触发上下文压缩
-                    </p>
-                  </div>
-
-                  {/* Session Memory */}
-                  <div style={{
-                    padding: "var(--space-3)",
-                    background: "var(--bg-primary)",
-                    borderRadius: "var(--radius-lg)",
-                    border: "1px solid var(--border-primary)",
-                  }}>
-                    <h4 style={{
-                      fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)",
-                      color: "var(--text-primary)",
-                      margin: 0,
-                      marginBottom: "var(--space-3)",
-                    }}>
-                      会话记忆
-                    </h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-                      <div>
-                        <label style={labelStyle}>初始化阈值</label>
-                        <select
-                          value={agentSettings.sessionMemoryInitThreshold}
-                          onChange={(e) => setAgentSettings({ ...agentSettings, sessionMemoryInitThreshold: parseInt(e.target.value) })}
-                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                        >
-                          <option value={5000}>5K tokens</option>
-                          <option value={10000}>10K tokens（默认）</option>
-                          <option value={20000}>20K tokens</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>更新间隔</label>
-                        <select
-                          value={agentSettings.sessionMemoryUpdateInterval}
-                          onChange={(e) => setAgentSettings({ ...agentSettings, sessionMemoryUpdateInterval: parseInt(e.target.value) })}
-                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                        >
-                          <option value={3000}>3K tokens</option>
-                          <option value={5000}>5K tokens（默认）</option>
-                          <option value={10000}>10K tokens</option>
-                          <option value={20000}>20K tokens</option>
-                        </select>
-                      </div>
+                {agentSettings ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                    <div>
+                      <label style={labelStyle}>最大轮次</label>
+                      <select value={agentSettings.maxTurns} onChange={(e) => setAgentSettings({ ...agentSettings, maxTurns: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={50}>50 轮</option>
+                        <option value={100}>100 轮</option>
+                        <option value={200}>200 轮</option>
+                        <option value={500}>500 轮</option>
+                        <option value={-1}>无限制</option>
+                      </select>
                     </div>
-                  </div>
-
-                  {/* Microcompact */}
-                  <div>
-                    <label style={labelStyle}>Microcompact 保留轮次</label>
-                    <select
-                      value={agentSettings.microcompactKeepTurns}
-                      onChange={(e) => setAgentSettings({ ...agentSettings, microcompactKeepTurns: parseInt(e.target.value) })}
-                      style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                    >
-                      <option value={5}>5 轮（更积极修剪旧结果）</option>
-                      <option value={10}>10 轮（默认）</option>
-                      <option value={20}>20 轮（保留更多上下文）</option>
-                      <option value={30}>30 轮（最大保留）</option>
-                    </select>
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", marginTop: "var(--space-1)", margin: 0 }}>
-                      保留最近 N 轮工具调用的完整结果，更早的结果会被压缩
-                    </p>
-                  </div>
-
-                  {/* AutoDream */}
-                  <div style={{
-                    padding: "var(--space-3)",
-                    background: "var(--bg-primary)",
-                    borderRadius: "var(--radius-lg)",
-                    border: "1px solid var(--border-primary)",
-                  }}>
-                    <h4 style={{
-                      fontSize: "var(--text-sm)",
-                      fontWeight: "var(--font-medium)",
-                      color: "var(--text-primary)",
-                      margin: 0,
-                      marginBottom: "var(--space-3)",
-                    }}>
-                      跨会话知识整合 (AutoDream)
-                    </h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-                      <div>
-                        <label style={labelStyle}>触发间隔</label>
-                        <select
-                          value={agentSettings.autoDreamIntervalHours}
-                          onChange={(e) => setAgentSettings({ ...agentSettings, autoDreamIntervalHours: parseInt(e.target.value) })}
-                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                        >
-                          <option value={1}>1 小时</option>
-                          <option value={6}>6 小时</option>
-                          <option value={12}>12 小时</option>
-                          <option value={24}>24 小时（默认）</option>
-                          <option value={48}>48 小时</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={labelStyle}>会话数量门槛</label>
-                        <select
-                          value={agentSettings.autoDreamSessionThreshold}
-                          onChange={(e) => setAgentSettings({ ...agentSettings, autoDreamSessionThreshold: parseInt(e.target.value) })}
-                          style={{ ...inputStyle, padding: "10px var(--space-3)", cursor: "pointer" }}
-                        >
-                          <option value={3}>3 个会话</option>
-                          <option value={5}>5 个会话（默认）</option>
-                          <option value={10}>10 个会话</option>
-                          <option value={20}>20 个会话</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label style={labelStyle}>上下文窗口</label>
+                      <select value={agentSettings.contextWindow} onChange={(e) => setAgentSettings({ ...agentSettings, contextWindow: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={32000}>32K</option>
+                        <option value={64000}>64K</option>
+                        <option value={128000}>128K (默认)</option>
+                        <option value={200000}>200K</option>
+                        <option value={256000}>256K</option>
+                      </select>
                     </div>
-                  </div>
-
-                  {/* Save button */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", paddingTop: "var(--space-1)" }}>
-                    <button
-                      onClick={handleAgentSave}
-                      disabled={agentSaving}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--space-1)",
-                        padding: "var(--space-2) var(--space-4)",
-                        background: "var(--interactive)",
-                        color: "#fff",
-                        fontSize: "var(--text-sm)",
-                        fontWeight: "var(--font-medium)",
-                        borderRadius: "var(--radius-lg)",
-                        border: "none",
-                        cursor: agentSaving ? "not-allowed" : "pointer",
-                        opacity: agentSaving ? 0.5 : 1,
-                        transition: "background var(--transition-fast)",
-                      }}
-                      onMouseEnter={(e) => { if (!agentSaving) e.currentTarget.style.background = "var(--interactive-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--interactive)"; }}
-                    >
-                      <Save size={14} />
-                      {agentSaving ? "保存中..." : "保存设置"}
+                    <div>
+                      <label style={labelStyle}>压缩缓冲区</label>
+                      <select value={agentSettings.compactionBuffer} onChange={(e) => setAgentSettings({ ...agentSettings, compactionBuffer: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={8000}>8K</option>
+                        <option value={13000}>13K (默认)</option>
+                        <option value={20000}>20K</option>
+                        <option value={30000}>30K</option>
+                      </select>
+                    </div>
+                    <button onClick={handleAgentSave} disabled={agentSaving} style={{
+                      display: "flex", alignItems: "center", gap: "var(--space-1)",
+                      padding: "var(--space-2) var(--space-4)", background: "var(--interactive)", color: "#fff",
+                      fontSize: "var(--text-sm)", borderRadius: "var(--radius-lg)", border: "none",
+                      cursor: agentSaving ? "not-allowed" : "pointer", opacity: agentSaving ? 0.5 : 1, alignSelf: "flex-start",
+                    }}>
+                      <Save size={14} /> {agentSaving ? "保存中..." : "保存设置"}
                     </button>
                   </div>
-                </div>
-              ) : (
-                <div style={{
-                  textAlign: "center",
-                  padding: "var(--space-6) 0",
-                  color: "var(--text-tertiary)",
-                  fontSize: "var(--text-sm)",
-                }}>
-                  加载中...
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* About Tab */}
-        {activeTab === "about" && (
-          <>
-            <div style={{
-              padding: "var(--space-4)",
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "var(--radius-xl)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-4)" }}>
-                <Info size={16} style={{ color: "var(--interactive)" }} />
-                <h3 style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
-                  margin: 0,
-                }}>
-                  关于 DeepAnalyze
-                </h3>
+                ) : (
+                  <p style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>加载中...</p>
+                )}
               </div>
 
-              {/* Version info */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-                <div style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  padding: "var(--space-2) 0",
-                  borderBottom: "1px solid var(--border-primary)",
-                }}>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>版本</span>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 500 }}>
-                    {healthInfo?.version ?? "加载中..."}
-                  </span>
+              {/* About */}
+              <div style={{ padding: "var(--space-4)", background: "var(--bg-secondary)", border: "1px solid var(--border-primary)", borderRadius: "var(--radius-xl)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+                  <Info size={16} style={{ color: "var(--interactive)" }} />
+                  <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0 }}>
+                    关于
+                  </h3>
                 </div>
-                <div style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  padding: "var(--space-2) 0",
-                  borderBottom: "1px solid var(--border-primary)",
-                }}>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>状态</span>
-                  <span style={{
-                    fontSize: "var(--text-sm)",
-                    fontWeight: 500,
-                    color: healthInfo?.status === "ok" ? "var(--success)" : "var(--text-tertiary)",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                  }}>
-                    <span style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "var(--radius-full)",
-                      background: healthInfo?.status === "ok" ? "var(--success)" : "var(--text-tertiary)",
-                    }} />
-                    {healthInfo?.status === "ok" ? "正常" : (healthInfo?.status ?? "加载中...")}
-                  </span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-1) 0", borderBottom: "1px solid var(--border-primary)" }}>
+                    <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>版本</span>
+                    <span style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 500 }}>{healthInfo?.version ?? "---"}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "var(--space-1) 0" }}>
+                    <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>状态</span>
+                    <span style={{ fontSize: "var(--text-sm)", color: healthInfo?.status === "ok" ? "var(--success)" : "var(--text-tertiary)", fontWeight: 500 }}>
+                      {healthInfo?.status === "ok" ? "正常" : "---"}
+                    </span>
+                  </div>
                 </div>
-                <div style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  padding: "var(--space-2) 0",
-                  borderBottom: "1px solid var(--border-primary)",
-                }}>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>Agent 引擎</span>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 500 }}>
-                    DeepAnalyze Agent Engine
-                  </span>
-                </div>
-              </div>
-
-              {/* Links */}
-              <div style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-2)",
-                marginTop: "var(--space-4)",
-                paddingTop: "var(--space-3)",
-                borderTop: "1px solid var(--border-primary)",
-              }}>
-                <button
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-2)",
-                    padding: "var(--space-2) 0",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "var(--text-sm)",
-                    color: "var(--interactive)",
-                    transition: "opacity var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.7"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
-                >
-                  查看系统日志
-                </button>
-                <button
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-2)",
-                    padding: "var(--space-2) 0",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "var(--text-sm)",
-                    color: "var(--interactive)",
-                    transition: "opacity var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.7"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
-                >
-                  查看开源许可
-                </button>
               </div>
             </div>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

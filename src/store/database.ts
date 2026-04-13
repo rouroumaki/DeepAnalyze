@@ -13,6 +13,7 @@ import { migration as m002_wiki_indexes } from './migrations/002_wiki_indexes.ts
 import { migration as m003_vector_tables } from './migrations/003_vector_tables.ts';
 import { migration as m004_settings } from './migrations/004_settings.ts';
 import { migration as m005_session_memory } from './migrations/005_session_memory.ts';
+import { migration as m006_cron_jobs } from './migrations/006_cron_jobs.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
@@ -21,6 +22,7 @@ const MIGRATIONS = [
   m003_vector_tables,
   m004_settings,
   m005_session_memory,
+  m006_cron_jobs,
 ] as const;
 
 // ---------------------------------------------------------------------------

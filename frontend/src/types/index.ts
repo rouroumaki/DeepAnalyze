@@ -86,6 +86,31 @@ export interface ProviderSettings {
   defaults: ProviderDefaults;
 }
 
+// --- Enhanced Models ---
+
+export type EnhancedModelType =
+  | "multimodal"
+  | "image_gen"
+  | "video_gen"
+  | "music_gen"
+  | "audio_gen"
+  | "three_d_gen"
+  | "custom";
+
+export interface EnhancedModelEntry {
+  id: string;
+  modelType: EnhancedModelType;
+  name: string;
+  description: string;
+  providerId: string;
+  model: string;
+  enabled: boolean;
+  capabilities: string[];
+  priority: number;
+  temperature?: number;
+  maxTokens?: number;
+}
+
 export interface ProviderTestResult {
   success: boolean;
   status?: number;
@@ -312,12 +337,135 @@ export interface AgentSettings {
   autoDreamSessionThreshold: number;
 }
 
+// --- Cron Jobs ---
+
+export interface CronJob {
+  id: string;
+  name: string;
+  schedule: string;
+  message: string;
+  enabled: boolean;
+  channel: string | null;
+  chatId: string | null;
+  deliverResponse: boolean;
+  lastRun: string | null;
+  nextRun: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  runCount: number;
+  errorCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateCronJobRequest {
+  name: string;
+  schedule: string;
+  message: string;
+  enabled?: boolean;
+  channel?: string | null;
+  chatId?: string | null;
+  deliverResponse?: boolean;
+}
+
+export interface UpdateCronJobRequest extends Partial<CreateCronJobRequest> {}
+
+export interface CronValidateResult {
+  valid: boolean;
+  description: string;
+  nextRun: string | null;
+}
+
+// --- Communication Channels ---
+
+export type ChannelId = "feishu" | "dingtalk" | "wechat" | "qq" | "telegram" | "discord";
+
+export interface ChannelInfo {
+  id: ChannelId;
+  name: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+  configured: boolean;
+  running: boolean;
+}
+
+export interface FeishuConfig {
+  enabled: boolean;
+  app_id: string;
+  app_secret: string;
+  encrypt_key?: string;
+  verification_token?: string;
+  allow_from: string[];
+}
+
+export interface DingTalkConfig {
+  enabled: boolean;
+  client_id: string;
+  client_secret: string;
+  allow_from: string[];
+}
+
+export interface WeChatConfig {
+  enabled: boolean;
+  app_id: string;
+  app_secret: string;
+  token: string;
+  encoding_aes_key?: string;
+  allow_from: string[];
+}
+
+export interface QQConfig {
+  enabled: boolean;
+  app_id: string;
+  app_secret: string;
+  allow_from: string[];
+  markdown_enabled: boolean;
+  group_markdown_enabled: boolean;
+}
+
+export interface TelegramConfig {
+  enabled: boolean;
+  token: string;
+  proxy?: string;
+  allow_from: string[];
+}
+
+export interface DiscordConfig {
+  enabled: boolean;
+  token: string;
+  application_id?: string;
+  guild_id?: string;
+  allow_from: string[];
+}
+
+export interface ChannelsConfig {
+  feishu: FeishuConfig;
+  dingtalk: DingTalkConfig;
+  wechat: WeChatConfig;
+  qq: QQConfig;
+  telegram: TelegramConfig;
+  discord: DiscordConfig;
+}
+
+export interface ChannelTestResult {
+  success: boolean;
+  message: string;
+}
+
+export interface ChannelStatus {
+  enabled: boolean;
+  running: boolean;
+  displayName: string;
+}
+
 // --- UI State ---
 
-export type TabId = "chat" | "knowledge" | "reports" | "tasks" | "settings";
+export type TabId = "chat" | "knowledge" | "reports" | "tasks";
 export type RightPanelId =
   | "sessions"
-  | "knowledge"
-  | "tasks"
+  | "skills"
+  | "plugins"
+  | "cron"
   | "settings"
   | null;

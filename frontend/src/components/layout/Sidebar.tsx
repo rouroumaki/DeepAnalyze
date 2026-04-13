@@ -3,7 +3,6 @@ import {
   BookOpen,
   FileBarChart,
   ListTodo,
-  Puzzle,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -25,10 +24,6 @@ const mainNavItems: NavItem[] = [
   { id: 'knowledge', label: '知识库', icon: <BookOpen size={18} /> },
   { id: 'reports', label: '报告', icon: <FileBarChart size={18} /> },
   { id: 'tasks', label: '任务', icon: <ListTodo size={18} /> },
-];
-
-const bottomNavItems: NavItem[] = [
-  { id: 'plugins', label: '插件', icon: <Puzzle size={18} /> },
 ];
 
 export function Sidebar() {
@@ -313,24 +308,6 @@ export function Sidebar() {
           />
         ))}
       </nav>
-
-      {/* Bottom Nav */}
-      <div
-        style={{
-          borderTop: '1px solid var(--border-primary)',
-          padding: `${collapsed ? 'var(--space-2)' : 'var(--space-2)'}`,
-        }}
-      >
-        {bottomNavItems.map((item) => (
-          <NavButton
-            key={item.id}
-            item={item}
-            active={activeView === item.id}
-            collapsed={collapsed}
-            onClick={() => setActiveView(item.id)}
-          />
-        ))}
-      </div>
 
       {/* Collapse Toggle */}
       <button

@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { storage } from '../utils/storage';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type ViewId = 'chat' | 'knowledge' | 'reports' | 'tasks' | 'plugins' | 'settings';
+export type ViewId = 'chat' | 'knowledge' | 'reports' | 'tasks';
+export type PanelContentType = 'sessions' | 'skills' | 'plugins' | 'cron' | 'settings';
 
 interface ToastItem {
   id: string;
@@ -26,8 +27,8 @@ interface UIState {
 
   // Right panel
   rightPanelOpen: boolean;
-  rightPanelContent: string | null;
-  openRightPanel: (content: string) => void;
+  rightPanelContentType: PanelContentType | null;
+  openRightPanel: (type: PanelContentType) => void;
   closeRightPanel: () => void;
 
   // Current knowledge base
@@ -110,9 +111,15 @@ export const useUIStore = create<UIState>((set, get) => {
 
     // Right panel
     rightPanelOpen: false,
-    rightPanelContent: null,
-    openRightPanel: (content) => set({ rightPanelOpen: true, rightPanelContent: content }),
-    closeRightPanel: () => set({ rightPanelOpen: false, rightPanelContent: null }),
+    rightPanelContentType: null,
+    openRightPanel: (type) => set((s) => {
+      // Toggle: if clicking the same panel type that's already open, close it
+      if (s.rightPanelOpen && s.rightPanelContentType === type) {
+        return { rightPanelOpen: false, rightPanelContentType: null };
+      }
+      return { rightPanelOpen: true, rightPanelContentType: type };
+    }),
+    closeRightPanel: () => set({ rightPanelOpen: false, rightPanelContentType: null }),
 
     // Current knowledge base
     currentKbId: "",

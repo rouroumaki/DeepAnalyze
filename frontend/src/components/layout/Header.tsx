@@ -1,15 +1,35 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Sun, Moon, Settings, Activity } from 'lucide-react';
+import {
+  Search, Sun, Moon, Settings, Activity,
+  History, Zap, Puzzle, Clock,
+} from 'lucide-react';
 import { useTheme } from '../../hooks/useTheme';
-import { useUIStore } from '../../store/ui';
+import { useUIStore, type PanelContentType } from '../../store/ui';
 import { useChatStore } from '../../store/chat';
 import { api } from '../../api/client';
 import type { SessionInfo, KnowledgeBase } from '../../types/index';
 import { useKeyboard } from '../../hooks/useKeyboard';
 
+// ---------------------------------------------------------------------------
+// Header action buttons config
+// ---------------------------------------------------------------------------
+
+const headerActions: { id: PanelContentType; icon: typeof History; title: string }[] = [
+  { id: 'sessions', icon: History, title: '会话历史' },
+  { id: 'skills', icon: Zap, title: '技能库' },
+  { id: 'plugins', icon: Puzzle, title: '插件管理' },
+  { id: 'cron', icon: Clock, title: '定时任务' },
+  { id: 'settings', icon: Settings, title: '设置' },
+];
+
+// ---------------------------------------------------------------------------
+// Header component
+// ---------------------------------------------------------------------------
+
 export function Header() {
   const { isDark, toggleTheme } = useTheme();
-  const setActiveView = useUIStore((s) => s.setActiveView);
+  const openRightPanel = useUIStore((s) => s.openRightPanel);
+  const rightPanelContentType = useUIStore((s) => s.rightPanelContentType);
   const setCurrentKbId = useUIStore((s) => s.setCurrentKbId);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -67,7 +87,32 @@ export function Header() {
   }, [searchOpen]);
 
   const healthColor = healthStatus === "ok" ? "var(--success)" : healthStatus === "error" ? "var(--error)" : "var(--warning)";
-  const healthLabel = healthStatus === "ok" ? "模型正常" : healthStatus === "error" ? "模型异常" : "连接中...";
+
+  // Action button style helper
+  const actionBtnBase: React.CSSProperties = {
+    width: 34,
+    height: 34,
+    borderRadius: 'var(--radius-md)',
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all var(--transition-fast)',
+    position: 'relative' as const,
+    flexShrink: 0,
+  };
+
+  const handleActionEnter = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.background = 'var(--bg-tertiary)';
+    e.currentTarget.style.color = 'var(--text-primary)';
+  };
+  const handleActionLeave = (e: React.MouseEvent<HTMLButtonElement>, isActive: boolean) => {
+    e.currentTarget.style.background = isActive ? 'var(--bg-tertiary)' : 'transparent';
+    e.currentTarget.style.color = isActive ? 'var(--interactive)' : 'var(--text-secondary)';
+  };
 
   return (
     <header
@@ -78,7 +123,7 @@ export function Header() {
         display: 'flex',
         alignItems: 'center',
         padding: '0 var(--space-4)',
-        gap: 'var(--space-4)',
+        gap: 'var(--space-3)',
         flexShrink: 0,
         zIndex: 'var(--z-sticky)',
         position: 'relative',
@@ -86,6 +131,17 @@ export function Header() {
     >
       {/* Logo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexShrink: 0 }}>
+        {/* Health dot */}
+        <div
+          title={healthStatus === "ok" ? "模型正常" : healthStatus === "error" ? "模型异常" : "连接中..."}
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: healthColor,
+            flexShrink: 0,
+          }}
+        />
         <div
           style={{
             width: 28,
@@ -205,41 +261,42 @@ export function Header() {
       </div>
 
       {/* Right Actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexShrink: 0 }}>
-        {/* Model Status */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 10px',
-            borderRadius: 'var(--radius-full)',
-            background: 'var(--bg-tertiary)',
-            fontSize: 'var(--text-xs)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          <Activity size={12} style={{ color: healthColor }} />
-          <span>{healthLabel}</span>
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+        {/* Panel action buttons */}
+        {headerActions.map(({ id, icon: Icon, title }) => {
+          const isActive = rightPanelContentType === id;
+          return (
+            <button
+              key={id}
+              onClick={() => openRightPanel(id)}
+              title={title}
+              style={{
+                ...actionBtnBase,
+                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                color: isActive ? 'var(--interactive)' : 'var(--text-secondary)',
+              }}
+              onMouseEnter={(e) => handleActionEnter(e)}
+              onMouseLeave={(e) => handleActionLeave(e, isActive)}
+            >
+              <Icon size={18} />
+            </button>
+          );
+        })}
+
+        {/* Divider */}
+        <div style={{
+          width: 1,
+          height: 20,
+          background: 'var(--border-primary)',
+          margin: '0 var(--space-1)',
+          flexShrink: 0,
+        }} />
 
         {/* Theme Toggle */}
         <button
           onClick={toggleTheme}
           title={isDark ? '切换浅色主题' : '切换深色主题'}
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: 'var(--radius-md)',
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'all var(--transition-fast)',
-          }}
+          style={actionBtnBase}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = 'var(--bg-tertiary)';
             e.currentTarget.style.color = 'var(--text-primary)';
@@ -250,35 +307,6 @@ export function Header() {
           }}
         >
           {isDark ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
-
-        {/* Settings */}
-        <button
-          onClick={() => setActiveView('settings')}
-          title="系统设置"
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: 'var(--radius-md)',
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'all var(--transition-fast)',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--bg-tertiary)';
-            e.currentTarget.style.color = 'var(--text-primary)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent';
-            e.currentTarget.style.color = 'var(--text-secondary)';
-          }}
-        >
-          <Settings size={18} />
         </button>
       </div>
     </header>

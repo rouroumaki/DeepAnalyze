@@ -1,0 +1,81 @@
+// =============================================================================
+// DeepAnalyze - Cron Types
+// Type definitions for the cron job system
+// =============================================================================
+
+export interface CronJob {
+  id: string;
+  name: string;
+  schedule: string;
+  message: string;
+  enabled: boolean;
+  channel: string | null;
+  chatId: string | null;
+  deliverResponse: boolean;
+  lastRun: string | null;
+  nextRun: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  runCount: number;
+  errorCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateCronJobRequest {
+  name: string;
+  schedule: string;
+  message: string;
+  enabled?: boolean;
+  channel?: string | null;
+  chatId?: string | null;
+  deliverResponse?: boolean;
+}
+
+export interface UpdateCronJobRequest extends Partial<CreateCronJobRequest> {}
+
+export interface CronJobDetail extends CronJob {
+  lastResponse: string | null;
+}
+
+// Database row type (snake_case)
+export interface CronJobRow {
+  id: string;
+  name: string;
+  schedule: string;
+  message: string;
+  enabled: number;
+  channel: string | null;
+  chat_id: string | null;
+  deliver_response: number;
+  last_run: string | null;
+  next_run: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  run_count: number;
+  error_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Convert a database row to a CronJob object */
+export function rowToJob(row: CronJobRow): CronJob {
+  return {
+    id: row.id,
+    name: row.name,
+    schedule: row.schedule,
+    message: row.message,
+    enabled: row.enabled === 1,
+    channel: row.channel,
+    chatId: row.chat_id,
+    deliverResponse: row.deliver_response === 1,
+    lastRun: row.last_run,
+    nextRun: row.next_run,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    runCount: row.run_count,
+    errorCount: row.error_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}

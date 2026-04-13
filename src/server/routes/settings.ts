@@ -195,5 +195,22 @@ export function createSettingsRoutes(): Hono {
     return c.json({ success: true });
   });
 
+  // -----------------------------------------------------------------------
+  // Enhanced models
+  // -----------------------------------------------------------------------
+
+  /** Get enhanced model entries */
+  router.get("/enhanced-models", (c) => {
+    const models = store.getEnhancedModels();
+    return c.json(models);
+  });
+
+  /** Save enhanced model entries */
+  router.put("/enhanced-models", async (c) => {
+    const models = await c.req.json<unknown[]>();
+    store.saveEnhancedModels(models);
+    return c.json({ success: true, count: models.length });
+  });
+
   return router;
 }

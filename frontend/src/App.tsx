@@ -9,8 +9,6 @@ const ChatWindow = lazy(() => import("./components/ChatWindow").then(m => ({ def
 const KnowledgePanel = lazy(() => import("./components/knowledge/KnowledgePanel").then(m => ({ default: m.KnowledgePanel })));
 const ReportPanel = lazy(() => import("./components/reports/ReportPanel").then(m => ({ default: m.ReportPanel })));
 const TaskPanel = lazy(() => import("./components/tasks/TaskPanel").then(m => ({ default: m.TaskPanel })));
-const SettingsPanel = lazy(() => import("./components/settings/SettingsPanel").then(m => ({ default: m.SettingsPanel })));
-const PluginManager = lazy(() => import("./components/plugins/PluginManager").then(m => ({ default: m.PluginManager })));
 
 // ---------------------------------------------------------------------------
 // Error boundary — catches render errors in lazy-loaded views so the whole
@@ -72,7 +70,8 @@ class ViewErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 }
 
 // ---------------------------------------------------------------------------
-// View router
+// View router — only main view tabs (chat/knowledge/reports/tasks)
+// Settings, plugins, skills, cron are now in the RightPanel
 // ---------------------------------------------------------------------------
 
 function ViewRouter() {
@@ -93,10 +92,6 @@ function ViewRouter() {
               return <ReportPanel key="reports" kbId={currentKbId} onKbIdChange={setCurrentKbId} />;
             case "tasks":
               return <TaskPanel key="tasks" />;
-            case "settings":
-              return <SettingsPanel key="settings" />;
-            case "plugins":
-              return <PluginManager key="plugins" />;
             default:
               return <ChatWindow key="default" />;
           }

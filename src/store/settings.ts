@@ -159,4 +159,36 @@ export class SettingsStore {
     this.set("agent_settings", JSON.stringify(merged));
     return merged;
   }
+
+  // -----------------------------------------------------------------------
+  // Enhanced models
+  // -----------------------------------------------------------------------
+
+  /** Get enhanced model entries from settings. */
+  getEnhancedModels(): Array<{
+    id: string;
+    modelType: string;
+    name: string;
+    description: string;
+    providerId: string;
+    model: string;
+    enabled: boolean;
+    capabilities: string[];
+    priority: number;
+    temperature?: number;
+    maxTokens?: number;
+  }> {
+    const raw = this.get("enhanced_models");
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Save enhanced model entries. */
+  saveEnhancedModels(models: unknown[]): void {
+    this.set("enhanced_models", JSON.stringify(models));
+  }
 }

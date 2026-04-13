@@ -24,6 +24,15 @@ import type {
   DocumentInfo,
   WikiPage,
   AgentSettings,
+  CronJob,
+  CreateCronJobRequest,
+  UpdateCronJobRequest,
+  CronValidateResult,
+  ChannelInfo,
+  ChannelId,
+  ChannelTestResult,
+  ChannelsConfig,
+  ChannelStatus,
 } from "../types/index.js";
 
 const BASE_URL = "";
@@ -392,6 +401,78 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+
+  // --- Enhanced Models ---
+  getEnhancedModels: () =>
+    request<import("../types/index.js").EnhancedModelEntry[]>("/api/settings/enhanced-models"),
+  saveEnhancedModels: (models: import("../types/index.js").EnhancedModelEntry[]) =>
+    request<{ success: boolean; count: number }>("/api/settings/enhanced-models", {
+      method: "PUT",
+      body: JSON.stringify(models),
+    }),
+
+  // --- Cron Jobs ---
+  listCronJobs: () =>
+    request<CronJob[]>("/api/cron/jobs"),
+  getCronJob: (id: string) =>
+    request<CronJob>(`/api/cron/jobs/${id}`),
+  createCronJob: (data: CreateCronJobRequest) =>
+    request<CronJob>("/api/cron/jobs", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateCronJob: (id: string, data: UpdateCronJobRequest) =>
+    request<CronJob>(`/api/cron/jobs/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteCronJob: (id: string) =>
+    request<{ success: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
+  runCronJob: (id: string) =>
+    request<{ success: boolean; message: string }>(`/api/cron/jobs/${id}/run`, {
+      method: "POST",
+    }),
+  validateCron: (schedule: string) =>
+    request<CronValidateResult>("/api/cron/validate", {
+      method: "POST",
+      body: JSON.stringify({ schedule }),
+    }),
+
+  // --- Channels ---
+  listChannels: () =>
+    request<{ channels: ChannelInfo[] }>("/api/channels/list").then(
+      (res) => Array.isArray(res.channels) ? res.channels : [],
+    ),
+  getChannelConfigs: () =>
+    request<{ configs: ChannelsConfig }>("/api/channels/configs").then(
+      (res) => res.configs,
+    ),
+  getChannelConfig: (id: ChannelId) =>
+    request<{ config: Record<string, unknown> }>(`/api/channels/${id}/config`).then(
+      (res) => res.config,
+    ),
+  updateChannel: (id: ChannelId, config: Record<string, unknown>) =>
+    request<{ success: boolean; config: Record<string, unknown> }>("/api/channels/update", {
+      method: "POST",
+      body: JSON.stringify({ id, config }),
+    }),
+  testChannel: (id: ChannelId, config?: Record<string, unknown>) =>
+    request<ChannelTestResult>("/api/channels/test", {
+      method: "POST",
+      body: JSON.stringify({ id, config }),
+    }),
+  startChannel: (id: ChannelId) =>
+    request<{ success: boolean; message: string }>(`/api/channels/${id}/start`, {
+      method: "POST",
+    }),
+  stopChannel: (id: ChannelId) =>
+    request<{ success: boolean; message: string }>(`/api/channels/${id}/stop`, {
+      method: "POST",
+    }),
+  getChannelsStatus: () =>
+    request<{ status: Record<string, ChannelStatus> }>("/api/channels/status").then(
+      (res) => res.status,
+    ),
 
   // --- Health ---
   health: () => request<{ status: string; version: string }>("/api/health"),

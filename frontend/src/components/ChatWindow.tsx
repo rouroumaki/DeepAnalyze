@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useChatStore } from "../store/chat";
 import { useUIStore } from "../store/ui";
 import { MessageList } from "./chat/MessageList";
@@ -6,7 +6,15 @@ import { MessageInput } from "./chat/MessageInput";
 import { SubtaskPanel } from "./chat/SubtaskPanel";
 import { ScopeSelector } from "./chat/ScopeSelector";
 import { useKeyboard } from "../hooks/useKeyboard";
+import { api } from "../api/client";
 import { Sparkles, Upload, BookOpen, MessageSquare } from "lucide-react";
+import type { AnalysisScope } from "../types/index";
+
+interface KbEntry {
+  id: string;
+  name: string;
+  documents: Array<{ id: string; filename: string; status: string }>;
+}
 
 export function ChatWindow() {
   const currentSessionId = useChatStore((s) => s.currentSessionId);
@@ -14,8 +22,45 @@ export function ChatWindow() {
   const createSession = useChatStore((s) => s.createSession);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const setActiveView = useUIStore((s) => s.setActiveView);
+  const currentKbId = useUIStore((s) => s.currentKbId);
 
-  const [scope, setScope] = useState("");
+  const [scope, setScope] = useState<AnalysisScope>({ knowledgeBases: [], webSearch: false });
+  const [kbList, setKbList] = useState<KbEntry[]>([]);
+
+  // Load knowledge bases with their documents
+  useEffect(() => {
+    let cancelled = false;
+    const loadKbs = async () => {
+      try {
+        const kbs = await api.listKnowledgeBases();
+        if (cancelled) return;
+        // Load documents for each KB
+        const entries: KbEntry[] = await Promise.all(
+          kbs.map(async (kb) => {
+            try {
+              const docs = await api.listDocuments(kb.id);
+              return {
+                id: kb.id,
+                name: kb.name,
+                documents: docs.map((d) => ({ id: d.id, filename: d.filename, status: d.status })),
+              };
+            } catch {
+              return { id: kb.id, name: kb.name, documents: [] };
+            }
+          }),
+        );
+        if (!cancelled) setKbList(entries);
+      } catch {
+        // Non-critical
+      }
+    };
+    loadKbs();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleScopeChange = useCallback((newScope: AnalysisScope) => {
+    setScope(newScope);
+  }, []);
 
   useKeyboard({ key: "n", ctrl: true }, () => {
     createSession();
@@ -192,7 +237,7 @@ export function ChatWindow() {
         >
           {currentSession.title || "新对话"}
         </span>
-        <ScopeSelector value={scope} onChange={setScope} />
+        <ScopeSelector kbList={kbList} currentKbId={currentKbId} onScopeChange={handleScopeChange} />
       </div>
 
       {/* Messages */}

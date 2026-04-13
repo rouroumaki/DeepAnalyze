@@ -33,6 +33,7 @@ import type {
   ChannelTestResult,
   ChannelsConfig,
   ChannelStatus,
+  AnalysisScope,
 } from "../types/index.js";
 
 const BASE_URL = "";
@@ -97,12 +98,13 @@ export const api = {
       onAdvisoryLimit?: (data: { taskId: string; turn: number }) => void;
       onCompaction?: (data: { taskId: string; turn: number; method: string; tokensSaved: number }) => void;
     },
+    scope?: AnalysisScope,
   ) => {
     const controller = new AbortController();
     const fetchPromise = fetch(`${BASE_URL}/api/agents/run-stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, input, agentType }),
+      body: JSON.stringify({ sessionId, input, agentType, scope }),
       signal: controller.signal,
     }).then(async (resp) => {
       if (!resp.ok) {
@@ -256,6 +258,12 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ docId, level, section }),
       },
+    ),
+
+  // --- Entities ---
+  getEntities: (kbId: string) =>
+    request<Array<{ name: string; type: string; mentions: number; docCount: number }>>(
+      `/api/knowledge/kbs/${kbId}/entities`,
     ),
 
   // --- Reports ---

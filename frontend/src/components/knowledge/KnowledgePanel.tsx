@@ -7,7 +7,8 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useConfirm } from "../../hooks/useConfirm";
-import { useFileUpload } from "../../hooks/useFileUpload";
+import { useFileUpload, selectFolder } from "../../hooks/useFileUpload";
+import { useDocProcessing } from "../../hooks/useDocProcessing";
 import type { KnowledgeBase, DocumentInfo } from "../../types/index";
 import { WikiBrowser } from "./WikiBrowser";
 import { EntityPage } from "./EntityPage";
@@ -29,6 +30,7 @@ import {
   Settings,
   Eye,
   Loader2,
+  Users,
 } from "lucide-react";
 
 interface KnowledgePanelProps {
@@ -36,7 +38,7 @@ interface KnowledgePanelProps {
   onKbIdChange: (id: string) => void;
 }
 
-type TabId = "documents" | "wiki" | "search" | "settings";
+type TabId = "documents" | "wiki" | "entities" | "search" | "settings";
 
 type SearchMode = "semantic" | "exact" | "hybrid";
 
@@ -45,6 +47,14 @@ interface HealthCheckResult {
   status: "ok" | "error" | "warning";
   message: string;
 }
+
+const STEP_LABELS: Record<string, string> = {
+  parsing: "解析中",
+  compiling: "编译中",
+  indexing: "索引中",
+  linking: "关联中",
+  uploading: "上传中",
+};
 
 const STATUS_CONFIG: Record<
   string,
@@ -58,12 +68,22 @@ const STATUS_CONFIG: Record<
   parsing: {
     label: "解析中",
     color: "var(--warning)",
-    icon: <Clock size={14} />,
+    icon: <Loader2 size={14} className="animate-spin" />,
   },
   compiling: {
     label: "编译中",
     color: "var(--warning)",
-    icon: <Clock size={14} />,
+    icon: <Loader2 size={14} className="animate-spin" />,
+  },
+  indexing: {
+    label: "索引中",
+    color: "var(--warning)",
+    icon: <Loader2 size={14} className="animate-spin" />,
+  },
+  linking: {
+    label: "关联中",
+    color: "var(--warning)",
+    icon: <Loader2 size={14} className="animate-spin" />,
   },
   ready: {
     label: "就绪",
@@ -81,6 +101,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const { success, error: toastError } = useToast();
   const confirm = useConfirm();
   const fileUpload = useFileUpload();
+  const { processingDocs, wsConnected } = useDocProcessing(kbId || null);
 
   // --- Data state ---
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -107,6 +128,9 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingKbs, setIsLoadingKbs] = useState(true);
+
+  // --- Entities state ---
+  const [entities, setEntities] = useState<Array<{ name: string; type: string; mentions: number; docCount: number }>>([]);
 
   // --- Load knowledge bases ---
   const loadKnowledgeBases = useCallback(async () => {
@@ -143,6 +167,13 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       .catch(() => setDocuments([]));
   }, [kbId]);
 
+  // --- Load entities when entity tab is active ---
+  useEffect(() => {
+    if (activeTab === "entities" && kbId) {
+      api.getEntities(kbId).then(setEntities).catch(() => setEntities([]));
+    }
+  }, [activeTab, kbId]);
+
   // --- Handlers ---
   const handleSearch = async () => {
     if (!kbId || !searchQuery.trim()) return;
@@ -167,6 +198,17 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       // silently refresh
     }
   }, [kbId]);
+
+  const handleRetryProcess = useCallback(async (docId: string) => {
+    if (!kbId) return;
+    try {
+      await fetch(`/api/knowledge/kbs/${kbId}/process/${docId}`, { method: "POST" });
+      success("已重新提交处理");
+      refreshDocuments();
+    } catch {
+      toastError("重试失败");
+    }
+  }, [kbId, success, toastError, refreshDocuments]);
 
   const handleDeleteDocument = async (docId: string) => {
     if (!kbId) return;
@@ -273,6 +315,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const tabs: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
     { id: "documents", label: "文档", icon: <FileText size={14} /> },
     { id: "wiki", label: "Wiki", icon: <BookOpen size={14} /> },
+    { id: "entities", label: "实体", icon: <Users size={14} /> },
     { id: "search", label: "搜索", icon: <Search size={14} /> },
     { id: "settings", label: "设置", icon: <Settings size={14} /> },
   ];
@@ -540,53 +583,115 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
             {/* Upload toolbar */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
-                {documents.length > 0 ? `${documents.length} 个文档` : ""}
-              </span>
-              <button
-                onClick={async () => {
-                  if (!kbId) { toastError("请先选择知识库"); return; }
-                  const files = await fileUpload.selectFiles(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
-                  if (files && files.length > 0) {
-                    const results = await fileUpload.uploadToKb(kbId);
-                    if (results.length > 0) {
-                      success(`成功上传 ${results.length} 个文件`);
-                      refreshDocuments();
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
+                  {documents.length > 0 ? `${documents.length} 个文档` : ""}
+                </span>
+                {/* WS connection indicator */}
+                <span
+                  title={wsConnected ? "实时连接正常" : "实时连接已断开"}
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    backgroundColor: wsConnected ? "var(--success)" : "var(--text-tertiary)",
+                    opacity: wsConnected ? 1 : 0.5,
+                    transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                {/* Upload folder button */}
+                <button
+                  onClick={async () => {
+                    if (!kbId) { toastError("请先选择知识库"); return; }
+                    const files = await selectFolder();
+                    if (files && files.length > 0) {
+                      fileUpload.addFiles(files);
+                      const results = await fileUpload.uploadToKb(kbId);
+                      if (results.length > 0) {
+                        success(`成功上传 ${results.length} 个文件`);
+                        refreshDocuments();
+                      }
                     }
+                  }}
+                  disabled={fileUpload.hasPending}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-1)",
+                    padding: "var(--space-2) var(--space-3)",
+                    backgroundColor: "transparent",
+                    color: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--text-secondary)",
+                    fontSize: "var(--text-sm)",
+                    fontWeight: "var(--font-medium)",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid var(--border-primary)",
+                    cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
+                    opacity: fileUpload.hasPending ? 0.6 : 1,
+                    transition: "all var(--transition-fast)",
+                    whiteSpace: "nowrap",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!fileUpload.hasPending) {
+                      e.currentTarget.style.backgroundColor = "var(--bg-hover)";
+                      e.currentTarget.style.borderColor = "var(--interactive)";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.borderColor = "var(--border-primary)";
+                  }}
+                >
+                  <FolderOpen size={14} />
+                  上传文件夹
+                </button>
+                {/* Upload files button */}
+                <button
+                  onClick={async () => {
+                    if (!kbId) { toastError("请先选择知识库"); return; }
+                    const files = await fileUpload.selectFiles(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
+                    if (files && files.length > 0) {
+                      const results = await fileUpload.uploadToKb(kbId);
+                      if (results.length > 0) {
+                        success(`成功上传 ${results.length} 个文件`);
+                        refreshDocuments();
+                      }
+                    }
+                  }}
+                  disabled={fileUpload.hasPending}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-1)",
+                    padding: "var(--space-2) var(--space-3)",
+                    backgroundColor: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--interactive)",
+                    color: "#fff",
+                    fontSize: "var(--text-sm)",
+                    fontWeight: "var(--font-medium)",
+                    borderRadius: "var(--radius-md)",
+                    border: "none",
+                    cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
+                    opacity: fileUpload.hasPending ? 0.6 : 1,
+                    transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
+                    whiteSpace: "nowrap",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!fileUpload.hasPending)
+                      e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
+                  }}
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.backgroundColor = "var(--interactive)")
                   }
-                }}
-                disabled={fileUpload.hasPending}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "var(--space-2) var(--space-3)",
-                  backgroundColor: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--interactive)",
-                  color: "#fff",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)",
-                  borderRadius: "var(--radius-md)",
-                  border: "none",
-                  cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
-                  opacity: fileUpload.hasPending ? 0.6 : 1,
-                  transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
-                  whiteSpace: "nowrap",
-                }}
-                onMouseEnter={(e) => {
-                  if (!fileUpload.hasPending)
-                    e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
-                }}
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.backgroundColor = "var(--interactive)")
-                }
-              >
-                {fileUpload.hasPending ? (
-                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
-                ) : (
-                  <Upload size={14} />
-                )}
-                {fileUpload.hasPending ? "上传中..." : "上传文档"}
-              </button>
+                >
+                  {fileUpload.hasPending ? (
+                    <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+                  ) : (
+                    <Upload size={14} />
+                  )}
+                  {fileUpload.hasPending ? "上传中..." : "上传文档"}
+                </button>
+              </div>
             </div>
 
             {/* Upload progress indicators */}
@@ -651,11 +756,56 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             ) : (
               /* Document list */
               documents.map((doc) => {
-                const statusCfg = STATUS_CONFIG[doc.status] ?? {
-                  label: doc.status,
-                  color: "var(--text-tertiary)",
-                  icon: <FileText size={14} />,
-                };
+                const processing = processingDocs.get(doc.id);
+                // Determine the effective display status
+                let statusIcon: React.ReactNode;
+                let statusLabel: string;
+                let statusColor: string;
+                let showProgress = false;
+                let progressPct = 0;
+                let showError = false;
+                let errorMsg = "";
+
+                if (processing) {
+                  // Document is actively being processed via WebSocket
+                  const stepLabel = STEP_LABELS[processing.step] ?? processing.step;
+                  statusIcon = <Loader2 size={14} className="animate-spin" />;
+                  statusLabel = stepLabel;
+                  statusColor = "var(--warning)";
+                  showProgress = true;
+                  progressPct = processing.progress;
+                  if (processing.error) {
+                    showError = true;
+                    errorMsg = processing.error;
+                  }
+                } else if (doc.status === "error") {
+                  // Document errored out
+                  statusIcon = <AlertCircle size={14} />;
+                  statusLabel = "失败";
+                  statusColor = "var(--error)";
+                  showError = true;
+                  errorMsg = "";
+                } else if (doc.status === "ready") {
+                  statusIcon = <CheckCircle size={14} />;
+                  statusLabel = "就绪";
+                  statusColor = "var(--success)";
+                } else if (doc.status === "uploaded") {
+                  // Uploaded but not yet processing = queued
+                  statusIcon = <Clock size={14} />;
+                  statusLabel = "排队中";
+                  statusColor = "var(--text-tertiary)";
+                } else {
+                  // Fallback for other statuses (parsing, compiling, etc.)
+                  const statusCfg = STATUS_CONFIG[doc.status] ?? {
+                    label: doc.status,
+                    color: "var(--text-tertiary)",
+                    icon: <FileText size={14} />,
+                  };
+                  statusIcon = statusCfg.icon;
+                  statusLabel = statusCfg.label;
+                  statusColor = statusCfg.color;
+                }
+
                 return (
                   <div
                     key={doc.id}
@@ -664,8 +814,8 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                       alignItems: "center",
                       gap: "var(--space-3)",
                       padding: "var(--space-3) var(--space-4)",
-                      backgroundColor: "var(--bg-tertiary)",
-                      border: "1px solid var(--border-primary)",
+                      backgroundColor: showError ? "var(--error-light)" : "var(--bg-tertiary)",
+                      border: showError ? "1px solid var(--error)" : "1px solid var(--border-primary)",
                       borderRadius: "var(--radius-lg)",
                     }}
                   >
@@ -719,21 +869,71 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                           {(doc.fileSize / 1024).toFixed(1)} KB
                         </span>
                       </div>
+                      {/* Processing progress bar */}
+                      {showProgress && (
+                        <div style={{ marginTop: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                          <div style={{ flex: 1, height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
+                            <div style={{ width: `${progressPct}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
+                          </div>
+                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", flexShrink: 0 }}>
+                            {progressPct}%
+                          </span>
+                        </div>
+                      )}
+                      {/* Error message */}
+                      {showError && errorMsg && (
+                        <p style={{ fontSize: "var(--text-xs)", color: "var(--error)", margin: "var(--space-1) 0 0" }}>
+                          {errorMsg}
+                        </p>
+                      )}
                     </div>
                     <div
                       style={{
                         display: "flex",
                         alignItems: "center",
                         gap: "var(--space-1)",
-                        color: statusCfg.color,
+                        color: statusColor,
                         fontSize: "var(--text-xs)",
                         fontWeight: "var(--font-medium)",
                         flexShrink: 0,
                       }}
                     >
-                      {statusCfg.icon}
-                      {statusCfg.label}
+                      {statusIcon}
+                      {statusLabel}
                     </div>
+                    {/* Retry button for error status */}
+                    {doc.status === "error" && (
+                      <button
+                        onClick={() => handleRetryProcess(doc.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: "var(--space-1) var(--space-2)",
+                          border: "1px solid var(--interactive)",
+                          borderRadius: "var(--radius-sm)",
+                          cursor: "pointer",
+                          color: "var(--interactive)",
+                          backgroundColor: "transparent",
+                          fontSize: "var(--text-xs)",
+                          fontWeight: "var(--font-medium)",
+                          transition: "color var(--transition-fast), background-color var(--transition-fast)",
+                          flexShrink: 0,
+                          whiteSpace: "nowrap",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.color = "#fff";
+                          e.currentTarget.style.backgroundColor = "var(--interactive)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.color = "var(--interactive)";
+                          e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        title="重新处理"
+                      >
+                        重试
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDeleteDocument(doc.id)}
                       style={{
@@ -773,6 +973,142 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             kbId={kbId}
             onNavigateEntity={(name) => setNavigatingEntity(name)}
           />
+        ) : activeTab === "entities" ? (
+          /* Entities Tab */
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
+                {entities.length > 0 ? `${entities.length} 个实体` : ""}
+              </span>
+            </div>
+            {entities.length === 0 ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "var(--space-12) 0",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                <Users
+                  size={40}
+                  style={{
+                    margin: "0 auto var(--space-3)",
+                    opacity: 0.4,
+                    display: "block",
+                  }}
+                />
+                <p style={{ fontSize: "var(--text-sm)", margin: 0 }}>
+                  暂无实体
+                </p>
+                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                  处理文档后将自动提取实体
+                </p>
+              </div>
+            ) : (
+              /* Group entities by type */
+              (() => {
+                const grouped = entities.reduce<Record<string, typeof entities>>((acc, e) => {
+                  const key = e.type || "实体";
+                  if (!acc[key]) acc[key] = [];
+                  acc[key].push(e);
+                  return acc;
+                }, {});
+
+                return Object.entries(grouped).map(([type, items]) => (
+                  <div key={type}>
+                    <p
+                      style={{
+                        fontSize: "var(--text-xs)",
+                        fontWeight: "var(--font-semibold)",
+                        color: "var(--text-tertiary)",
+                        margin: "0 0 var(--space-2)",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                      }}
+                    >
+                      {type} ({items.length})
+                    </p>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "var(--space-1)",
+                      }}
+                    >
+                      {items.map((entity, i) => (
+                        <button
+                          key={`${entity.name}-${i}`}
+                          onClick={() => {
+                            setNavigatingEntity(entity.name);
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: "var(--space-3)",
+                            padding: "var(--space-2) var(--space-3)",
+                            backgroundColor: "var(--bg-tertiary)",
+                            border: "1px solid var(--border-primary)",
+                            borderRadius: "var(--radius-md)",
+                            cursor: "pointer",
+                            textAlign: "left",
+                            transition:
+                              "border-color var(--transition-fast), box-shadow var(--transition-fast)",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.borderColor = "var(--interactive)";
+                            e.currentTarget.style.boxShadow =
+                              "0 0 0 1px var(--interactive-light)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.borderColor = "var(--border-primary)";
+                            e.currentTarget.style.boxShadow = "none";
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: "var(--text-sm)",
+                              color: "var(--text-primary)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {entity.name}
+                          </span>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "var(--space-2)",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: "var(--text-xs)",
+                                color: "var(--text-tertiary)",
+                              }}
+                            >
+                              {entity.mentions} 引用
+                            </span>
+                            <span
+                              style={{
+                                fontSize: "var(--text-xs)",
+                                color: "var(--text-tertiary)",
+                              }}
+                            >
+                              {entity.docCount} 文档
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()
+            )}
+          </div>
         ) : activeTab === "search" ? (
           /* Search Tab */
           <div

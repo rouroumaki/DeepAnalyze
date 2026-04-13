@@ -18,6 +18,7 @@ const MODEL_TYPE_OPTIONS: { value: EnhancedModelType; label: string; icon: React
   { value: "video_gen", label: "视频生成", icon: <Video size={14} /> },
   { value: "music_gen", label: "音乐生成", icon: <Music size={14} /> },
   { value: "audio_gen", label: "音频生成", icon: <Headphones size={14} /> },
+  { value: "audio_transcribe", label: "音频转写", icon: <Headphones size={14} /> },
   { value: "three_d_gen", label: "3D 生成", icon: <Box size={14} /> },
   { value: "custom", label: "自定义", icon: <Settings2 size={14} /> },
 ];

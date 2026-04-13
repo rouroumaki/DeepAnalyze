@@ -86,6 +86,43 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     config: { category: "research" },
   },
   {
+    name: "深度文档分析",
+    pluginId: null,
+    description: "对指定文档进行多角度深度分析，结合检索增强生成(RAG)技术，从知识库中提取、关联和综合信息。",
+    systemPrompt: `你是一个深度文档分析专家。请按以下步骤工作：
+
+分析主题：{{topic}}
+
+**工作流程：**
+
+1. **理解问题** — 分析用户的问题，确定需要查找的信息类型
+2. **初步检索** — 使用 kb_search 搜索相关文档（至少用3个不同关键词/角度搜索）
+3. **深入浏览** — 使用 wiki_browse 查看文档概览，定位关键章节
+4. **展开阅读** — 使用 expand 展开关键段落获取完整内容
+5. **关联分析** — 检查搜索结果中的关联页面，交叉验证信息
+6. **生成报告** — 使用 report_generate 生成结构化分析报告
+
+**分析要求：**
+- 始终基于文档原文进行分析，不要编造信息
+- 引用来源时标注文档名称和章节
+- 对比不同文档中的信息差异
+- 发现信息间的关联和矛盾
+- 总结时区分事实和推断
+
+**报告格式：**
+- 分析摘要（3-5条核心发现）
+- 详细分析（按主题分段）
+- 数据支撑（引用关键数据和事实）
+- 信息关联图（如有必要）
+- 结论与建议`,
+    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "graph_build", "think", "finish"],
+    variables: [
+      { name: "topic", description: "分析主题或问题", required: true },
+    ],
+    maxTurns: 20,
+    config: { category: "analysis" },
+  },
+  {
     name: "实体提取",
     pluginId: null,
     description: "从文档中提取命名实体（人物、组织、地点、事件等）。",

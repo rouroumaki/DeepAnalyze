@@ -46,9 +46,12 @@ export class WikiCompiler {
     docId: string,
     parsedContent: string,
     metadata: Record<string, unknown>,
+    options?: { skipStatusUpdates?: boolean },
   ): Promise<void> {
     try {
-      updateDocumentStatus(docId, "compiling");
+      if (!options?.skipStatusUpdates) {
+        updateDocumentStatus(docId, "compiling");
+      }
 
       // Ensure the KB wiki directory structure exists
       await this.pageManager.initKb(kbId);
@@ -65,13 +68,17 @@ export class WikiCompiler {
       // Step 4: Extract entities and create entity pages / wiki_links
       await this.extractAndUpdateLinks(kbId, docId);
 
-      updateDocumentStatus(docId, "ready");
+      if (!options?.skipStatusUpdates) {
+        updateDocumentStatus(docId, "ready");
+      }
     } catch (err) {
       console.error(
         `[WikiCompiler] Compilation failed for doc ${docId}:`,
         err instanceof Error ? err.message : String(err),
       );
-      updateDocumentStatus(docId, "error");
+      if (!options?.skipStatusUpdates) {
+        updateDocumentStatus(docId, "error");
+      }
       throw err;
     }
   }
@@ -132,9 +139,13 @@ export class WikiCompiler {
         : fullContent;
 
     const prompt = `请为以下文档内容生成一份结构化概览（约2000字），包含：
-1. 文档结构导航（各章节标题和核心摘要）
-2. 关键实体列表（人物、机构、地点、时间、金额等）
-3. 核心要点总结
+1. 文档类型判断（报告、会议纪要、合同、数据分析、学术论文等）
+2. 文档结构导航（各章节标题和核心摘要）
+3. 关键实体列表（人物、机构、地点、时间、金额、产品等）
+4. 核心要点总结（3-5个关键发现或结论）
+5. 数据亮点（如果有数字数据，列出关键数值及其含义）
+
+请用 Markdown 格式输出，使用清晰的标题层级。
 
 文档内容：
 ${truncated}`;
@@ -196,10 +207,11 @@ ${truncated}`;
         ? l1Content.slice(0, 4000) + "\n...(truncated)"
         : l1Content;
 
-    const prompt = `请将以下文档概览压缩为一句话摘要（不超过100字），然后列出5-10个关键标签（用逗号分隔）。
-格式要求：
-第一行：摘要
-第二行：标签：标签1,标签2,...
+    const prompt = `请将以下文档概览压缩为：
+第一行：一句话摘要（不超过80字）
+第二行：标签：标签1,标签2,...（5-10个关键标签）
+第三行：类型：[文档类型]
+第四行：日期：[文档中提到的关键日期，如无则留空]
 
 文档概览：
 ${truncated}`;

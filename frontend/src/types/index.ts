@@ -94,6 +94,7 @@ export type EnhancedModelType =
   | "video_gen"
   | "music_gen"
   | "audio_gen"
+  | "audio_transcribe"
   | "three_d_gen"
   | "custom";
 
@@ -145,6 +146,17 @@ export interface DocumentInfo {
   fileSize: number;
   status: "uploaded" | "parsing" | "compiling" | "ready" | "error";
   createdAt: string;
+}
+
+// --- Analysis Scope ---
+
+export interface AnalysisScope {
+  knowledgeBases: Array<{
+    kbId: string;
+    mode: "all" | "selected";
+    documentIds?: string[];
+  }>;
+  webSearch: boolean;
 }
 
 // --- Wiki ---
@@ -464,7 +476,6 @@ export interface ChannelStatus {
 export type TabId = "chat" | "knowledge" | "reports" | "tasks";
 export type RightPanelId =
   | "sessions"
-  | "skills"
   | "plugins"
   | "cron"
   | "settings"

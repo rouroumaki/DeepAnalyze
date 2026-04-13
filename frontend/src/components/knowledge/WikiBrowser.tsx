@@ -71,6 +71,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
   const [isSearching, setIsSearching] = useState(false);
   const [isLoadingPage, setIsLoadingPage] = useState(false);
   const [isExpanding, setIsExpanding] = useState(false);
+  const [showLinks, setShowLinks] = useState(true);
 
   // --- Markdown rendering ---
   const markdownL0 = useMarkdown(selectedPage?.content ?? "");
@@ -174,7 +175,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
     return null;
   };
 
-  /** Render forward/backward links */
+  /** Render forward/backward links in a collapsible association panel */
   const renderLinks = () => {
     if (!selectedPage?.links || selectedPage.links.length === 0) return null;
 
@@ -192,167 +193,227 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
       <div
         style={{
           marginTop: "var(--space-4)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-3)",
+          borderTop: "1px solid var(--border-primary)",
+          paddingTop: "var(--space-3)",
         }}
       >
-        {/* Forward links */}
-        {forwardLinks.length > 0 && (
-          <div>
-            <p
-              style={{
-                fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)",
-                color: "var(--text-tertiary)",
-                marginBottom: "var(--space-1)",
-                margin: 0,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              前向链接
-            </p>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "var(--space-1)",
-                marginTop: "var(--space-1)",
-              }}
-            >
-              {forwardLinks.map((link, i) => (
-                <span
-                  key={i}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "2px var(--space-2)",
-                    fontSize: "var(--text-xs)",
-                    backgroundColor: "var(--bg-tertiary)",
-                    border: "1px solid var(--border-primary)",
-                    borderRadius: "var(--radius-md)",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  <ExternalLink size={10} />
-                  {link.targetPageId}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        <button
+          onClick={() => setShowLinks(!showLinks)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            fontSize: "var(--text-sm)",
+            fontWeight: "var(--font-semibold)",
+            color: "var(--text-primary)",
+            padding: 0,
+            width: "100%",
+          }}
+        >
+          {showLinks ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          关联面板 ({selectedPage.links.length}条链接)
+        </button>
 
-        {/* Backward links */}
-        {backwardLinks.length > 0 && (
-          <div>
-            <p
-              style={{
-                fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)",
-                color: "var(--text-tertiary)",
-                marginBottom: "var(--space-1)",
-                margin: 0,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              后向链接
-            </p>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "var(--space-1)",
-                marginTop: "var(--space-1)",
-              }}
-            >
-              {backwardLinks.map((link, i) => (
-                <span
-                  key={i}
+        {showLinks && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-3)",
+              marginTop: "var(--space-2)",
+            }}
+          >
+            {/* Forward links */}
+            {forwardLinks.length > 0 && (
+              <div>
+                <p
                   style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    backgroundColor: "var(--bg-tertiary)",
-                    border: "1px solid var(--border-primary)",
-                    borderRadius: "var(--radius-md)",
-                    color: "var(--text-secondary)",
+                    fontWeight: "var(--font-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-1)",
+                    margin: 0,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
                   }}
                 >
-                  <ExternalLink size={10} />
-                  {link.sourcePageId}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+                  前向链接
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "var(--space-1)",
+                    marginTop: "var(--space-1)",
+                  }}
+                >
+                  {forwardLinks.map((link, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setQuery(link.targetPageId);
+                        handleSearch();
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "var(--space-1)",
+                        padding: "2px var(--space-2)",
+                        fontSize: "var(--text-xs)",
+                        backgroundColor: "var(--bg-tertiary)",
+                        border: "1px solid var(--border-primary)",
+                        borderRadius: "var(--radius-md)",
+                        color: "var(--text-secondary)",
+                        cursor: "pointer",
+                        transition:
+                          "background-color var(--transition-fast), border-color var(--transition-fast)",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = "var(--interactive)";
+                        e.currentTarget.style.color = "var(--interactive)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = "var(--border-primary)";
+                        e.currentTarget.style.color = "var(--text-secondary)";
+                      }}
+                    >
+                      <ExternalLink size={10} />
+                      {link.targetPageId}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-        {/* Entity references */}
-        {entityRefs.length > 0 && (
-          <div>
-            <p
-              style={{
-                fontSize: "var(--text-xs)",
-                fontWeight: "var(--font-semibold)",
-                color: "var(--text-tertiary)",
-                margin: 0,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              相关实体
-            </p>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "var(--space-1)",
-                marginTop: "var(--space-1)",
-              }}
-            >
-              {entityRefs.map((link, i) => (
-                <button
-                  key={i}
-                  onClick={() =>
-                    link.entityName && handleEntityClick(link.entityName)
-                  }
+            {/* Backward links */}
+            {backwardLinks.length > 0 && (
+              <div>
+                <p
                   style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "2px var(--space-2)",
                     fontSize: "var(--text-xs)",
-                    backgroundColor: "var(--interactive-light)",
-                    border: "1px solid transparent",
-                    borderRadius: "var(--radius-md)",
-                    color: "var(--interactive)",
-                    cursor: link.entityName ? "pointer" : "default",
-                    transition:
-                      "background-color var(--transition-fast), border-color var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (link.entityName) {
-                      e.currentTarget.style.backgroundColor =
-                        "var(--interactive)";
-                      e.currentTarget.style.color = "#fff";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (link.entityName) {
-                      e.currentTarget.style.backgroundColor =
-                        "var(--interactive-light)";
-                      e.currentTarget.style.color = "var(--interactive)";
-                    }
+                    fontWeight: "var(--font-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-1)",
+                    margin: 0,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
                   }}
                 >
-                  {link.entityName ?? link.targetPageId}
-                </button>
-              ))}
-            </div>
+                  后向链接
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "var(--space-1)",
+                    marginTop: "var(--space-1)",
+                  }}
+                >
+                  {backwardLinks.map((link, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setQuery(link.sourcePageId);
+                        handleSearch();
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "var(--space-1)",
+                        padding: "2px var(--space-2)",
+                        fontSize: "var(--text-xs)",
+                        backgroundColor: "var(--bg-tertiary)",
+                        border: "1px solid var(--border-primary)",
+                        borderRadius: "var(--radius-md)",
+                        color: "var(--text-secondary)",
+                        cursor: "pointer",
+                        transition:
+                          "background-color var(--transition-fast), border-color var(--transition-fast)",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = "var(--interactive)";
+                        e.currentTarget.style.color = "var(--interactive)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = "var(--border-primary)";
+                        e.currentTarget.style.color = "var(--text-secondary)";
+                      }}
+                    >
+                      <ExternalLink size={10} />
+                      {link.sourcePageId}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Entity references */}
+            {entityRefs.length > 0 && (
+              <div>
+                <p
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    fontWeight: "var(--font-semibold)",
+                    color: "var(--text-tertiary)",
+                    margin: 0,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  相关实体
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "var(--space-1)",
+                    marginTop: "var(--space-1)",
+                  }}
+                >
+                  {entityRefs.map((link, i) => (
+                    <button
+                      key={i}
+                      onClick={() =>
+                        link.entityName && handleEntityClick(link.entityName)
+                      }
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "var(--space-1)",
+                        padding: "2px var(--space-2)",
+                        fontSize: "var(--text-xs)",
+                        backgroundColor: "var(--interactive-light)",
+                        border: "1px solid transparent",
+                        borderRadius: "var(--radius-md)",
+                        color: "var(--interactive)",
+                        cursor: link.entityName ? "pointer" : "default",
+                        transition:
+                          "background-color var(--transition-fast), border-color var(--transition-fast)",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (link.entityName) {
+                          e.currentTarget.style.backgroundColor =
+                            "var(--interactive)";
+                          e.currentTarget.style.color = "#fff";
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (link.entityName) {
+                          e.currentTarget.style.backgroundColor =
+                            "var(--interactive-light)";
+                          e.currentTarget.style.color = "var(--interactive)";
+                        }
+                      }}
+                    >
+                      {link.entityName ?? link.targetPageId}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

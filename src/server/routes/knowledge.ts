@@ -22,6 +22,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DEEPANALYZE_CONFIG } from "../../core/config.js";
+import { getProcessingQueue } from "../../services/processing-queue.js";
 
 // ---------------------------------------------------------------------------
 // Background helpers for post-processing
@@ -131,6 +132,62 @@ async function extractEntitiesAndLinks(kbId: string, docId: string, filename: st
 }
 
 // ---------------------------------------------------------------------------
+// Exported document parsing helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a document file into plain text content.
+ *
+ * Handles text files (read directly) and binary files (parsed via Docling).
+ * This function is shared between the route handler and the ProcessingQueue.
+ */
+export async function parseDocumentFile(filePath: string, fileType: string): Promise<string> {
+  const textTypes = ["txt", "markdown", "md", "csv", "json", "html", "xml", "rtf"];
+  const doclingTypes = ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "png", "jpg", "jpeg", "tiff", "bmp"];
+
+  let content: string;
+
+  if (textTypes.includes(fileType)) {
+    // Text files: read directly
+    try {
+      content = readFileSync(filePath, "utf-8");
+    } catch (err) {
+      throw new Error(
+        `Failed to read document: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else if (doclingTypes.includes(fileType)) {
+    // Non-text files: use Docling subprocess for parsing
+    try {
+      const { SubprocessManager } = await import("../../subprocess/manager.js");
+      const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
+      const projectRoot = resolve(DEEPANALYZE_CONFIG.dataDir, "..");
+
+      const mgr = new SubprocessManager();
+      await startDocling(projectRoot, mgr);
+      console.log(`[Knowledge] Docling parsing: ${filePath}`);
+
+      const result = await parseWithDocling(mgr, filePath, {
+        ocr: true,
+        extract_tables: true,
+      });
+      await mgr.stop("docling");
+
+      content = result.content;
+      console.log(`[Knowledge] Docling parsed ${filePath}: ${content.length} chars`);
+    } catch (err) {
+      throw new Error(
+        `Docling parsing failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else {
+    throw new Error(`Unsupported file type: '${fileType}'`);
+  }
+
+  return content;
+}
+
+// ---------------------------------------------------------------------------
 // Route factory
 // ---------------------------------------------------------------------------
 
@@ -150,6 +207,12 @@ knowledgeRoutes.get("/", (c) => {
       "GET    /kbs/:kbId",
       "PUT    /kbs/:kbId",
       "DELETE /kbs/:kbId",
+      "GET    /kbs/:kbId/documents",
+      "GET    /kbs/:kbId/entities",
+      "POST   /kbs/:kbId/upload",
+      "POST   /kbs/:kbId/process/:docId",
+      "POST   /kbs/:kbId/process-all",
+      "POST   /kbs/:kbId/trigger-processing",
       "GET    /:kbId/search?query=...",
       "GET    /:kbId/wiki/*",
       "POST   /:kbId/expand",
@@ -293,6 +356,59 @@ knowledgeRoutes.get("/kbs/:kbId/documents", (c) => {
 });
 
 // =====================================================================
+// GET /kbs/:kbId/entities - List all entities for a KB
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/entities", async (c) => {
+  const kbId = c.req.param("kbId");
+
+  try {
+    const { DB } = await import("../../store/database.js");
+    const db = DB.getInstance().raw;
+
+    // Get all entity pages for this KB
+    const entities = db.prepare(`
+      SELECT
+        wp.title as name,
+        wp.metadata,
+        COUNT(DISTINCT wl.source_page_id) as mention_count,
+        COUNT(DISTINCT wp2.doc_id) as doc_count
+      FROM wiki_pages wp
+      LEFT JOIN wiki_links wl ON wl.target_page_id = wp.id AND wl.link_type = 'entity_ref'
+      LEFT JOIN wiki_pages wp2 ON wp2.id = wl.source_page_id
+      WHERE wp.kb_id = ? AND wp.page_type = 'entity'
+      GROUP BY wp.id
+      ORDER BY mention_count DESC
+    `).all(kbId) as Array<{ name: string; metadata: string | null; mention_count: number; doc_count: number }>;
+
+    return c.json(entities.map((e) => {
+      let entityType = "实体";
+      if (e.metadata) {
+        try {
+          const parsed = JSON.parse(e.metadata);
+          if (parsed?.type) entityType = parsed.type;
+        } catch {
+          // metadata not valid JSON, use default
+        }
+      }
+      // Strip type prefix from title (e.g. "Person: John Doe" -> "John Doe")
+      const cleanName = e.name.includes(": ") ? e.name.split(": ").slice(1).join(": ") : e.name;
+      return {
+        name: cleanName,
+        type: entityType,
+        mentions: e.mention_count,
+        docCount: e.doc_count,
+      };
+    }));
+  } catch (err) {
+    return c.json({
+      error: "Failed to fetch entities",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =====================================================================
 // POST /kbs/:kbId/upload - Upload a document to a KB
 // =====================================================================
 
@@ -329,6 +445,28 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
     // Create document record (copies from temp to the data dir)
     const originalDir = join(DEEPANALYZE_CONFIG.dataDir, "original");
     const doc = createDocument(kbId, file.name, tempPath, originalDir);
+
+    // Auto-enqueue for processing (respects auto_process setting)
+    const queue = getProcessingQueue();
+    let autoProcess = true;
+    try {
+      const { DB } = await import("../../store/database.js");
+      const db = DB.getInstance().raw;
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'auto_process'").get() as { value: string } | undefined;
+      autoProcess = row?.value !== "false";
+    } catch {
+      // Settings table may not exist yet — default to auto-process
+    }
+
+    if (autoProcess) {
+      queue.enqueue({
+        kbId,
+        docId: doc.id,
+        filename: doc.filename,
+        filePath: doc.filePath,
+        fileType: doc.fileType,
+      });
+    }
 
     return c.json(doc, 201);
   } finally {
@@ -370,150 +508,21 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     });
   }
 
-  try {
-    // Step 1: Update status to "parsing"
-    updateDocumentStatus(docId, "parsing");
+  // Enqueue for asynchronous processing
+  const queue = getProcessingQueue();
+  queue.enqueue({
+    kbId,
+    docId: doc.id,
+    filename: doc.filename,
+    filePath: doc.filePath,
+    fileType: doc.fileType,
+  });
 
-    // Step 2: Read the document file
-    const textTypes = ["txt", "markdown", "md", "csv", "json", "html", "xml", "rtf"];
-    const doclingTypes = ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "png", "jpg", "jpeg", "tiff", "bmp"];
-    let content: string;
-
-    if (textTypes.includes(doc.fileType)) {
-      // Text files: read directly
-      try {
-        content = readFileSync(doc.filePath, "utf-8");
-      } catch (err) {
-        updateDocumentStatus(docId, "error");
-        return c.json({
-          documentId: docId,
-          status: "error",
-          message: `Failed to read document: ${err instanceof Error ? err.message : String(err)}`,
-        }, 500);
-      }
-    } else if (doclingTypes.includes(doc.fileType)) {
-      // Non-text files: use Docling subprocess for parsing
-      try {
-        const { SubprocessManager } = await import("../../subprocess/manager.js");
-        const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
-        const projectRoot = resolve(DEEPANALYZE_CONFIG.dataDir, "..");
-
-        const mgr = new SubprocessManager();
-        await startDocling(projectRoot, mgr);
-        console.log(`[Knowledge] Docling parsing: ${doc.filename}`);
-
-        const result = await parseWithDocling(mgr, doc.filePath, {
-          ocr: true,
-          extract_tables: true,
-        });
-        await mgr.stop("docling");
-
-        content = result.content;
-        console.log(`[Knowledge] Docling parsed ${doc.filename}: ${content.length} chars`);
-      } catch (err) {
-        console.error(`[Knowledge] Docling parsing failed for ${doc.filename}:`, err);
-        updateDocumentStatus(docId, "error");
-        return c.json({
-          documentId: docId,
-          status: "error",
-          message: `Docling parsing failed: ${err instanceof Error ? err.message : String(err)}`,
-        }, 500);
-      }
-    } else {
-      // Unsupported file type
-      updateDocumentStatus(docId, "error");
-      return c.json({
-        documentId: docId,
-        status: "error",
-        message: `Unsupported file type: '${doc.fileType}'`,
-      }, 400);
-    }
-
-    // Step 4: Update status to "compiling"
-    updateDocumentStatus(docId, "compiling");
-
-    // Step 5: Create wiki pages from the content
-    // For the simplified pipeline, create fulltext and overview pages directly.
-    // The full WikiCompiler (with LLM-powered summarization) is invoked separately
-    // when the agent pipeline is available.
-    const wikiDir = join(DEEPANALYZE_CONFIG.dataDir, "wiki");
-    const docWikiDir = join(wikiDir, kbId, "documents", docId);
-
-    try {
-      mkdirSync(docWikiDir, { recursive: true });
-    } catch {
-      // Directory may already exist
-    }
-
-    // Create a fulltext (L2) wiki page with the raw content
-    createWikiPage(
-      kbId,
-      docId,
-      "fulltext",
-      `Document: ${doc.filename}`,
-      content,
-      wikiDir,
-    );
-
-    // For text files, create an overview (L1) page with the first portion
-    const overviewContent = content.length > 2000
-      ? `# ${doc.filename}\n\n${content.slice(0, 2000)}\n\n...(truncated, full content is ${content.length} characters)`
-      : `# ${doc.filename}\n\n${content}`;
-
-    createWikiPage(
-      kbId,
-      docId,
-      "overview",
-      `Overview: ${doc.filename}`,
-      overviewContent,
-      wikiDir,
-    );
-
-    // Create an abstract (L0) page with the first line or a summary
-    const firstParagraph = content.split("\n\n")[0] || content.slice(0, 200);
-    const abstractContent = firstParagraph.length > 200
-      ? firstParagraph.slice(0, 200) + "..."
-      : firstParagraph;
-
-    createWikiPage(
-      kbId,
-      docId,
-      "abstract",
-      `Abstract: ${doc.filename}`,
-      abstractContent,
-      wikiDir,
-    );
-
-    // Step 6: Update status to "ready"
-    updateDocumentStatus(docId, "ready");
-
-    // Step 7: Generate vector embeddings and index for search (async, non-blocking)
-    generateEmbeddingsAndIndex(kbId, docId).catch((err) => {
-      console.warn(`[Knowledge] Background embedding failed for ${docId}:`, err);
-    });
-
-    // Step 8: Extract entities and build links (async, non-blocking)
-    extractEntitiesAndLinks(kbId, docId, doc.filename).catch((err) => {
-      console.warn(`[Knowledge] Background entity extraction failed for ${docId}:`, err);
-    });
-
-    return c.json({
-      documentId: docId,
-      status: "ready",
-      message: "Document processed successfully. Created fulltext, overview, and abstract pages.",
-    });
-  } catch (err) {
-    console.error(
-      `[Knowledge] Document processing failed for ${docId}:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    updateDocumentStatus(docId, "error");
-    return c.json({
-      documentId: docId,
-      status: "error",
-      message: `Processing failed: ${err instanceof Error ? err.message : String(err)}`,
-    }, 500);
-  }
+  return c.json({
+    documentId: docId,
+    status: "queued",
+    message: "Document enqueued for processing",
+  });
 });
 
 // =====================================================================
@@ -529,129 +538,56 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
+  const queue = getProcessingQueue();
   const documents = listDocuments(kbId);
-  let processed = 0;
-  let errors = 0;
+  let enqueued = 0;
 
   for (const doc of documents) {
-    // Only process documents that are in "uploaded" or "error" state
+    // Only enqueue documents that are in "uploaded" or "error" state
     if (doc.status !== "uploaded" && doc.status !== "error") {
       continue;
     }
 
-    try {
-      // Update status to "parsing"
-      updateDocumentStatus(doc.id, "parsing");
-
-      // Read the document file
-      const textTypes = ["txt", "markdown", "md", "csv", "json", "html", "xml", "rtf"];
-      const doclingTypes = ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "png", "jpg", "jpeg", "tiff", "bmp"];
-      let content: string;
-
-      if (textTypes.includes(doc.fileType)) {
-        try {
-          content = readFileSync(doc.filePath, "utf-8");
-        } catch {
-          updateDocumentStatus(doc.id, "error");
-          errors++;
-          continue;
-        }
-      } else if (doclingTypes.includes(doc.fileType)) {
-        try {
-          const { SubprocessManager } = await import("../../subprocess/manager.js");
-          const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
-          const projectRoot = resolve(DEEPANALYZE_CONFIG.dataDir, "..");
-          const mgr = new SubprocessManager();
-          await startDocling(projectRoot, mgr);
-          const result = await parseWithDocling(mgr, doc.filePath);
-          await mgr.stop("docling");
-          content = result.content;
-        } catch (err) {
-          console.error(`[Knowledge] Docling failed for ${doc.filename}:`, err);
-          updateDocumentStatus(doc.id, "error");
-          errors++;
-          continue;
-        }
-      } else {
-        updateDocumentStatus(doc.id, "error");
-        errors++;
-        continue;
-      }
-
-      // Update status to "compiling"
-      updateDocumentStatus(doc.id, "compiling");
-
-      // Create wiki pages
-      const wikiDir = join(DEEPANALYZE_CONFIG.dataDir, "wiki");
-      const docWikiDir = join(wikiDir, kbId, "documents", doc.id);
-
-      try {
-        mkdirSync(docWikiDir, { recursive: true });
-      } catch {
-        // Directory may already exist
-      }
-
-      // Fulltext page
-      createWikiPage(
-        kbId,
-        doc.id,
-        "fulltext",
-        `Document: ${doc.filename}`,
-        content,
-        wikiDir,
-      );
-
-      // Overview page
-      const overviewContent = content.length > 2000
-        ? `# ${doc.filename}\n\n${content.slice(0, 2000)}\n\n...(truncated, full content is ${content.length} characters)`
-        : `# ${doc.filename}\n\n${content}`;
-
-      createWikiPage(
-        kbId,
-        doc.id,
-        "overview",
-        `Overview: ${doc.filename}`,
-        overviewContent,
-        wikiDir,
-      );
-
-      // Abstract page
-      const firstParagraph = content.split("\n\n")[0] || content.slice(0, 200);
-      const abstractContent = firstParagraph.length > 200
-        ? firstParagraph.slice(0, 200) + "..."
-        : firstParagraph;
-
-      createWikiPage(
-        kbId,
-        doc.id,
-        "abstract",
-        `Abstract: ${doc.filename}`,
-        abstractContent,
-        wikiDir,
-      );
-
-      // Mark as ready
-      updateDocumentStatus(doc.id, "ready");
-
-      // Generate embeddings and extract entities in background
-      generateEmbeddingsAndIndex(kbId, doc.id).catch((err) => {
-        console.warn(`[Knowledge] Background embedding failed for ${doc.id}:`, err);
-      });
-      extractEntitiesAndLinks(kbId, doc.id, doc.filename).catch((err) => {
-        console.warn(`[Knowledge] Entity extraction failed for ${doc.id}:`, err);
-      });
-      processed++;
-    } catch (err) {
-      console.error(
-        `[Knowledge] Batch processing failed for doc ${doc.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      updateDocumentStatus(doc.id, "error");
-      errors++;
-    }
+    queue.enqueue({
+      kbId,
+      docId: doc.id,
+      filename: doc.filename,
+      filePath: doc.filePath,
+      fileType: doc.fileType,
+    });
+    enqueued++;
   }
 
-  return c.json({ processed, errors });
+  return c.json({ enqueued });
+});
+
+// =====================================================================
+// POST /kbs/:kbId/trigger-processing - Enqueue all uploaded docs for processing
+// =====================================================================
+
+knowledgeRoutes.post("/kbs/:kbId/trigger-processing", async (c) => {
+  const kbId = c.req.param("kbId");
+  const queue = getProcessingQueue();
+  const { DB } = await import("../../store/database.js");
+  const db = DB.getInstance().raw;
+
+  const docs = db
+    .prepare("SELECT id, filename, file_path, file_type FROM documents WHERE kb_id = ? AND status = 'uploaded'")
+    .all(kbId) as Array<{ id: string; filename: string; file_path: string; file_type: string }>;
+
+  let enqueued = 0;
+  for (const doc of docs) {
+    queue.enqueue({
+      kbId,
+      docId: doc.id,
+      filename: doc.filename,
+      filePath: doc.file_path,
+      fileType: doc.file_type,
+    });
+    enqueued++;
+  }
+
+  return c.json({ enqueued });
 });
 
 // =====================================================================

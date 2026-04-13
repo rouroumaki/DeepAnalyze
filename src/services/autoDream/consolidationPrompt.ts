@@ -52,9 +52,9 @@ Every consolidated memory **must** include:
 
 - **Source annotation**: which wiki report page or session memory supports this memory
 - **Confidence level**:
-  - `HIGH` — directly stated in a source document (verbatim fact)
-  - `MED` — Agent analysis conclusion (synthesized from multiple signals)
-  - `LOW` — Speculation or unverified inference
+  - \`HIGH\` — directly stated in a source document (verbatim fact)
+  - \`MED\` — Agent analysis conclusion (synthesized from multiple signals)
+  - \`LOW\` — Speculation or unverified inference
 - **Timestamp**: when the memory was produced (ISO 8601 date)
 
 Format each memory entry as:

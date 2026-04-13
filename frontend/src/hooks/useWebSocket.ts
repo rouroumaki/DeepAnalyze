@@ -22,8 +22,8 @@ export type WsServerMessage =
 // ---------------------------------------------------------------------------
 
 type WsClientMessage =
-  | { type: "subscribe"; kbId: string }
-  | { type: "unsubscribe"; kbId: string }
+  | { type: "subscribe"; kbIds: string[] }
+  | { type: "unsubscribe"; kbIds: string[] }
   | { type: "ping" };
 
 // ---------------------------------------------------------------------------
@@ -133,9 +133,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
       // Re-subscribe to any previously tracked KB IDs
       if (subscriptionsRef.current.size > 0) {
-        for (const kbId of subscriptionsRef.current) {
-          ws.send(JSON.stringify({ type: "subscribe", kbId } satisfies WsClientMessage));
-        }
+        const ids = Array.from(subscriptionsRef.current);
+        ws.send(JSON.stringify({ type: "subscribe", kbIds: ids } satisfies WsClientMessage));
       }
 
       // Start heartbeat
@@ -185,9 +184,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       subscriptionsRef.current.add(kbId);
     }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      for (const kbId of kbIds) {
-        wsRef.current.send(JSON.stringify({ type: "subscribe", kbId } satisfies WsClientMessage));
-      }
+      wsRef.current.send(JSON.stringify({ type: "subscribe", kbIds } satisfies WsClientMessage));
     }
   }, []);
 
@@ -196,9 +193,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       subscriptionsRef.current.delete(kbId);
     }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      for (const kbId of kbIds) {
-        wsRef.current.send(JSON.stringify({ type: "unsubscribe", kbId } satisfies WsClientMessage));
-      }
+      wsRef.current.send(JSON.stringify({ type: "unsubscribe", kbIds } satisfies WsClientMessage));
     }
   }, []);
 

@@ -6,8 +6,8 @@
 
 import { DB } from "../store/database.js";
 import { ProcessorFactory } from "./document-processors/processor-factory.js";
-import { ModelRouter } from "./models/router.js";
-import { WikiCompiler } from "./wiki/compiler.js";
+import { ModelRouter } from "../models/router.js";
+import { WikiCompiler } from "../wiki/compiler.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -355,15 +355,25 @@ export class ProcessingQueue {
       progress: 0.0,
     });
 
-    // Phase A: no-op placeholder.
-    // The existing Indexer (wiki/indexer.js) handles indexing separately
-    // via generateEmbeddingsAndIndex() which is triggered after document
-    // processing completes. This step is reserved for future integration
-    // where the queue will manage indexing directly.
-
-    console.log(
-      `[ProcessingQueue] Indexing step (placeholder) for ${filename} (${docId})`,
-    );
+    // Index the document's wiki pages into FTS5 and embeddings
+    try {
+      const { Indexer } = await import("../wiki/indexer.js");
+      const { EmbeddingManager } = await import("../models/embedding.js");
+      const router = new ModelRouter();
+      await router.initialize();
+      const embeddingManager = new EmbeddingManager(router);
+      const indexer = new Indexer(embeddingManager);
+      await indexer.indexDocument(kbId, docId);
+      console.log(
+        `[ProcessingQueue] Indexed ${filename} (${docId})`,
+      );
+    } catch (err) {
+      // Indexing failure should not block the pipeline
+      console.warn(
+        `[ProcessingQueue] Indexing failed for ${filename} (${docId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
 
     // Update progress
     this.updateDbStatus(docId, "indexing", "indexing", 1.0);

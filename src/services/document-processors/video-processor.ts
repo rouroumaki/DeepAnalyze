@@ -56,13 +56,16 @@ export class VideoProcessor implements DocumentProcessor {
       for (const frame of frames) {
         try {
           if (vlmAvailable && router && vlmModel) {
-            // Read frame as base64 and send to VLM
+            // Read frame as base64 and send to VLM using multimodal format
             const base64 = readFileSync(frame.path).toString("base64");
             const result = await router.chat(
               [
                 {
                   role: "user",
-                  content: `描述这个视频关键帧的内容。\n\n[图片数据: data:image/jpeg;base64,${base64.slice(0, 100)}...]`,
+                  content: [
+                    { type: "text", text: "描述这个视频关键帧的内容，包括场景、人物、动作和文字信息。" },
+                    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64}` } },
+                  ],
                 },
               ],
               { model: vlmModel },
@@ -82,6 +85,11 @@ export class VideoProcessor implements DocumentProcessor {
         `格式: ${format}\n` +
         `关键帧数: ${frames.length}\n\n` +
         descriptions.join("\n\n");
+
+      // Clean up temp directory after all frames are processed
+      if (frames.length > 0 && frames[0].tmpDir) {
+        try { rmSync(frames[0].tmpDir, { recursive: true }); } catch {}
+      }
     } catch (err) {
       timeline = `[视频分析失败: ${err instanceof Error ? err.message : String(err)}]`;
     }
@@ -100,7 +108,7 @@ export class VideoProcessor implements DocumentProcessor {
    */
   private extractKeyframes(
     filePath: string,
-  ): Array<{ timestamp: string; path: string }> {
+  ): Array<{ timestamp: string; path: string; tmpDir: string }> {
     const tmpDir = mkdtempSync(join(tmpdir(), "da-video-"));
     try {
       execSync(
@@ -113,16 +121,12 @@ export class VideoProcessor implements DocumentProcessor {
       return files.map((f, i) => ({
         timestamp: `${Math.floor((i * 10) / 60)}:${((i * 10) % 60).toString().padStart(2, "0")}`,
         path: join(tmpDir, f),
+        tmpDir,
       }));
     } catch {
+      // Clean up on extraction failure
+      try { rmSync(tmpDir, { recursive: true }); } catch {}
       return [];
-    } finally {
-      // Clean up temp directory
-      try {
-        rmSync(tmpDir, { recursive: true });
-      } catch {
-        // Temp cleanup failed -- non-critical
-      }
     }
   }
 

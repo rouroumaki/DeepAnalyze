@@ -5,6 +5,8 @@
 // =============================================================================
 
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
 
 export class AudioProcessor implements DocumentProcessor {
@@ -23,42 +25,150 @@ export class AudioProcessor implements DocumentProcessor {
   async parse(filePath: string): Promise<ParsedContent> {
     const duration = this.getDuration(filePath);
     const format = filePath.split(".").pop() ?? "unknown";
+    const fileName = basename(filePath);
 
     let transcription = "";
 
     try {
-      // Attempt to call Whisper API via the configured provider
-      // Try loading the VLM/default provider to use for transcription
-      const { ModelRouter } = await import("../../models/router.js");
-      const router = new ModelRouter();
-      await router.initialize();
+      // Try to find an audio_transcribe enhanced model configuration
+      const asrConfig = await this.getAsrConfig();
 
-      // Try to get an enhanced model with audio_transcribe capability
-      // For now, attempt using the main model as a transcription proxy
-      const defaultModel = router.getDefaultModel("main");
-
-      if (defaultModel) {
-        // Placeholder: in a full implementation, this would call a
-        // Whisper-compatible API endpoint directly. For now, return
-        // a descriptive placeholder so the pipeline does not crash.
-        transcription =
-          `[音频转写待实现 - 时长: ${duration}s, 格式: ${format}]\n\n` +
-          `请配置ASR模型（如Whisper）以启用音频转写功能。\n` +
-          `当前使用默认模型: ${defaultModel}`;
+      if (asrConfig) {
+        transcription = await this.callWhisperApi(filePath, asrConfig);
       } else {
         transcription =
           `[音频转写不可用 - 时长: ${duration}s, 格式: ${format}]\n\n` +
-          `未配置任何模型。`;
+          `未配置ASR模型。请在"增强模型"中添加 audio_transcribe 类型的模型，` +
+          `指向 OpenAI Whisper API 兼容端点。`;
       }
     } catch (err) {
-      transcription = `[音频转写失败: ${err instanceof Error ? err.message : String(err)}]`;
+      transcription =
+        `[音频转写失败: ${err instanceof Error ? err.message : String(err)}]`;
     }
 
     return {
       text: transcription,
-      metadata: { sourceType: "audio", duration, format },
+      metadata: { sourceType: "audio", duration, format, fileName },
       success: true,
     };
+  }
+
+  /**
+   * Get the ASR (audio_transcribe) enhanced model configuration.
+   * Returns endpoint, model, apiKey if configured, null otherwise.
+   */
+  private async getAsrConfig(): Promise<{
+    endpoint: string;
+    model: string;
+    apiKey?: string;
+  } | null> {
+    try {
+      const { SettingsStore } = await import("../../store/settings.js");
+      const store = new SettingsStore();
+      const models = store.getEnhancedModels();
+      const asrModel = models.find(
+        (m: Record<string, unknown>) =>
+          m.modelType === "audio_transcribe" && m.enabled,
+      );
+      if (!asrModel) return null;
+
+      // Get provider info for the endpoint and apiKey
+      const providerId = asrModel.providerId as string | undefined;
+      if (!providerId) {
+        // Use the model's endpoint directly if available
+        const endpoint = (asrModel as Record<string, unknown>).endpoint as string | undefined;
+        const apiKey = (asrModel as Record<string, unknown>).apiKey as string | undefined;
+        if (endpoint) return { endpoint, model: asrModel.model as string, apiKey };
+        return null;
+      }
+
+      // Look up the provider's apiBase
+      const provider = store.getProvider(providerId);
+      if (provider) {
+        return {
+          endpoint: provider.endpoint || "https://api.openai.com/v1",
+          model: asrModel.model as string,
+          apiKey: provider.apiKey,
+        };
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Call an OpenAI Whisper API compatible endpoint for transcription.
+   * Uses multipart/form-data to upload the audio file.
+   */
+  private async callWhisperApi(
+    filePath: string,
+    config: { endpoint: string; model: string; apiKey?: string },
+  ): Promise<string> {
+    const fileBuffer = readFileSync(filePath);
+    const fileName = basename(filePath);
+
+    // Build multipart form data
+    const boundary = `----FormBoundary${Date.now().toString(16)}`;
+    const parts: Buffer[] = [];
+
+    // Add file part
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      ),
+    );
+    parts.push(fileBuffer);
+    parts.push(Buffer.from("\r\n"));
+
+    // Add model part
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="model"\r\n\r\n${config.model}\r\n`,
+      ),
+    );
+
+    // Add language part (Chinese)
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="language"\r\n\r\nzh\r\n`,
+      ),
+    );
+
+    // Close boundary
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    // Build URL
+    const endpoint = config.endpoint.replace(/\/+$/, "");
+    const url = `${endpoint}/audio/transcriptions`;
+
+    const headers: Record<string, string> = {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    };
+    if (config.apiKey) {
+      headers["Authorization"] = `Bearer ${config.apiKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "unknown error");
+      throw new Error(`Whisper API returned ${response.status}: ${errorText}`);
+    }
+
+    const result = (await response.json()) as { text?: string };
+    return result.text || "[转写结果为空]";
   }
 
   /**

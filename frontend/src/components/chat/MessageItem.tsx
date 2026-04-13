@@ -5,8 +5,28 @@ import { FilePreview } from "../ui/FilePreview";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore } from "../../store/ui";
 import { Copy, RefreshCw, FileDown } from "lucide-react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { MessageInfo } from "../../types/index";
+
+/**
+ * Replace [[doc:docId|文档名]] or [[文档名]] patterns in rendered HTML
+ * with clickable spans that have data-doc-id attributes.
+ */
+function processDocRefs(html: string): string {
+  // Match [[doc:xxx|yyy]] — explicit doc reference with ID
+  let result = html.replace(
+    /\[\[doc:([^\|]+)\|([^\]]+)\]\]/g,
+    (_match, docId: string, label: string) =>
+      `<span data-doc-id="${docId}" style="color:var(--interactive);cursor:pointer;text-decoration:underline;border-bottom:1px dashed var(--interactive)">${label}</span>`,
+  );
+  // Match [[文档名]] — simple reference without doc ID
+  result = result.replace(
+    /\[\[([^\]:\|]+)\]\]/g,
+    (_match, label: string) =>
+      `<span data-doc-ref="${label}" style="color:var(--interactive);cursor:pointer;border-bottom:1px dashed var(--interactive)">${label}</span>`,
+  );
+  return result;
+}
 
 interface MessageItemProps {
   message: MessageInfo;
@@ -14,7 +34,8 @@ interface MessageItemProps {
 
 export function MessageItem({ message }: MessageItemProps) {
   const isUser = message.role === "user";
-  const htmlContent = useMarkdown(message.content);
+  const rawHtml = useMarkdown(message.content);
+  const htmlContent = useMemo(() => processDocRefs(rawHtml), [rawHtml]);
   const [showActions, setShowActions] = useState(false);
   const { success, error: toastError } = useToast();
   const currentKbId = useUIStore((s) => s.currentKbId);
@@ -114,6 +135,12 @@ export function MessageItem({ message }: MessageItemProps) {
                     const docRef = target.closest<HTMLElement>('[data-doc-id]');
                     if (docRef && currentKbId) {
                       navigateToDoc(currentKbId, docRef.dataset.docId!);
+                      return;
+                    }
+                    // Handle simple doc name references (no docId, just navigate to KB)
+                    const namedRef = target.closest<HTMLElement>('[data-doc-ref]');
+                    if (namedRef && currentKbId) {
+                      navigateToDoc(currentKbId, "");
                     }
                   }}
                 />

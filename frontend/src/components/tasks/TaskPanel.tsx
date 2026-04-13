@@ -27,7 +27,7 @@ export function TaskPanel() {
   const navigateToDoc = useUIStore((s) => s.navigateToDoc);
   const [allTasks, setAllTasks] = useState<AgentTaskInfo[]>([]);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"running" | "queue" | "history">("running");
+  const [activeTab, setActiveTab] = useState<"all" | "running" | "queue" | "history">("all");
 
   // Use WebSocket for real-time doc processing updates
   const { processingDocs } = useDocProcessing(currentKbId || null);
@@ -51,7 +51,7 @@ export function TaskPanel() {
   const [docNames, setDocNames] = useState<Map<string, { filename: string; kbName: string }>>(new Map());
 
   useEffect(() => {
-    if (activeTab !== "queue") return;
+    if (activeTab !== "queue" && activeTab !== "all") return;
     api.listKnowledgeBases().then(async (kbs) => {
       const all: (DocumentInfo & { kbName: string })[] = [];
       const nameMap = new Map<string, { filename: string; kbName: string }>();
@@ -166,6 +166,7 @@ export function TaskPanel() {
         {/* Sub-tab bar */}
         <div style={{ display: "flex", gap: "var(--space-1)", marginTop: "var(--space-2)" }}>
           {[
+            { id: "all", label: "全部", icon: <Clock size={12} /> },
             { id: "running", label: "执行中", icon: <Loader2 size={12} /> },
             { id: "queue", label: "编译队列", icon: <FileText size={12} /> },
             { id: "history", label: "历史", icon: <Clock size={12} /> },
@@ -199,6 +200,128 @@ export function TaskPanel() {
         flexDirection: "column",
         gap: "var(--space-4)",
       }}>
+        {/* All Tab — unified view */}
+        {activeTab === "all" && (
+          <>
+            {/* Active doc processing */}
+            {queueItems.length > 0 && (
+              <div style={{ marginBottom: "var(--space-3)" }}>
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  文档处理 ({queueItems.length})
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {queueItems.map((item) => {
+                    const stepLabel: Record<string, string> = {
+                      parsing: "解析中", compiling: "编译中", indexing: "索引中",
+                      linking: "关联中", uploading: "上传中",
+                    };
+                    return (
+                      <div key={item.docId} style={{
+                        display: "flex", alignItems: "center", gap: "var(--space-2)",
+                        padding: "var(--space-2) var(--space-3)",
+                        border: "1px solid var(--border-primary)",
+                        borderRadius: "var(--radius-md)",
+                        fontSize: "var(--text-sm)",
+                      }}>
+                        <FileText size={14} style={{ color: "var(--text-tertiary)", flexShrink: 0 }} />
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {item.filename}
+                        </span>
+                        <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                          {stepLabel[item.step] ?? item.step} {item.progress}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {/* Running agent tasks */}
+            {running.length > 0 && (
+              <div style={{ marginBottom: "var(--space-3)" }}>
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  Agent 任务 ({running.length})
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {running.map((task) => (
+                    <div key={task.id} style={{
+                      display: "flex", alignItems: "center", gap: "var(--space-2)",
+                      padding: "var(--space-2) var(--space-3)",
+                      border: "1px solid var(--border-primary)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: "var(--text-sm)",
+                    }}>
+                      {task.status === "running"
+                        ? <Loader2 size={14} style={{ color: "var(--interactive)", animation: "spin 1s linear infinite" }} />
+                        : <Clock size={14} style={{ color: "var(--text-tertiary)" }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {task.agentType || task.id}
+                      </span>
+                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                        {task.status === "running" ? "执行中" : "排队中"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Recent completed tasks */}
+            {done.length > 0 && (
+              <div>
+                <h4 style={{
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  color: "var(--text-tertiary)",
+                  marginBottom: "var(--space-2)",
+                }}>
+                  最近完成 ({Math.min(done.length, 5)})
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {done.slice(0, 5).map((task) => (
+                    <div key={task.id} style={{
+                      display: "flex", alignItems: "center", gap: "var(--space-2)",
+                      padding: "var(--space-2) var(--space-3)",
+                      border: "1px solid var(--border-primary)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: "var(--text-sm)",
+                    }}>
+                      {task.status === "completed"
+                        ? <CheckCircle2 size={14} style={{ color: "var(--success)" }} />
+                        : <XCircle size={14} style={{ color: "var(--error)" }} />
+                      }
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {task.agentType || task.id}
+                      </span>
+                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                        {task.status === "completed" ? "完成" : "失败"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {queueItems.length === 0 && running.length === 0 && done.length === 0 && (
+              <div style={{
+                textAlign: "center",
+                padding: "48px 0",
+                color: "var(--text-tertiary)",
+              }}>
+                <p>暂无任务</p>
+              </div>
+            )}
+          </>
+        )}
+
         {/* Running Tab */}
         {activeTab === "running" && (
           <>

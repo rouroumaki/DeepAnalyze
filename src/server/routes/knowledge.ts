@@ -598,10 +598,16 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
   const kbId = c.req.param("kbId");
   const query = c.req.query("query") || c.req.query("q") || "";
   const topK = parseInt(c.req.query("topK") || "10", 10);
+  const docIdsParam = c.req.query("docIds");
 
   if (!query) {
     return c.json({ error: "query parameter is required" }, 400);
   }
+
+  // Build docId filter set if provided
+  const docIdFilter = docIdsParam
+    ? new Set(docIdsParam.split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
 
   // Verify KB exists
   const kb = getKnowledgeBase(kbId);
@@ -676,7 +682,12 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
       })),
     ].slice(0, topK);
 
-    return c.json({ results, totalFound: results.length });
+    // Apply docId filter if provided
+    const filteredResults = docIdFilter
+      ? results.filter((r) => !r.docId || docIdFilter.has(r.docId))
+      : results;
+
+    return c.json({ results: filteredResults, totalFound: filteredResults.length });
   } catch (err) {
     console.error("[Knowledge] Search failed:", err);
     return c.json({

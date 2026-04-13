@@ -211,6 +211,9 @@ export const api = {
   deleteKnowledgeBase: (id: string) =>
     request<void>(`/api/knowledge/kbs/${id}`, { method: "DELETE" }),
 
+  triggerProcessing: (kbId: string) =>
+    request<{ enqueued: number }>(`/api/knowledge/kbs/${kbId}/trigger-processing`, { method: "POST" }),
+
   // --- Documents ---
   listDocuments: (kbId: string) =>
     request<{ documents: DocumentInfo[] }>(`/api/knowledge/kbs/${kbId}/documents`).then(

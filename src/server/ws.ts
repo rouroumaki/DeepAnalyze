@@ -20,8 +20,8 @@ export type WsServerMessage =
 // ---------------------------------------------------------------------------
 
 type WsClientMessage =
-  | { type: "subscribe"; kbId: string }
-  | { type: "unsubscribe"; kbId: string }
+  | { type: "subscribe"; kbIds: string[] }
+  | { type: "unsubscribe"; kbIds: string[] }
   | { type: "ping" };
 
 // ---------------------------------------------------------------------------
@@ -78,22 +78,25 @@ export function handleMessage(ws: WebSocket, raw: string | Buffer): void {
 
   switch (msg.type) {
     case "subscribe": {
-      if (!msg.kbId) {
-        console.warn("[WS] Subscribe message missing kbId");
+      if (!Array.isArray(msg.kbIds) || msg.kbIds.length === 0) {
+        console.warn("[WS] Subscribe message missing kbIds array");
         return;
       }
-      state.subscriptions.add(msg.kbId);
-      console.log(`[WS] Client subscribed to KB ${msg.kbId}. Subscriptions: ${state.subscriptions.size}`);
+      for (const kbId of msg.kbIds) {
+        state.subscriptions.add(kbId);
+      }
+      console.log(`[WS] Client subscribed to ${msg.kbIds.length} KB(s). Subscriptions: ${state.subscriptions.size}`);
       break;
     }
 
     case "unsubscribe": {
-      if (!msg.kbId) {
-        console.warn("[WS] Unsubscribe message missing kbId");
+      if (!Array.isArray(msg.kbIds)) {
         return;
       }
-      state.subscriptions.delete(msg.kbId);
-      console.log(`[WS] Client unsubscribed from KB ${msg.kbId}. Subscriptions: ${state.subscriptions.size}`);
+      for (const kbId of msg.kbIds) {
+        state.subscriptions.delete(kbId);
+      }
+      console.log(`[WS] Client unsubscribed from ${msg.kbIds.length} KB(s). Subscriptions: ${state.subscriptions.size}`);
       break;
     }
 

@@ -11,6 +11,7 @@ import { useFileUpload, selectFolder } from "../../hooks/useFileUpload";
 import { useDocProcessing } from "../../hooks/useDocProcessing";
 import type { KnowledgeBase, DocumentInfo } from "../../types/index";
 import { WikiBrowser } from "./WikiBrowser";
+import { KnowledgeGraph } from "./KnowledgeGraph";
 import { EntityPage } from "./EntityPage";
 import { DropZone } from "../ui/DropZone";
 import {
@@ -31,6 +32,8 @@ import {
   Eye,
   Loader2,
   Users,
+  Play,
+  Share2,
 } from "lucide-react";
 
 interface KnowledgePanelProps {
@@ -38,7 +41,7 @@ interface KnowledgePanelProps {
   onKbIdChange: (id: string) => void;
 }
 
-type TabId = "documents" | "wiki" | "entities" | "search" | "settings";
+type TabId = "documents" | "wiki" | "entities" | "graph" | "search" | "settings";
 
 type SearchMode = "semantic" | "exact" | "hybrid";
 
@@ -316,6 +319,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
     { id: "documents", label: "文档", icon: <FileText size={14} /> },
     { id: "wiki", label: "Wiki", icon: <BookOpen size={14} /> },
     { id: "entities", label: "实体", icon: <Users size={14} /> },
+    { id: "graph", label: "图谱", icon: <Share2 size={14} /> },
     { id: "search", label: "搜索", icon: <Search size={14} /> },
     { id: "settings", label: "设置", icon: <Settings size={14} /> },
   ];
@@ -691,6 +695,37 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   )}
                   {fileUpload.hasPending ? "上传中..." : "上传文档"}
                 </button>
+                {/* Manual processing trigger — shown when there are uploaded docs awaiting processing */}
+                {documents.some((d) => d.status === "uploaded" || d.status === "error") && (
+                  <button
+                    onClick={async () => {
+                      if (!kbId) return;
+                      try {
+                        const result = await api.triggerProcessing(kbId);
+                        success(`已将 ${result.enqueued ?? 0} 个文档加入处理队列`);
+                      } catch {
+                        toastError("触发处理失败");
+                      }
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-2) var(--space-3)",
+                      backgroundColor: "var(--warning, #f59e0b)",
+                      color: "#fff",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      borderRadius: "var(--radius-md)",
+                      border: "none",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <Play size={14} />
+                    开始处理
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1109,6 +1144,9 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               })()
             )}
           </div>
+        ) : activeTab === "graph" ? (
+          /* Graph Tab */
+          <KnowledgeGraph kbId={kbId} />
         ) : activeTab === "search" ? (
           /* Search Tab */
           <div

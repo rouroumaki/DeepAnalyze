@@ -39,3 +39,19 @@ export { MicroCompactor } from "./micro-compact.js";
 export { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
 export { AutoDreamManager } from "./auto-dream.js";
 export { validateMessageSequence, repairMessageSequence } from "./message-utils.js";
+export { WorkflowEngine } from "./workflow-engine.js";
+export type {
+  WorkflowMode,
+  WorkflowAgent,
+  WorkflowInput,
+  WorkflowAgentResult,
+  WorkflowResult,
+  WorkflowEvent,
+  WorkflowStartEvent,
+  WorkflowCompleteEvent,
+  WorkflowAgentStartEvent,
+  WorkflowAgentCompleteEvent,
+  WorkflowAgentChunkEvent,
+  WorkflowAgentToolCallEvent,
+  WorkflowAgentToolResultEvent,
+} from "./workflow-engine.js";

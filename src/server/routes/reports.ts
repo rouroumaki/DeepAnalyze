@@ -13,6 +13,12 @@ import {
   getWikiPagesByKb,
   getPageContent,
 } from "../../store/wiki-pages.js";
+import {
+  listReports,
+  getReport,
+  getReportsBySession,
+  deleteReport,
+} from "../../store/reports.js";
 import { getOrchestrator } from "../../services/agent/agent-system.js";
 import { randomUUID } from "node:crypto";
 
@@ -35,12 +41,19 @@ interface GenerateReportRequest {
 /**
  * Create report API routes.
  *
- * Routes:
- *   GET  /reports/:kbId       - List all reports for a knowledge base
- *   GET  /report/:reportId    - Get full report content
- *   POST /generate            - Generate a new report via the agent system
- *   GET  /timeline/:kbId      - Get timeline data for a knowledge base
- *   GET  /graph/:kbId         - Get graph data for a knowledge base
+ * Routes (CRUD via report store):
+ *   GET    /reports                    - List all reports (paginated)
+ *   GET    /reports/:id               - Get single report with references
+ *   DELETE /reports/:id               - Delete a report
+ *   GET    /reports/:id/export        - Export report as Markdown
+ *   GET    /sessions/:sessionId/reports - List reports by session
+ *
+ * Routes (legacy wiki-based):
+ *   GET  /reports/kb/:kbId            - List all reports for a knowledge base
+ *   GET  /report/:reportId            - Get full report content (wiki page)
+ *   POST /generate                    - Generate a new report via the agent system
+ *   GET  /timeline/:kbId              - Get timeline data for a knowledge base
+ *   GET  /graph/:kbId                 - Get graph data for a knowledge base
  */
 export function createReportRoutes(): Hono {
   const router = new Hono();
@@ -54,20 +67,47 @@ export function createReportRoutes(): Hono {
       status: "ok",
       message: "Reports API",
       endpoints: [
-        "GET  /reports/:kbId",
-        "GET  /report/:reportId",
-        "POST /generate",
-        "GET  /timeline/:kbId",
-        "GET  /graph/:kbId",
+        "GET    /reports",
+        "GET    /reports/:id",
+        "DELETE /reports/:id",
+        "GET    /reports/:id/export",
+        "GET    /sessions/:sessionId/reports",
+        "GET    /reports/kb/:kbId",
+        "GET    /report/:reportId",
+        "POST   /generate",
+        "GET    /timeline/:kbId",
+        "GET    /graph/:kbId",
       ],
     });
   });
 
   // =====================================================================
-  // GET /reports/:kbId - List all reports for a knowledge base
+  // GET /reports - List all reports (paginated)
   // =====================================================================
 
-  router.get("/reports/:kbId", (c) => {
+  router.get("/reports", (c) => {
+    const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
+    const offset = parseInt(c.req.query("offset") || "0", 10);
+
+    const reports = listReports(limit, offset);
+
+    return c.json({
+      reports,
+      pagination: {
+        limit,
+        offset,
+        count: reports.length,
+      },
+    });
+  });
+
+  // =====================================================================
+  // GET /reports/:id - Get single report with references
+  // =====================================================================
+  // NOTE: This route must come after any static /reports/* paths (like
+  // /reports/kb/:kbId below) to avoid the :id parameter matching "kb".
+
+  router.get("/reports/kb/:kbId", (c) => {
     const kbId = c.req.param("kbId");
 
     // Verify the knowledge base exists
@@ -92,6 +132,98 @@ export function createReportRoutes(): Hono {
 
     return c.json({ kbId, reports });
   });
+
+  router.get("/reports/:id", (c) => {
+    const id = c.req.param("id");
+
+    const report = getReport(id);
+    if (!report) {
+      return c.json({ error: "Report not found" }, 404);
+    }
+
+    return c.json(report);
+  });
+
+  // =====================================================================
+  // DELETE /reports/:id - Delete a report
+  // =====================================================================
+
+  router.delete("/reports/:id", (c) => {
+    const id = c.req.param("id");
+
+    const deleted = deleteReport(id);
+    if (!deleted) {
+      return c.json({ error: "Report not found" }, 404);
+    }
+
+    return c.json({ success: true, id });
+  });
+
+  // =====================================================================
+  // GET /reports/:id/export - Export report as Markdown
+  // =====================================================================
+
+  router.get("/reports/:id/export", (c) => {
+    const id = c.req.param("id");
+
+    const report = getReport(id);
+    if (!report) {
+      return c.json({ error: "Report not found" }, 404);
+    }
+
+    // Build a Markdown document with references appended
+    let md = `# ${report.title}\n\n`;
+    md += report.cleanContent;
+    md += "\n";
+
+    // Append references section if any
+    if (report.references && report.references.length > 0) {
+      md += "\n---\n\n## References\n\n";
+      for (const ref of report.references) {
+        md += `[${ref.refIndex}] ${ref.title}`;
+        if (ref.docId) md += ` (doc: ${ref.docId})`;
+        if (ref.pageId) md += ` (page: ${ref.pageId})`;
+        md += "\n";
+        if (ref.snippet) {
+          md += `> ${ref.snippet}\n\n`;
+        }
+      }
+    }
+
+    // Append entities section if any
+    if (report.entities && report.entities.length > 0) {
+      md += "\n---\n\n## Entities\n\n";
+      for (const entity of report.entities) {
+        md += `- ${entity}\n`;
+      }
+      md += "\n";
+    }
+
+    c.header("Content-Type", "text/markdown; charset=utf-8");
+    c.header(
+      "Content-Disposition",
+      `attachment; filename="report-${id}.md"`,
+    );
+    return c.body(md);
+  });
+
+  // =====================================================================
+  // GET /sessions/:sessionId/reports - List reports by session
+  // =====================================================================
+
+  router.get("/sessions/:sessionId/reports", (c) => {
+    const sessionId = c.req.param("sessionId");
+
+    const reports = getReportsBySession(sessionId);
+
+    return c.json({
+      sessionId,
+      reports,
+      totalCount: reports.length,
+    });
+  });
+
+  // (Moved to /reports/kb/:kbId above to avoid route conflicts with /reports/:id)
 
   // =====================================================================
   // GET /report/:reportId - Get full report content

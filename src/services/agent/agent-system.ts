@@ -14,6 +14,7 @@ import type { Orchestrator } from "./orchestrator.js";
 import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 import type { PluginManager } from "../plugins/plugin-manager.js";
 import type { Retriever } from "../../wiki/retriever.js";
+import type { AgentTeamManager } from "./agent-team-manager.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
@@ -26,6 +27,9 @@ let pluginManagerInstance: PluginManager | null = null;
 
 /** Singleton retriever instance. */
 let retrieverInstance: Retriever | null = null;
+
+/** Singleton agent team manager instance. */
+let teamManagerInstance: AgentTeamManager | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -82,6 +86,7 @@ export function resetOrchestrator(): void {
   compounderInstance = null;
   pluginManagerInstance = null;
   retrieverInstance = null;
+  teamManagerInstance = null;
   initPromise = null;
 }
 
@@ -140,6 +145,25 @@ export async function getPluginManager(): Promise<PluginManager> {
     await getOrchestrator();
   }
   return pluginManagerInstance!;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Team Manager
+// ---------------------------------------------------------------------------
+
+/**
+ * Get (or lazily initialize) the singleton AgentTeamManager instance.
+ *
+ * The AgentTeamManager is initialized alongside the Orchestrator during the first
+ * call to `getOrchestrator()`. If the orchestrator has not been initialized
+ * yet, this will trigger the full initialization pipeline.
+ */
+export async function getTeamManager(): Promise<AgentTeamManager> {
+  // Ensure the orchestrator (and thus the team manager) is initialized
+  if (!teamManagerInstance) {
+    await getOrchestrator();
+  }
+  return teamManagerInstance!;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +251,25 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
     }
   }
   console.log("[AgentSystem] Built-in skills registered");
+
+  // Step 10: Agent Team Manager + workflow_run tool
+  const { AgentTeamManager } = await import("./agent-team-manager.js");
+  const { registerWorkflowRunTool } = await import("./tool-setup.js");
+  const teamManager = new AgentTeamManager();
+  teamManagerInstance = teamManager;
+
+  // Register the workflow_run tool with deps
+  await registerWorkflowRunTool(toolRegistry, {
+    runner,
+    toolRegistry,
+    getTeamManager: async () => teamManagerInstance!,
+    emitWs: (event: any) => {
+      if (globalThis.__workflowEvents) {
+        globalThis.__workflowEvents.emit("workflow", event);
+      }
+    },
+  });
+  console.log("[AgentSystem] AgentTeamManager initialized, workflow_run tool registered");
 
   return orchestrator;
 }

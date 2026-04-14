@@ -15,6 +15,7 @@ import { createReportRoutes } from "./routes/reports.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSearchRoutes } from "./routes/search.js";
+import { createAgentTeamRoutes } from "./routes/agent-teams.js";
 import { migrateReports } from "../store/reports.js";
 import { migrateAgentTeams } from "../store/agent-teams.js";
 import { DB } from "../store/database.js";
@@ -372,6 +373,65 @@ export function createApp(): Hono {
     });
 
     return channelRoutes.fetch(newRequest);
+  });
+
+  // -----------------------------------------------------------------------
+  // Agent Teams routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
+  let agentTeamRoutes: Hono | null = null;
+
+  app.use("/api/agent-teams/*", async (c, next) => {
+    if (!agentTeamRoutes) {
+      try {
+        console.log("[AgentTeams] Initializing agent team routes...");
+        agentTeamRoutes = createAgentTeamRoutes();
+        console.log("[AgentTeams] Agent team routes ready.");
+      } catch (err) {
+        console.error("[AgentTeams] Initialization failed:", err);
+      }
+    }
+    await next();
+  });
+
+  // Agent Teams root — endpoint discovery
+  app.get("/api/agent-teams", (c) => c.json({
+    status: "ok",
+    message: "Agent Teams API",
+    endpoints: [
+      "GET    /",
+      "GET    /templates",
+      "GET    /:id",
+      "POST   /",
+      "PUT    /:id",
+      "DELETE /:id",
+    ],
+  }));
+
+  // Agent Teams sub-routes
+  app.all("/api/agent-teams/*", async (c) => {
+    if (!agentTeamRoutes) {
+      return c.json({ error: "Agent teams system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/agent-teams", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return agentTeamRoutes.fetch(newRequest);
   });
 
   // -----------------------------------------------------------------------

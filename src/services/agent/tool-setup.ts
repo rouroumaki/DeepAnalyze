@@ -716,3 +716,30 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
 
   return registry;
 }
+
+// ---------------------------------------------------------------------------
+// workflow_run tool registration (for multi-agent workflows)
+// ---------------------------------------------------------------------------
+
+/** Dependencies needed to register the workflow_run tool. */
+export interface WorkflowRunDeps {
+  runner: any;
+  toolRegistry: ToolRegistry;
+  getTeamManager: () => Promise<any>;
+  emitWs: (event: any) => void;
+}
+
+/**
+ * Register the workflow_run tool on an existing ToolRegistry.
+ *
+ * This is called during orchestrator initialization (after the AgentRunner
+ * and ToolRegistry have been created) to enable multi-agent workflow execution.
+ */
+export async function registerWorkflowRunTool(registry: ToolRegistry, deps: WorkflowRunDeps): Promise<void> {
+  const { createWorkflowRunTool } = await import("./tools/workflow-run.js");
+  registry.register(createWorkflowRunTool({
+    runner: deps.runner,
+    toolRegistry: deps.toolRegistry,
+    onEvent: deps.emitWs,
+  }));
+}

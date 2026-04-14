@@ -16,6 +16,7 @@ import { knowledgeRoutes } from "./routes/knowledge.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSearchRoutes } from "./routes/search.js";
 import { migrateReports } from "../store/reports.js";
+import { migrateAgentTeams } from "../store/agent-teams.js";
 import { DB } from "../store/database.js";
 
 // Frontend static files directory (built by `npm run build` in frontend/)
@@ -26,6 +27,9 @@ export function createApp(): Hono {
 
   // Run report schema migration (safe to call multiple times)
   migrateReports(DB.getInstance().raw);
+
+  // Run agent team schema migration (safe to call multiple times)
+  migrateAgentTeams(DB.getInstance().raw);
 
   // Global error handler (must be registered before routes)
   app.onError(errorHandler);

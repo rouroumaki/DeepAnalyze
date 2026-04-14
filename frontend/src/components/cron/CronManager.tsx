@@ -592,10 +592,11 @@ export function CronManager() {
   };
 
   const handleDelete = async (id: string) => {
-    const confirmed = await useUIStore.getState().showConfirm(
-      "确定要删除此任务吗？此操作不可恢复。",
-      { variant: "danger" },
-    );
+    const confirmed = await useUIStore.getState().showConfirm({
+      title: "删除确认",
+      message: "确定要删除此任务吗？此操作不可恢复。",
+      variant: "danger",
+    });
     if (!confirmed) return;
 
     try {

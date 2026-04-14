@@ -1,42 +1,42 @@
-# DeepAnalyze System Redesign Design
+# DeepAnalyze 系统重新设计文档
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Redesign 6 systemic issues found during deep testing — upload failures, state persistence, unified search, report integration, report noise, and multi-agent parallelism.
+**目标：** 重新设计深度测试中发现的6个系统性问题 —— 上传失败、状态持久化、统一搜索、报告集成、报告噪音、多Agent并行。
 
-**Architecture:** Three-layer system: Input Layer (upload + chat), Core Engine (search + agents + reports), Display Layer (embedded reports + state persistence). Multi-agent uses a three-tier architecture: bottom (AgentRunner + Orchestrator), middle (WorkflowEngine with 4 scheduling modes), top (4 entry points for multi-agent dispatch).
+**架构：** 三层系统：输入层（上传 + 聊天）、核心引擎（搜索 + Agent + 报告）、展示层（嵌入式报告 + 状态持久化）。多Agent采用三层架构：底层（AgentRunner + Orchestrator）、中间层（WorkflowEngine，4种调度模式）、顶层（4个多Agent分发入口）。
 
-**Tech Stack:** React + Zustand, Hono (backend), better-sqlite3, WebSocket, existing AgentRunner/Orchestrator, WorkflowEngine (ported from CountBot).
+**技术栈：** React + Zustand、Hono（后端）、better-sqlite3、WebSocket、现有AgentRunner/Orchestrator、WorkflowEngine（从CountBot移植）。
 
 ---
 
-## Module A: File Upload + State Persistence
+## 模块A：文件上传 + 状态持久化
 
-### A.1 Upload Pipeline Improvements
+### A.1 上传管道改进
 
-**Problem:** Files can't upload in WSL environment, no feedback during upload, no timeout, no retry.
+**问题：** 文件在WSL环境下无法上传，上传过程中无反馈，无超时机制，无重试机制。
 
-**Solution:**
+**解决方案：**
 
-- Non-blocking upload: upload runs in background, UI remains interactive
-- 30-second timeout per upload attempt
-- Auto-retry 2 times on failure
-- Polling fallback: when WebSocket disconnects, poll document status every 3 seconds
-- Detailed progress stages: Upload% -> Parsing -> Compiling -> Indexing -> Linking -> Ready
-- Error recovery: failed files show retry button
+- 非阻塞上传：上传在后台运行，UI保持可交互
+- 每次上传尝试30秒超时
+- 失败后自动重试2次
+- 轮询回退：当WebSocket断开时，每3秒轮询文档状态
+- 详细的进度阶段：Upload% -> Parsing -> Compiling -> Indexing -> Linking -> Ready
+- 错误恢复：失败的文件显示重试按钮
 
-**Upload Progress Stages Detail:**
+**上传进度阶段详情：**
 
-| Stage | Description | Progress % |
-|-------|-------------|------------|
-| Upload | Transferring file bytes to server | 0-40% |
-| Parsing | Extracting text from document format | 40-55% |
-| Compiling | Building internal document structure | 55-70% |
-| Indexing | Creating search index entries | 70-85% |
-| Linking | Building entity links and cross-references | 85-95% |
-| Ready | Document available for search and analysis | 100% |
+| 阶段 | 描述 | 进度 % |
+|------|------|--------|
+| Upload | 将文件字节传输到服务器 | 0-40% |
+| Parsing | 从文档格式中提取文本 | 40-55% |
+| Compiling | 构建内部文档结构 | 55-70% |
+| Indexing | 创建搜索索引条目 | 70-85% |
+| Linking | 构建实体链接和交叉引用 | 85-95% |
+| Ready | 文档可用于搜索和分析 | 100% |
 
-**Retry Logic:**
+**重试逻辑：**
 
 ```
 attempt = 1
@@ -55,7 +55,7 @@ function uploadWithRetry(file):
       await delay(1000 * attempt) // exponential backoff: 1s, 2s
 ```
 
-**Polling Fallback Logic:**
+**轮询回退逻辑：**
 
 ```
 // When WebSocket disconnects, start polling
@@ -70,43 +70,43 @@ ws.onDisconnect = () => {
 }
 ```
 
-**Files to modify:**
+**需要修改的文件：**
 
-- `frontend/src/components/knowledge/KnowledgePanel.tsx` -- add non-blocking upload with progress
-- `frontend/src/api/client.ts` -- add upload with timeout and retry
-- `src/server/routes/knowledge.ts` -- ensure upload endpoint returns immediate acknowledgment
+- `frontend/src/components/knowledge/KnowledgePanel.tsx` -- 添加带进度的非阻塞上传
+- `frontend/src/api/client.ts` -- 添加带超时和重试的上传
+- `src/server/routes/knowledge.ts` -- 确保上传端点返回即时确认
 
-### A.2 State Persistence -- URL Routing + localStorage
+### A.2 状态持久化 —— URL路由 + localStorage
 
-**Problem:** Page refresh loses all state (active view, session, KB selection, scope).
+**问题：** 页面刷新丢失所有状态（活动视图、会话、知识库选择、范围）。
 
-**Solution: Dual-layer persistence**
+**解决方案：双层持久化**
 
-**URL Routes:**
+**URL路由：**
 
-| Route | View |
-|-------|------|
-| `/chat` | Chat view |
-| `/knowledge/:kbId` | Knowledge base |
-| `/knowledge/:kbId/search` | Search |
-| `/reports` | Reports list |
-| `/reports/:reportId` | Single report |
-| `/tasks` | Task list |
-| `/sessions/:sessionId` | Specific session |
+| 路由 | 视图 |
+|------|------|
+| `/chat` | 聊天视图 |
+| `/knowledge/:kbId` | 知识库 |
+| `/knowledge/:kbId/search` | 搜索 |
+| `/reports` | 报告列表 |
+| `/reports/:reportId` | 单个报告 |
+| `/tasks` | 任务列表 |
+| `/sessions/:sessionId` | 特定会话 |
 
-**localStorage Keys:**
+**localStorage 键：**
 
-| Key | Purpose |
-|-----|---------|
-| `deepanalyze-theme` | Theme preference |
-| `deepanalyze-session` | Current session ID |
-| `deepanalyze-kb` | Current knowledge base ID |
-| `deepanalyze-sidebar` | Sidebar open/closed state |
-| `deepanalyze-scope` | Analysis scope selection |
+| 键 | 用途 |
+|----|------|
+| `deepanalyze-theme` | 主题偏好 |
+| `deepanalyze-session` | 当前会话ID |
+| `deepanalyze-kb` | 当前知识库ID |
+| `deepanalyze-sidebar` | 侧边栏开启/关闭状态 |
+| `deepanalyze-scope` | 分析范围选择 |
 
-**Refresh flow:** URL parsing -> determine view -> restore UI state from localStorage -> load server data via API -> render complete.
+**刷新流程：** URL解析 -> 确定视图 -> 从localStorage恢复UI状态 -> 通过API加载服务器数据 -> 渲染完成。
 
-**Detailed Refresh Flow:**
+**详细刷新流程：**
 
 ```
 1. User refreshes page or navigates to a URL
@@ -127,11 +127,11 @@ ws.onDisconnect = () => {
 6. Render complete view with all data
 ```
 
-**Example:** Refresh `/knowledge/abc123/search?q=夏某某` -> auto-select KB abc123 -> search "夏某某" -> show results.
+**示例：** 刷新 `/knowledge/abc123/search?q=夏某某` -> 自动选择知识库 abc123 -> 搜索 "夏某某" -> 显示结果。
 
-**Router Implementation Approach:**
+**路由实现方案：**
 
-Use react-router v6 with hash-based routing for WSL compatibility. The router wraps the entire App component and maps URL patterns to view components. Each route change triggers both a URL update and a Zustand store update to keep them in sync.
+使用react-router v6的hash路由以保证WSL兼容性。路由器包裹整个App组件，并将URL模式映射到视图组件。每次路由变化同时触发URL更新和Zustand store更新，以保持两者同步。
 
 ```typescript
 // router.tsx structure
@@ -147,65 +147,65 @@ const router = createHashRouter([
 ])
 ```
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `frontend/src/router.tsx` -- URL routing with react-router or custom hash router
-- Modify `frontend/src/App.tsx` -- integrate router
-- Modify `frontend/src/store/ui.ts` -- sync state to localStorage and URL
-- Modify `frontend/src/store/chat.ts` -- persist session ID
+- 创建 `frontend/src/router.tsx` -- 使用react-router或自定义hash路由的URL路由
+- 修改 `frontend/src/App.tsx` -- 集成路由器
+- 修改 `frontend/src/store/ui.ts` -- 同步状态到localStorage和URL
+- 修改 `frontend/src/store/chat.ts` -- 持久化会话ID
 
-### A.3 Document List Batch Operations
+### A.3 文档列表批量操作
 
-**Features:**
+**功能：**
 
-- Select all / individual select checkboxes
-- Batch delete (selected count shown)
-- Batch re-process
-- Status indicators: Ready (green checkmark), Processing (spinning icon with %), Failed (red icon with retry)
+- 全选 / 单选复选框
+- 批量删除（显示选中数量）
+- 批量重新处理
+- 状态指示器：Ready（绿色勾号）、Processing（带%的旋转图标）、Failed（红色图标带重试按钮）
 
-**Batch Operations UI Detail:**
+**批量操作UI详情：**
 
-| Operation | Behavior | Confirmation |
-|-----------|----------|--------------|
-| Select All | Check all documents in current view | None |
-| Individual Select | Toggle single document checkbox | None |
-| Batch Delete | Delete all selected documents | Modal: "Delete N documents? This cannot be undone." |
-| Batch Re-process | Re-run processing pipeline on selected | None (starts immediately) |
-| Retry Failed | Retry only documents with Failed status | None |
+| 操作 | 行为 | 确认 |
+|------|------|------|
+| 全选 | 勾选当前视图中所有文档 | 无 |
+| 单选 | 切换单个文档复选框 | 无 |
+| 批量删除 | 删除所有选中的文档 | 弹窗："删除N个文档？此操作不可撤销。" |
+| 批量重新处理 | 对选中的文档重新运行处理管道 | 无（立即开始） |
+| 重试失败的 | 仅重试状态为Failed的文档 | 无 |
 
-**Status Indicators:**
+**状态指示器：**
 
-| Status | Icon | Color | Interaction |
-|--------|------|-------|-------------|
-| Ready | Checkmark | Green | Click to view |
-| Processing | Spinner with % | Blue | Click to see progress detail |
-| Failed | X mark | Red | Click to retry |
-| Queued | Clock | Gray | None |
+| 状态 | 图标 | 颜色 | 交互 |
+|------|------|------|------|
+| Ready | 勾号 | 绿色 | 点击查看 |
+| Processing | 带百分比的旋转器 | 蓝色 | 点击查看进度详情 |
+| Failed | X标记 | 红色 | 点击重试 |
+| Queued | 时钟 | 灰色 | 无 |
 
-**Files to modify:**
+**需要修改的文件：**
 
-- `frontend/src/components/knowledge/KnowledgePanel.tsx` -- add batch selection and operations
+- `frontend/src/components/knowledge/KnowledgePanel.tsx` -- 添加批量选择和操作
 
 ---
 
-## Module B: Unified Search System
+## 模块B：统一搜索系统
 
-### B.1 Unified Search Interface
+### B.1 统一搜索界面
 
-**Problem:** Search, Wiki, and Preview are disconnected modules. User wants a single unified search with hierarchical results.
+**问题：** 搜索、Wiki和预览是断开的模块。用户想要一个统一搜索，结果按层级展示。
 
-**Solution: Single search entry point, results displayed by level**
+**解决方案：单一搜索入口，结果按层级显示**
 
-**Search Results Layout:**
+**搜索结果布局：**
 
-- **L0 Results** (green badge): Abstract-level matches, fastest
-- **L1 Results** (blue badge): Overview-level matches, richer context
-- **L2 Results** (yellow badge): Raw text fragment matches, precise to paragraph
-- **Entity Results** (purple badge): Matching entities with occurrence counts
+- **L0 结果**（绿色徽章）：摘要级别匹配，速度最快
+- **L1 结果**（蓝色徽章）：概述级别匹配，上下文更丰富
+- **L2 结果**（黄色徽章）：原文片段匹配，精确到段落
+- **实体结果**（紫色徽章）：匹配的实体及其出现次数
 
-Each result shows: title, highlighted snippet (keyword highlighted in yellow), source document info, level badge.
+每条结果显示：标题、高亮摘要（关键词以黄色高亮）、来源文档信息、层级徽章。
 
-**Unified Search API:**
+**统一搜索API：**
 
 ```
 GET /api/knowledge/:kbId/search
@@ -230,43 +230,43 @@ Response:
 }
 ```
 
-**Search Performance Requirements:**
+**搜索性能要求：**
 
-| Metric | Target |
-|--------|--------|
-| L0 search latency | < 200ms |
-| L1 search latency | < 500ms |
-| L2 search latency | < 1000ms |
-| Entity search latency | < 300ms |
-| Combined response time | < 1500ms |
+| 指标 | 目标 |
+|------|------|
+| L0 搜索延迟 | < 200ms |
+| L1 搜索延迟 | < 500ms |
+| L2 搜索延迟 | < 1000ms |
+| 实体搜索延迟 | < 300ms |
+| 组合响应时间 | < 1500ms |
 
-**Keyword Highlighting:**
+**关键词高亮：**
 
-Search keywords are highlighted in result snippets using `<mark>` tags. The highlighting algorithm:
+搜索关键词在结果摘要中使用 `<mark>` 标签高亮。高亮算法：
 
-1. Tokenize the query string
-2. For each token, find all case-insensitive occurrences in the snippet
-3. Wrap matches in `<mark class="search-highlight">` tags
-4. For multi-token queries, highlight each token independently
+1. 对查询字符串进行分词
+2. 对于每个词元，在摘要中查找所有不区分大小写的出现
+3. 用 `<mark class="search-highlight">` 标签包裹匹配项
+4. 对于多词元查询，独立高亮每个词元
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `src/server/routes/search.ts` -- unified search endpoint
-- Create `frontend/src/components/search/UnifiedSearch.tsx` -- search UI with level tabs
-- Create `frontend/src/components/search/SearchResultCard.tsx` -- individual result card
-- Modify `src/wiki/retriever.ts` -- support multi-level search with keyword highlighting
+- 创建 `src/server/routes/search.ts` -- 统一搜索端点
+- 创建 `frontend/src/components/search/UnifiedSearch.tsx` -- 带层级标签的搜索UI
+- 创建 `frontend/src/components/search/SearchResultCard.tsx` -- 单个结果卡片
+- 修改 `src/wiki/retriever.ts` -- 支持带关键词高亮的多层级搜索
 
-### B.2 Hover Preview Cards
+### B.2 悬停预览卡片
 
-**Behavior:** Mouse hover over any search result -> popup preview card showing document content with keyword highlights.
+**行为：** 鼠标悬停在任何搜索结果上 -> 弹出预览卡片，显示带关键词高亮的文档内容。
 
-**Preview Card Content:**
+**预览卡片内容：**
 
-- Header: document title + level + size
-- Body: content snippet with keywords highlighted
-- Footer: upload date + "Open full page" link
+- 头部：文档标题 + 层级 + 大小
+- 主体：带关键词高亮的内容摘要
+- 底部：上传日期 + "打开完整页面" 链接
 
-**Preview Card Implementation Detail:**
+**预览卡片实现详情：**
 
 ```
 Appearance:
@@ -286,7 +286,7 @@ Load: fetch preview content via API on first hover, cache for session
 Position: anchored to right side of result card, flip if near viewport edge
 ```
 
-**Preview Data API:**
+**预览数据API：**
 
 ```
 GET /api/knowledge/:kbId/pages/:pageId/preview?level=L1&q=keyword
@@ -302,23 +302,23 @@ Response:
 }
 ```
 
-**Files to create:**
+**需要创建的文件：**
 
-- Create `frontend/src/components/search/PreviewCard.tsx` -- hover preview component
+- 创建 `frontend/src/components/search/PreviewCard.tsx` -- 悬停预览组件
 
-### B.3 Per-Document Level Switching (NEW)
+### B.3 单文档层级切换（新增）
 
-**Requirement:** Each document can be viewed at L0/L1/L2 by selecting the level on the document itself. The LevelSwitcher component is reused across search results, Wiki browsing, and document detail views.
+**需求：** 每个文档可以通过在文档上选择层级以L0/L1/L2方式查看。LevelSwitcher组件在搜索结果、Wiki浏览和文档详情视图中复用。
 
-**Level Switcher Component:**
+**层级切换器组件：**
 
-- Tab-style buttons: `L0 摘要` | `L1 概述` | `L2 原文`
-- Active tab highlighted in blue
-- Clicking a tab loads that level's content without page refresh
-- Keywords remain highlighted across level switches
-- Remember user's preferred default level (stored in localStorage under `deepanalyze-default-level`)
+- 标签式按钮：`L0 摘要` | `L1 概述` | `L2 原文`
+- 活动标签以蓝色高亮
+- 点击标签加载该层级内容，无需刷新页面
+- 关键词在层级切换之间保持高亮
+- 记住用户偏好的默认层级（存储在localStorage的 `deepanalyze-default-level` 中）
 
-**Level Switcher Component Props:**
+**层级切换器组件Props：**
 
 ```typescript
 interface LevelSwitcherProps {
@@ -331,7 +331,7 @@ interface LevelSwitcherProps {
 }
 ```
 
-**API:**
+**API：**
 
 ```
 GET /api/knowledge/:kbId/pages/:pageId?level=L1
@@ -354,33 +354,33 @@ Response:
 }
 ```
 
-**Level descriptions:**
+**层级描述：**
 
-| Level | Size | Description |
-|-------|------|-------------|
-| L0 摘要 | ~200-500 chars | AI-generated abstract, quick overview |
-| L1 概述 | ~500-2000 chars | AI-generated structured overview, sections |
-| L2 原文 | Full document | Original uploaded document, complete |
+| 层级 | 大小 | 描述 |
+|------|------|------|
+| L0 摘要 | ~200-500字符 | AI生成的摘要，快速概览 |
+| L1 概述 | ~500-2000字符 | AI生成的结构化概述，分节展示 |
+| L2 原文 | 完整文档 | 原始上传文档，完整内容 |
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `frontend/src/components/search/LevelSwitcher.tsx` -- reusable level switching component
-- Modify `src/server/routes/knowledge.ts` -- add level parameter to page API
-- Modify `frontend/src/components/knowledge/KnowledgePanel.tsx` -- integrate LevelSwitcher in Wiki view
-- Modify `frontend/src/components/search/UnifiedSearch.tsx` -- integrate LevelSwitcher in search results
+- 创建 `frontend/src/components/search/LevelSwitcher.tsx` -- 可复用的层级切换组件
+- 修改 `src/server/routes/knowledge.ts` -- 为页面API添加层级参数
+- 修改 `frontend/src/components/knowledge/KnowledgePanel.tsx` -- 在Wiki视图中集成LevelSwitcher
+- 修改 `frontend/src/components/search/UnifiedSearch.tsx` -- 在搜索结果中集成LevelSwitcher
 
-### B.4 Module Integration -- Three-in-One
+### B.4 模块集成 —— 三合一
 
-**Current:** 3 separate modules (Search, Wiki, Preview) -- clicking search results can't preview, Wiki is disconnected.
+**当前：** 3个独立模块（搜索、Wiki、预览）—— 点击搜索结果无法预览，Wiki是断开的。
 
-**After:** Unified Knowledge Panel:
+**改进后：** 统一知识面板：
 
-- Top: Unified search bar (always visible)
-- Results: Level-grouped results with hover preview
-- Wiki browsing: Expandable section below search, linked from search results
-- Entity cards: Shown alongside search results
+- 顶部：统一搜索栏（始终可见）
+- 结果：按层级分组的结果，带悬停预览
+- Wiki浏览：搜索下方可展开区域，与搜索结果关联
+- 实体卡片：与搜索结果一起显示
 
-**Unified Knowledge Panel Layout:**
+**统一知识面板布局：**
 
 ```
 +--------------------------------------------------+
@@ -409,28 +409,28 @@ Response:
 +--------------------------------------------------+
 ```
 
-**Files to modify:**
+**需要修改的文件：**
 
-- Modify `frontend/src/components/knowledge/KnowledgePanel.tsx` -- restructure to unified layout
+- 修改 `frontend/src/components/knowledge/KnowledgePanel.tsx` -- 重构为统一布局
 
 ---
 
-## Module C: Report + Chat Integration
+## 模块C：报告 + 聊天集成
 
-### C.1 Reports Embedded in Chat
+### C.1 报告嵌入聊天
 
-**Problem:** Agent generates report but it doesn't appear in chat window. Reports go to separate panel. Agent doesn't know about its own reports.
+**问题：** Agent生成报告但不在聊天窗口中显示。报告发送到单独的面板。Agent不了解自己生成的报告。
 
-**Solution:** Reports render as rich cards directly in the chat message flow.
+**解决方案：** 报告直接在聊天消息流中渲染为富卡片。
 
-**Report Card in Chat:**
+**聊天中的报告卡片：**
 
-- Header (gradient blue): title, generation time, document count, reference count, download/copy buttons
-- Body: clean Markdown content with reference markers [n] and entity links (dashed underline)
-- Footer: reference count, "View full report" link
-- Below card: Agent summary text (1-2 sentence summary with key findings)
+- 头部（渐变蓝色）：标题、生成时间、文档数量、引用数量、下载/复制按钮
+- 主体：干净的Markdown内容，带引用标记[n]和实体链接（虚线下划线）
+- 底部：引用数量、"查看完整报告" 链接
+- 卡片下方：Agent摘要文本（1-2句话总结关键发现）
 
-**Report Card Visual Layout:**
+**报告卡片视觉布局：**
 
 ```
 +----------------------------------------------------------+
@@ -457,7 +457,7 @@ Response:
 +----------------------------------------------------------+
 ```
 
-**Chat Message Type Extension:**
+**聊天消息类型扩展：**
 
 ```typescript
 // Extend existing chat message types
@@ -475,27 +475,27 @@ interface ChatMessage {
 }
 ```
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `frontend/src/components/chat/ReportCard.tsx` -- embedded report component
-- Modify `frontend/src/components/ChatWindow.tsx` -- render ReportCard for report messages
-- Modify `src/server/routes/chat.ts` -- return report data inline with chat messages
+- 创建 `frontend/src/components/chat/ReportCard.tsx` -- 嵌入式报告组件
+- 修改 `frontend/src/components/ChatWindow.tsx` -- 为报告消息渲染ReportCard
+- 修改 `src/server/routes/chat.ts` -- 内联返回报告数据与聊天消息
 
-### C.2 Reference Markers + Hover Preview
+### C.2 引用标记 + 悬停预览
 
-**Problem:** Reports filled with raw source blocks like "From: Overview: xxx" instead of clean analysis.
+**问题：** 报告中充斥着原始来源块，如"From: Overview: xxx"，而不是干净的分析。
 
-**Solution:** Clean reference system with interactive markers.
+**解决方案：** 带交互标记的干净引用系统。
 
-**Reference Marker Types:**
+**引用标记类型：**
 
-| Type | Style | Behavior |
-|------|-------|----------|
-| Document reference [n] | Blue superscript badge | Hover: shows source document snippet with keyword highlight |
-| Entity link | Dashed blue underline | Hover: shows entity type + occurrence count |
-| Data highlight | Yellow background | Visual emphasis for key figures |
+| 类型 | 样式 | 行为 |
+|------|------|------|
+| 文档引用 [n] | 蓝色上标徽章 | 悬停：显示来源文档摘要，带关键词高亮 |
+| 实体链接 | 蓝色虚线下划线 | 悬停：显示实体类型 + 出现次数 |
+| 数据高亮 | 黄色背景 | 关键数据的视觉强调 |
 
-**Reference Marker Hover Detail:**
+**引用标记悬停详情：**
 
 ```
 [n1] hover popup:
@@ -511,7 +511,7 @@ interface ChatMessage {
 +-------------------------------------------+
 ```
 
-**Entity Link Hover Detail:**
+**实体链接悬停详情：**
 
 ```
 张某 hover popup:
@@ -524,11 +524,11 @@ interface ChatMessage {
 +-------------------------------------------+
 ```
 
-**De-noising Pipeline:**
+**去噪管道：**
 
-Agent raw output -> Content cleaning (remove "From: ..." blocks) -> Reference marking (raw quotes -> [n] markers linked to source docs) -> Clean report
+Agent原始输出 -> 内容清洗（移除"From: ..."块）-> 引用标记（原始引文 -> 链接到源文档的[n]标记）-> 干净报告
 
-**De-noising Pipeline Detail:**
+**去噪管道详情：**
 
 ```
 Stage 1: Content Cleaning
@@ -554,7 +554,7 @@ Stage 4: Final Cleanup
   - Remove duplicate whitespace
 ```
 
-**Content Cleaner Implementation Approach:**
+**内容清洗器实现方案：**
 
 ```typescript
 // src/services/report/cleaner.ts
@@ -575,14 +575,14 @@ interface CleanResult {
 function cleanReport(rawContent: string, sourceDocuments: Document[]): CleanResult
 ```
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `frontend/src/components/chat/ReferenceMarker.tsx` -- [n] marker with hover
-- Create `frontend/src/components/chat/EntityLink.tsx` -- entity link with hover
-- Create `src/services/report/cleaner.ts` -- de-noising pipeline
-- Modify `src/services/agent/tools/report-generate.ts` -- produce clean output with reference markers
+- 创建 `frontend/src/components/chat/ReferenceMarker.tsx` -- 带悬停的[n]标记
+- 创建 `frontend/src/components/chat/EntityLink.tsx` -- 带悬停的实体链接
+- 创建 `src/services/report/cleaner.ts` -- 去噪管道
+- 修改 `src/services/agent/tools/report-generate.ts` -- 生成带引用标记的干净输出
 
-### C.3 Report Data Structure
+### C.3 报告数据结构
 
 ```typescript
 interface Report {
@@ -606,7 +606,7 @@ interface Report {
 }
 ```
 
-**Report Storage Schema (SQLite):**
+**报告存储Schema（SQLite）：**
 
 ```sql
 CREATE TABLE reports (
@@ -640,46 +640,46 @@ CREATE INDEX idx_reports_message ON reports(message_id);
 CREATE INDEX idx_report_refs_report ON report_references(report_id);
 ```
 
-**Report API Endpoints:**
+**报告API端点：**
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/reports` | List all reports (paginated) |
-| GET | `/api/reports/:id` | Get single report with references |
-| GET | `/api/sessions/:sessionId/reports` | Get reports for a session |
-| DELETE | `/api/reports/:id` | Delete a report |
-| GET | `/api/reports/:id/export` | Export report as PDF/Markdown |
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| GET | `/api/reports` | 列出所有报告（分页） |
+| GET | `/api/reports/:id` | 获取单个报告及其引用 |
+| GET | `/api/sessions/:sessionId/reports` | 获取会话的报告 |
+| DELETE | `/api/reports/:id` | 删除报告 |
+| GET | `/api/reports/:id/export` | 导出报告为PDF/Markdown |
 
-**Files to create/modify:**
+**需要创建/修改的文件：**
 
-- Create `src/store/reports.ts` -- report persistence (SQLite)
-- Modify `src/server/routes/reports.ts` -- CRUD API for reports
+- 创建 `src/store/reports.ts` -- 报告持久化（SQLite）
+- 修改 `src/server/routes/reports.ts` -- 报告的CRUD API
 
 ---
 
-## Module D: Multi-Agent System (v2 -- AgentTeams Integration)
+## 模块D：多Agent系统（v2 —— AgentTeams集成）
 
-### D.1 Three-Layer Architecture
+### D.1 三层架构
 
-**Bottom Layer -- Core Agent Capability (existing, preserved):**
+**底层 —— 核心Agent能力（现有，保留）：**
 
-- AgentRunner: TAOR loop, context management, tool execution, session memory
-- Orchestrator: runSingle, runParallel, runCoordinated
-- Swarm: process-level isolation, teammate spawning (for advanced scenarios)
+- AgentRunner：TAOR循环、上下文管理、工具执行、会话记忆
+- Orchestrator：runSingle、runParallel、runCoordinated
+- Swarm：进程级隔离、队友生成（用于高级场景）
 
-**Middle Layer -- Scheduling Engine (new, ported from CountBot):**
+**中间层 —— 调度引擎（新增，从CountBot移植）：**
 
-- WorkflowEngine with 4 scheduling modes
-- Pipeline, Graph (DAG), Council, Parallel
+- WorkflowEngine，4种调度模式
+- Pipeline、Graph（DAG）、Council、Parallel
 
-**Top Layer -- Entry Points (4 ways to trigger multi-agent):**
+**顶层 —— 入口层（4种触发多Agent的方式）：**
 
-1. User-specified: `@team_name goal` mention or `/team` command in chat
-2. Skills-driven: Skill definitions include scheduling suggestions, Agent decides whether to adopt
-3. Agent-autonomous: Agent uses `workflow_run` tool to create sub-agents on demand
-4. Plugin-registered: Plugins register custom Agent teams and scheduling strategies
+1. 用户指定：在聊天中通过 `@team_name goal` 提及或 `/team` 命令
+2. 技能驱动：Skill定义包含调度建议，Agent决定是否采纳
+3. Agent自主：Agent使用 `workflow_run` 工具按需创建子Agent
+4. 插件注册：插件注册自定义Agent团队和调度策略
 
-**Architecture Diagram:**
+**架构图：**
 
 ```
 +-------------------------------------------------------------------+
@@ -700,15 +700,15 @@ CREATE INDEX idx_report_refs_report ON report_references(report_id);
 +-------------------------------------------------------------------+
 ```
 
-### D.2 Scheduling Modes
+### D.2 调度模式
 
-**Pipeline Mode:**
+**Pipeline（管道）模式：**
 
-- Sequential stages with accumulated context
-- Each stage receives all prior outputs
-- Use case: Research -> Organize -> Analyze -> Report
+- 顺序阶段，带累积上下文
+- 每个阶段接收所有先前输出
+- 用例：研究 -> 整理 -> 分析 -> 报告
 
-**Pipeline Mode Detail:**
+**Pipeline模式详情：**
 
 ```
 Input: { goal: "Analyze case documents", stages: [...] }
@@ -732,16 +732,16 @@ Stage 4 (Report Agent):
 Final: Combined output returned to caller
 ```
 
-**Graph (DAG) Mode:**
+**Graph（DAG）模式：**
 
-- Dependency-based scheduling with automatic parallelism
-- Ready nodes (all dependencies met) run in parallel via Promise.allSettled
-- Condition evaluation: skip nodes whose conditions fail
-- Failure propagation: downstream nodes marked as FAILED when upstream fails
-- Cycle detection via DFS
-- Use case: 3 research agents in parallel -> analysis -> report
+- 基于依赖的调度，自动并行化
+- 就绪节点（所有依赖已满足）通过Promise.allSettled并行运行
+- 条件评估：跳过条件不满足的节点
+- 失败传播：上游失败时下游节点标记为FAILED
+- 通过DFS进行环检测
+- 用例：3个研究Agent并行 -> 分析 -> 报告
 
-**Graph (DAG) Mode Detail:**
+**Graph（DAG）模式详情：**
 
 ```
 Input: {
@@ -764,7 +764,7 @@ Execution:
   Round 4: optional-review runs only if analyze output contains "legal"
 ```
 
-**Condition Evaluation:**
+**条件评估：**
 
 ```typescript
 type Condition = {
@@ -783,7 +783,7 @@ function evaluateCondition(condition: Condition, nodeOutputs: Map<string, any>):
 }
 ```
 
-**Cycle Detection (DFS):**
+**环检测（DFS）：**
 
 ```typescript
 function detectCycle(nodes: DAGNode[]): string[] | null {
@@ -820,13 +820,13 @@ function detectCycle(nodes: DAGNode[]): string[] | null {
 }
 ```
 
-**Council Mode:**
+**Council（议会）模式：**
 
-- Round 1: All members analyze from their specific perspective (parallel)
-- Round 2 (optional cross-review): Each member reviews others' positions and refines
-- Use case: Legal perspective + Financial perspective + Evidence perspective with cross-review
+- 第一轮：所有成员从各自特定视角进行分析（并行）
+- 第二轮（可选交叉评审）：每位成员评审其他成员的观点并优化
+- 用例：法律视角 + 财务视角 + 证据视角，带交叉评审
 
-**Council Mode Detail:**
+**Council模式详情：**
 
 ```
 Input: {
@@ -856,13 +856,13 @@ Round 2 (Cross-Review, if enabled):
 Synthesis: Combined report with all perspectives and cross-references
 ```
 
-**Parallel Mode:**
+**Parallel（并行）模式：**
 
-- Enhanced version of existing Orchestrator.runParallel
-- Coordinator auto-decomposes task, runs sub-tasks in parallel, synthesizes results
-- Use case: Agent discovers 5 documents to read -> spawns 5 parallel research agents
+- 现有Orchestrator.runParallel的增强版本
+- 协调器自动分解任务，并行运行子任务，综合结果
+- 用例：Agent发现5个文档需要阅读 -> 生成5个并行研究Agent
 
-**Parallel Mode Detail:**
+**Parallel模式详情：**
 
 ```
 Input: { goal: "Research all 5 case documents" }
@@ -882,7 +882,7 @@ Synthesis: Combine results into unified research summary
   - Outstanding questions
 ```
 
-### D.3 Agent Team Data Model
+### D.3 Agent团队数据模型
 
 ```typescript
 interface AgentTeam {
@@ -915,7 +915,7 @@ interface AgentTeam {
 }
 ```
 
-**Agent Team SQLite Schema:**
+**Agent团队SQLite Schema：**
 
 ```sql
 CREATE TABLE agent_teams (
@@ -948,19 +948,19 @@ CREATE TABLE agent_team_members (
 CREATE INDEX idx_team_members_team ON agent_team_members(team_id);
 ```
 
-**REST API:**
+**REST API：**
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/agent-teams` | List all teams |
-| GET | `/api/agent-teams/:id` | Get team |
-| POST | `/api/agent-teams` | Create team |
-| PUT | `/api/agent-teams/:id` | Update team |
-| DELETE | `/api/agent-teams/:id` | Delete team |
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| GET | `/api/agent-teams` | 列出所有团队 |
+| GET | `/api/agent-teams/:id` | 获取团队 |
+| POST | `/api/agent-teams` | 创建团队 |
+| PUT | `/api/agent-teams/:id` | 更新团队 |
+| DELETE | `/api/agent-teams/:id` | 删除团队 |
 
-### D.4 workflow_run Tool
+### D.4 workflow_run 工具
 
-A new tool registered in ToolRegistry that allows any Agent to create and run multi-agent workflows:
+一个注册在ToolRegistry中的新工具，允许任何Agent创建和运行多Agent工作流：
 
 ```typescript
 {
@@ -981,27 +981,27 @@ A new tool registered in ToolRegistry that allows any Agent to create and run mu
 }
 ```
 
-**Agent invocation flow:**
+**Agent调用流程：**
 
-1. Agent decides task is complex -> calls workflow_run
-2. WorkflowEngine creates sub-agents via SubAgentManager
-3. Each sub-agent runs via existing AgentRunner.run()
-4. WebSocket events stream to frontend: workflow_agent_start, workflow_agent_tool_call, workflow_agent_tool_result, workflow_agent_chunk, workflow_agent_complete
-5. Results aggregated and returned to calling Agent
+1. Agent判断任务复杂 -> 调用workflow_run
+2. WorkflowEngine通过SubAgentManager创建子Agent
+3. 每个子Agent通过现有AgentRunner.run()运行
+4. WebSocket事件流式传输到前端：workflow_agent_start、workflow_agent_tool_call、workflow_agent_tool_result、workflow_agent_chunk、workflow_agent_complete
+5. 结果聚合后返回给调用Agent
 
-**WebSocket Event Types:**
+**WebSocket事件类型：**
 
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `workflow_start` | `{ workflowId, teamName, mode, agentCount }` | Workflow begins |
-| `workflow_agent_start` | `{ workflowId, agentId, role, task }` | Sub-agent starts |
-| `workflow_agent_tool_call` | `{ workflowId, agentId, tool, args }` | Sub-agent calls tool |
-| `workflow_agent_tool_result` | `{ workflowId, agentId, tool, result }` | Tool returns result |
-| `workflow_agent_chunk` | `{ workflowId, agentId, chunk }` | Streaming text from sub-agent |
-| `workflow_agent_complete` | `{ workflowId, agentId, status, duration }` | Sub-agent finishes |
-| `workflow_complete` | `{ workflowId, status, totalDuration, resultCount }` | Workflow finishes |
+| 事件 | 载荷 | 描述 |
+|------|------|------|
+| `workflow_start` | `{ workflowId, teamName, mode, agentCount }` | 工作流开始 |
+| `workflow_agent_start` | `{ workflowId, agentId, role, task }` | 子Agent启动 |
+| `workflow_agent_tool_call` | `{ workflowId, agentId, tool, args }` | 子Agent调用工具 |
+| `workflow_agent_tool_result` | `{ workflowId, agentId, tool, result }` | 工具返回结果 |
+| `workflow_agent_chunk` | `{ workflowId, agentId, chunk }` | 子Agent的流式文本 |
+| `workflow_agent_complete` | `{ workflowId, agentId, status, duration }` | 子Agent完成 |
+| `workflow_complete` | `{ workflowId, status, totalDuration, resultCount }` | 工作流完成 |
 
-**workflow_run Tool Implementation Approach:**
+**workflow_run工具实现方案：**
 
 ```typescript
 // src/services/agent/tools/workflow-run.ts
@@ -1038,24 +1038,24 @@ async function executeWorkflowRun(input: WorkflowRunInput, context: AgentContext
 }
 ```
 
-### D.5 Frontend Real-Time Visualization
+### D.5 前端实时可视化
 
-**SubAgentPanel Component:**
+**SubAgentPanel组件：**
 
-- Shows when a workflow is running
-- Grid of Agent cards, each showing:
-  - Status dot (color-coded, pulsing animation for running)
-  - Agent role and task description
-  - Tool call count badge
-  - Status label: queued / running / waiting / completed / error
-  - Duration display
-  - Progress bar (animated)
-  - Scrollable message area with:
-    - Tool call cards (collapsible, shows arguments and result)
-    - Streaming assistant text
-    - System messages
+- 在工作流运行时显示
+- Agent卡片网格，每个卡片显示：
+  - 状态点（颜色编码，运行时有脉冲动画）
+  - Agent角色和任务描述
+  - 工具调用次数徽章
+  - 状态标签：queued / running / waiting / completed / error
+  - 持续时间显示
+  - 进度条（动画）
+  - 可滚动的消息区域，包含：
+    - 工具调用卡片（可折叠，显示参数和结果）
+    - 流式助手文本
+    - 系统消息
 
-**SubAgentPanel Layout:**
+**SubAgentPanel布局：**
 
 ```
 +----------------------------------------------------------+
@@ -1086,17 +1086,17 @@ async function executeWorkflowRun(input: WorkflowRunInput, context: AgentContext
 +----------------------------------------------------------+
 ```
 
-**Status Colors:**
+**状态颜色：**
 
-| Status | Dot Color | Animation |
-|--------|-----------|-----------|
-| Queued | Gray | None |
-| Running | Green | Pulsing |
-| Waiting | Yellow | Slow pulse |
-| Completed | Blue | None |
-| Error | Red | None |
+| 状态 | 点颜色 | 动画 |
+|------|--------|------|
+| Queued | 灰色 | 无 |
+| Running | 绿色 | 脉冲 |
+| Waiting | 黄色 | 慢脉冲 |
+| Completed | 蓝色 | 无 |
+| Error | 红色 | 无 |
 
-**SubAgentSlot (Individual Agent Card) Props:**
+**SubAgentSlot（单个Agent卡片）Props：**
 
 ```typescript
 interface SubAgentSlotProps {
@@ -1115,13 +1115,13 @@ interface SubAgentSlotProps {
 }
 ```
 
-**TeamManager Component:**
+**TeamManager组件：**
 
-- List of teams as cards with mode badges
-- CRUD operations: create, edit, delete, toggle active
-- Template presets for common patterns
+- 团队列表以卡片形式展示，带模式徽章
+- CRUD操作：创建、编辑、删除、切换启用
+- 常见模式的模板预设
 
-**TeamManager Layout:**
+**TeamManager布局：**
 
 ```
 +----------------------------------------------------------+
@@ -1145,23 +1145,23 @@ interface SubAgentSlotProps {
 +----------------------------------------------------------+
 ```
 
-**Team Preset Templates:**
+**团队预设模板：**
 
-| Template | Mode | Agents | Use Case |
-|----------|------|--------|----------|
-| Research Pipeline | Pipeline | Research + Organize + Report | General document research |
-| Multi-Perspective | Council | 3 perspective agents | Balanced analysis |
-| Parallel Research | Parallel | N research agents | Fast document scanning |
-| Full Analysis | Graph | 3 research + analysis + report | Complex case analysis |
+| 模板 | 模式 | Agent | 用例 |
+|------|------|-------|------|
+| 研究管道 | Pipeline | Research + Organize + Report | 通用文档研究 |
+| 多视角分析 | Council | 3个视角Agent | 平衡分析 |
+| 并行研究 | Parallel | N个研究Agent | 快速文档扫描 |
+| 全面分析 | Graph | 3个研究 + 分析 + 报告 | 复杂案件分析 |
 
-**TeamEditor Component:**
+**TeamEditor组件：**
 
-- Modal for creating/editing teams
-- Mode selection dropdown
-- Per-member configuration: ID, role, task, dependencies, tools
-- Visual dependency preview
+- 创建/编辑团队的弹窗
+- 模式选择下拉菜单
+- 每个成员的配置：ID、角色、任务、依赖、工具
+- 可视化依赖预览
 
-**TeamEditor Layout:**
+**TeamEditor布局：**
 
 ```
 +----------------------------------------------------------+
@@ -1197,7 +1197,7 @@ interface SubAgentSlotProps {
 +----------------------------------------------------------+
 ```
 
-**WorkflowStore (Zustand):**
+**WorkflowStore（Zustand）：**
 
 ```typescript
 interface WorkflowState {
@@ -1233,54 +1233,54 @@ interface WorkflowState {
 }
 ```
 
-**Files to create:**
+**需要创建的文件：**
 
-- Create `src/services/agent/workflow-engine.ts` -- WorkflowEngine with 4 modes
-- Create `src/services/agent/agent-team-manager.ts` -- Team CRUD + persistence
-- Create `src/store/agent-teams.ts` -- SQLite persistence for teams
-- Create `src/server/routes/agent-teams.ts` -- REST API routes
-- Create `frontend/src/components/teams/SubAgentPanel.tsx` -- live workflow display
-- Create `frontend/src/components/teams/SubAgentSlot.tsx` -- individual agent card
-- Create `frontend/src/components/teams/TeamManager.tsx` -- team CRUD UI
-- Create `frontend/src/components/teams/TeamEditor.tsx` -- team creation/editing
-- Create `frontend/src/store/workflow.ts` -- Zustand store for workflow state
-- Create `frontend/src/api/agentTeams.ts` -- API client for teams
+- 创建 `src/services/agent/workflow-engine.ts` -- 支持4种模式的WorkflowEngine
+- 创建 `src/services/agent/agent-team-manager.ts` -- 团队CRUD + 持久化
+- 创建 `src/store/agent-teams.ts` -- 团队的SQLite持久化
+- 创建 `src/server/routes/agent-teams.ts` -- REST API路由
+- 创建 `frontend/src/components/teams/SubAgentPanel.tsx` -- 实时工作流展示
+- 创建 `frontend/src/components/teams/SubAgentSlot.tsx` -- 单个Agent卡片
+- 创建 `frontend/src/components/teams/TeamManager.tsx` -- 团队CRUD UI
+- 创建 `frontend/src/components/teams/TeamEditor.tsx` -- 团队创建/编辑
+- 创建 `frontend/src/store/workflow.ts` -- 工作流状态的Zustand store
+- 创建 `frontend/src/api/agentTeams.ts` -- 团队的API客户端
 
-**Files to modify:**
+**需要修改的文件：**
 
-- Modify `src/services/agent/tool-setup.ts` -- register workflow_run tool
-- Modify `src/services/agent/agent-system.ts` -- initialize WorkflowEngine and AgentTeamManager
-- Modify `src/server/app.ts` -- mount agent-teams routes
-- Modify `src/ws/handler.ts` -- handle workflow_* WebSocket events
-- Modify `frontend/src/store/chat.ts` -- integrate workflow events
-- Modify `frontend/src/components/ChatWindow.tsx` -- show SubAgentPanel when workflow active
-- Modify `src/services/plugins/plugin-manager.ts` -- support team scheduling strategies from plugins
-- Extend `SkillDefinition` type -- add optional `scheduling` field for multi-agent suggestions
+- 修改 `src/services/agent/tool-setup.ts` -- 注册workflow_run工具
+- 修改 `src/services/agent/agent-system.ts` -- 初始化WorkflowEngine和AgentTeamManager
+- 修改 `src/server/app.ts` -- 挂载agent-teams路由
+- 修改 `src/ws/handler.ts` -- 处理workflow_* WebSocket事件
+- 修改 `frontend/src/store/chat.ts` -- 集成工作流事件
+- 修改 `frontend/src/components/ChatWindow.tsx` -- 工作流激活时显示SubAgentPanel
+- 修改 `src/services/plugins/plugin-manager.ts` -- 支持来自插件的团队调度策略
+- 扩展 `SkillDefinition` 类型 -- 添加可选的 `scheduling` 字段用于多Agent建议
 
-### D.6 Integration with Existing System
+### D.6 与现有系统集成
 
-**What is preserved (no changes):**
+**保留不变的内容（不做修改）：**
 
-- AgentRunner.run() -- core execution loop unchanged
-- ToolRegistry -- all existing tools preserved
-- Orchestrator.runSingle/runParallel/runCoordinated -- kept as alternative dispatch paths
-- PluginManager -- extended but backward compatible
-- Session memory, compaction, auto-dream -- all preserved
+- AgentRunner.run() -- 核心执行循环不变
+- ToolRegistry -- 所有现有工具保留
+- Orchestrator.runSingle/runParallel/runCoordinated -- 作为替代调度路径保留
+- PluginManager -- 扩展但向后兼容
+- 会话记忆、压缩、自动dream -- 全部保留
 
-**What is new:**
+**新增内容：**
 
-- WorkflowEngine sits between Orchestrator and AgentRunner as a new scheduling layer
-- workflow_run tool gives Agents the ability to self-organize
-- AgentTeamManager provides persistent team templates
-- Frontend components provide real-time visibility
+- WorkflowEngine位于Orchestrator和AgentRunner之间，作为新的调度层
+- workflow_run工具赋予Agent自我组织的能力
+- AgentTeamManager提供持久的团队模板
+- 前端组件提供实时可视化
 
-**Call chain:**
+**调用链：**
 
 ```
 User/Skill/Agent -> workflow_run tool -> WorkflowEngine -> SubAgentManager -> AgentRunner.run()
 ```
 
-**Detailed Call Chain:**
+**详细调用链：**
 
 ```
 1. User types "@case-analysis-team Analyze the case"
@@ -1315,51 +1315,51 @@ User/Skill/Agent -> workflow_run tool -> WorkflowEngine -> SubAgentManager -> Ag
    - Calling Agent continues with workflow results
 ```
 
-**Event chain:**
+**事件链：**
 
 ```
 AgentRunner -> onEvent callback -> WebSocket -> Frontend WorkflowStore -> SubAgentPanel update
 ```
 
-**Backward Compatibility Notes:**
+**向后兼容性说明：**
 
-- All existing single-agent workflows continue to work without any changes
-- Orchestrator methods remain available for code that uses them directly
-- Plugin APIs are extended (not replaced) -- existing plugins work unchanged
-- The workflow_run tool is optional -- Agents that don't need multi-agent never use it
-- Frontend gracefully handles absence of workflow events (SubAgentPanel only shows when active)
-
----
-
-## Implementation Priority
-
-| Priority | Module | Rationale |
-|----------|--------|-----------|
-| P0 | Module A (Upload + Persistence) | Foundation: upload and state are prerequisites |
-| P1 | Module B (Unified Search) | Core interaction: search is the primary knowledge discovery tool |
-| P2 | Module C (Report + Chat) | Depends on B: references need search for source preview |
-| P3 | Module D (Multi-Agent) | Most complex: requires stable foundation from A+B+C |
-
-**Estimated Effort by Module:**
-
-| Module | New Files | Modified Files | Estimated Effort |
-|--------|-----------|----------------|------------------|
-| A (Upload + Persistence) | 1 | 5 | 3-4 days |
-| B (Unified Search) | 4 | 4 | 4-5 days |
-| C (Report + Chat) | 5 | 3 | 3-4 days |
-| D (Multi-Agent) | 10 | 7 | 7-10 days |
-| **Total** | **21** | **17** | **17-23 days** |
+- 所有现有的单Agent工作流无需任何修改即可继续工作
+- Orchestrator方法对于直接使用它们的代码仍然可用
+- 插件API是扩展的（而非替换）-- 现有插件无需修改即可工作
+- workflow_run工具是可选的 -- 不需要多Agent的Agent永远不会使用它
+- 前端优雅地处理工作流事件的缺失（SubAgentPanel仅在激活时显示）
 
 ---
 
-## Cross-Module Dependencies
+## 实现优先级
 
-- Module C's reference preview depends on Module B's search API
-- Module D's workflow_run can use all existing tools including those from B (kb_search, wiki_browse, expand)
-- Module A's URL routing affects how all views are accessed
-- Module B's LevelSwitcher is used in both search results and Wiki browsing (Module A's Knowledge panel)
+| 优先级 | 模块 | 理由 |
+|--------|------|------|
+| P0 | 模块A（上传 + 持久化） | 基础：上传和状态是前提条件 |
+| P1 | 模块B（统一搜索） | 核心交互：搜索是主要的知识发现工具 |
+| P2 | 模块C（报告 + 聊天） | 依赖B：引用需要搜索来预览来源 |
+| P3 | 模块D（多Agent） | 最复杂：需要A+B+C的稳定基础 |
 
-**Dependency Graph:**
+**各模块预估工作量：**
+
+| 模块 | 新文件 | 修改文件 | 预估工作量 |
+|------|--------|----------|------------|
+| A（上传 + 持久化） | 1 | 5 | 3-4天 |
+| B（统一搜索） | 4 | 4 | 4-5天 |
+| C（报告 + 聊天） | 5 | 3 | 3-4天 |
+| D（多Agent） | 10 | 7 | 7-10天 |
+| **合计** | **21** | **17** | **17-23天** |
+
+---
+
+## 跨模块依赖
+
+- 模块C的引用预览依赖模块B的搜索API
+- 模块D的workflow_run可以使用所有现有工具，包括B的工具（kb_search、wiki_browse、expand）
+- 模块A的URL路由影响所有视图的访问方式
+- 模块B的LevelSwitcher在搜索结果和Wiki浏览（模块A的知识面板）中均有使用
+
+**依赖图：**
 
 ```
 Module A (Upload + Persistence)
@@ -1377,52 +1377,52 @@ Module C (Report + Chat)    Module D (Multi-Agent)
 
 ---
 
-## Complete File Manifest
+## 完整文件清单
 
-### New Files to Create (21 files)
+### 需要创建的新文件（21个文件）
 
-| # | File Path | Module | Purpose |
-|---|-----------|--------|---------|
-| 1 | `frontend/src/router.tsx` | A | URL routing with react-router |
-| 2 | `src/server/routes/search.ts` | B | Unified search endpoint |
-| 3 | `frontend/src/components/search/UnifiedSearch.tsx` | B | Search UI with level tabs |
-| 4 | `frontend/src/components/search/SearchResultCard.tsx` | B | Individual result card |
-| 5 | `frontend/src/components/search/PreviewCard.tsx` | B | Hover preview component |
-| 6 | `frontend/src/components/search/LevelSwitcher.tsx` | B | Reusable level switching component |
-| 7 | `frontend/src/components/chat/ReportCard.tsx` | C | Embedded report component |
-| 8 | `frontend/src/components/chat/ReferenceMarker.tsx` | C | [n] marker with hover |
-| 9 | `frontend/src/components/chat/EntityLink.tsx` | C | Entity link with hover |
-| 10 | `src/services/report/cleaner.ts` | C | De-noising pipeline |
-| 11 | `src/store/reports.ts` | C | Report persistence (SQLite) |
-| 12 | `src/services/agent/workflow-engine.ts` | D | WorkflowEngine with 4 modes |
-| 13 | `src/services/agent/agent-team-manager.ts` | D | Team CRUD + persistence |
-| 14 | `src/store/agent-teams.ts` | D | SQLite persistence for teams |
-| 15 | `src/server/routes/agent-teams.ts` | D | REST API routes |
-| 16 | `frontend/src/components/teams/SubAgentPanel.tsx` | D | Live workflow display |
-| 17 | `frontend/src/components/teams/SubAgentSlot.tsx` | D | Individual agent card |
-| 18 | `frontend/src/components/teams/TeamManager.tsx` | D | Team CRUD UI |
-| 19 | `frontend/src/components/teams/TeamEditor.tsx` | D | Team creation/editing |
-| 20 | `frontend/src/store/workflow.ts` | D | Zustand store for workflow state |
-| 21 | `frontend/src/api/agentTeams.ts` | D | API client for teams |
+| # | 文件路径 | 模块 | 用途 |
+|---|----------|------|------|
+| 1 | `frontend/src/router.tsx` | A | 使用react-router的URL路由 |
+| 2 | `src/server/routes/search.ts` | B | 统一搜索端点 |
+| 3 | `frontend/src/components/search/UnifiedSearch.tsx` | B | 带层级标签的搜索UI |
+| 4 | `frontend/src/components/search/SearchResultCard.tsx` | B | 单个结果卡片 |
+| 5 | `frontend/src/components/search/PreviewCard.tsx` | B | 悬停预览组件 |
+| 6 | `frontend/src/components/search/LevelSwitcher.tsx` | B | 可复用的层级切换组件 |
+| 7 | `frontend/src/components/chat/ReportCard.tsx` | C | 嵌入式报告组件 |
+| 8 | `frontend/src/components/chat/ReferenceMarker.tsx` | C | 带悬停的[n]标记 |
+| 9 | `frontend/src/components/chat/EntityLink.tsx` | C | 带悬停的实体链接 |
+| 10 | `src/services/report/cleaner.ts` | C | 去噪管道 |
+| 11 | `src/store/reports.ts` | C | 报告持久化（SQLite） |
+| 12 | `src/services/agent/workflow-engine.ts` | D | 支持4种模式的WorkflowEngine |
+| 13 | `src/services/agent/agent-team-manager.ts` | D | 团队CRUD + 持久化 |
+| 14 | `src/store/agent-teams.ts` | D | 团队的SQLite持久化 |
+| 15 | `src/server/routes/agent-teams.ts` | D | REST API路由 |
+| 16 | `frontend/src/components/teams/SubAgentPanel.tsx` | D | 实时工作流展示 |
+| 17 | `frontend/src/components/teams/SubAgentSlot.tsx` | D | 单个Agent卡片 |
+| 18 | `frontend/src/components/teams/TeamManager.tsx` | D | 团队CRUD UI |
+| 19 | `frontend/src/components/teams/TeamEditor.tsx` | D | 团队创建/编辑 |
+| 20 | `frontend/src/store/workflow.ts` | D | 工作流状态的Zustand store |
+| 21 | `frontend/src/api/agentTeams.ts` | D | 团队的API客户端 |
 
-### Existing Files to Modify (17 files)
+### 需要修改的现有文件（17个文件）
 
-| # | File Path | Module | Change |
-|---|-----------|--------|--------|
-| 1 | `frontend/src/components/knowledge/KnowledgePanel.tsx` | A, B | Non-blocking upload, batch ops, unified layout, LevelSwitcher |
-| 2 | `frontend/src/api/client.ts` | A | Upload with timeout and retry |
-| 3 | `src/server/routes/knowledge.ts` | A, B | Upload acknowledgment, level parameter |
-| 4 | `frontend/src/App.tsx` | A | Integrate router |
-| 5 | `frontend/src/store/ui.ts` | A | Sync state to localStorage and URL |
-| 6 | `frontend/src/store/chat.ts` | A, D | Persist session ID, integrate workflow events |
-| 7 | `src/wiki/retriever.ts` | B | Multi-level search with keyword highlighting |
-| 8 | `frontend/src/components/ChatWindow.tsx` | C, D | Render ReportCard, show SubAgentPanel |
-| 9 | `src/server/routes/chat.ts` | C | Return report data inline with chat messages |
-| 10 | `src/services/agent/tools/report-generate.ts` | C | Produce clean output with reference markers |
-| 11 | `src/server/routes/reports.ts` | C | CRUD API for reports |
-| 12 | `src/services/agent/tool-setup.ts` | D | Register workflow_run tool |
-| 13 | `src/services/agent/agent-system.ts` | D | Initialize WorkflowEngine and AgentTeamManager |
-| 14 | `src/server/app.ts` | D | Mount agent-teams routes |
-| 15 | `src/ws/handler.ts` | D | Handle workflow_* WebSocket events |
-| 16 | `src/services/plugins/plugin-manager.ts` | D | Support team scheduling strategies from plugins |
-| 17 | `src/services/plugins/types.ts` | D | Extend SkillDefinition with optional `scheduling` field |
+| # | 文件路径 | 模块 | 变更 |
+|---|----------|------|------|
+| 1 | `frontend/src/components/knowledge/KnowledgePanel.tsx` | A, B | 非阻塞上传、批量操作、统一布局、LevelSwitcher |
+| 2 | `frontend/src/api/client.ts` | A | 带超时和重试的上传 |
+| 3 | `src/server/routes/knowledge.ts` | A, B | 上传确认、层级参数 |
+| 4 | `frontend/src/App.tsx` | A | 集成路由器 |
+| 5 | `frontend/src/store/ui.ts` | A | 同步状态到localStorage和URL |
+| 6 | `frontend/src/store/chat.ts` | A, D | 持久化会话ID、集成工作流事件 |
+| 7 | `src/wiki/retriever.ts` | B | 带关键词高亮的多层级搜索 |
+| 8 | `frontend/src/components/ChatWindow.tsx` | C, D | 渲染ReportCard、显示SubAgentPanel |
+| 9 | `src/server/routes/chat.ts` | C | 内联返回报告数据与聊天消息 |
+| 10 | `src/services/agent/tools/report-generate.ts` | C | 生成带引用标记的干净输出 |
+| 11 | `src/server/routes/reports.ts` | C | 报告的CRUD API |
+| 12 | `src/services/agent/tool-setup.ts` | D | 注册workflow_run工具 |
+| 13 | `src/services/agent/agent-system.ts` | D | 初始化WorkflowEngine和AgentTeamManager |
+| 14 | `src/server/app.ts` | D | 挂载agent-teams路由 |
+| 15 | `src/ws/handler.ts` | D | 处理workflow_* WebSocket事件 |
+| 16 | `src/services/plugins/plugin-manager.ts` | D | 支持来自插件的团队调度策略 |
+| 17 | `src/services/plugins/types.ts` | D | 扩展SkillDefinition，添加可选的 `scheduling` 字段 |

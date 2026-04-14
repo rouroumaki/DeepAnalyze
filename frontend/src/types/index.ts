@@ -11,6 +11,30 @@ export interface SessionInfo {
   updatedAt?: string;
 }
 
+export interface ChatReportData {
+  id: string;
+  title: string;
+  content: string;
+  summary?: string;
+  references?: ChatReference[];
+  entities?: ChatEntity[];
+  createdAt: string;
+}
+
+export interface ChatReference {
+  index: number;
+  sourceDocId: string;
+  sourceTitle: string;
+  level?: string;
+  snippet?: string;
+}
+
+export interface ChatEntity {
+  name: string;
+  type: string;
+  occurrenceCount: number;
+}
+
 export interface MessageInfo {
   id: string;
   role: "user" | "assistant" | "system";
@@ -18,6 +42,7 @@ export interface MessageInfo {
   createdAt: string;
   toolCalls?: ToolCallInfo[];
   isStreaming?: boolean;
+  report?: ChatReportData;
 }
 
 export interface ToolCallInfo {

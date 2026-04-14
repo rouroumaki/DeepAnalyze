@@ -1,6 +1,7 @@
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { ToolCallCard } from "./ToolCallCard";
 import { TraceabilityLink } from "./TraceabilityLink";
+import { ReportCard } from "./ReportCard";
 import { FilePreview } from "../ui/FilePreview";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore } from "../../store/ui";
@@ -115,8 +116,10 @@ export function MessageItem({ message }: MessageItemProps) {
               </div>
             )}
 
-            {/* Message content */}
-            {message.content && (
+            {/* Message content — report or normal markdown */}
+            {message.report ? (
+              <ReportCard report={message.report} agentSummary={message.report.summary} />
+            ) : message.content ? (
               <div
                 style={{
                   background: "var(--surface-primary)",
@@ -149,7 +152,7 @@ export function MessageItem({ message }: MessageItemProps) {
                   <TraceabilityExtractor content={message.content} />
                 )}
               </div>
-            )}
+            ) : null}
 
             {/* Streaming placeholder */}
             {!message.content && message.isStreaming && (

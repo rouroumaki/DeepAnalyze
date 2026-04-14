@@ -596,12 +596,13 @@ knowledgeRoutes.post("/kbs/:kbId/trigger-processing", async (c) => {
 
 knowledgeRoutes.get("/:kbId/search", async (c) => {
   const kbId = c.req.param("kbId");
-  const query = c.req.query("query") || c.req.query("q") || "";
+  // Accept both "query" and "q" parameter names for flexibility
+  const query = decodeURIComponent(c.req.query("query") || c.req.query("q") || "");
   const topK = parseInt(c.req.query("topK") || "10", 10);
   const docIdsParam = c.req.query("docIds");
 
-  if (!query) {
-    return c.json({ error: "query parameter is required" }, 400);
+  if (!query.trim()) {
+    return c.json({ error: "query parameter is required (use ?query=... or ?q=...)" }, 400);
   }
 
   // Build docId filter set if provided

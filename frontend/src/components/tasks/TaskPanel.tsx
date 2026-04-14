@@ -264,6 +264,7 @@ export function TaskPanel() {
                       {task.status === "running"
                         ? <Loader2 size={14} style={{ color: "var(--interactive)", animation: "spin 1s linear infinite" }} />
                         : <Clock size={14} style={{ color: "var(--text-tertiary)" }} />
+                      }
                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {task.agentType || task.id}
                       </span>

@@ -4,6 +4,12 @@
 
 import { DB } from "./store/database.ts";
 import { createApp } from "./server/app.ts";
+import {
+  handleOpen,
+  handleMessage,
+  handleClose,
+  type WsServerMessage,
+} from "./server/ws.ts";
 
 // ---------------------------------------------------------------------------
 // Database initialization
@@ -39,10 +45,23 @@ process.on("SIGTERM", shutdown);
 if (typeof Bun !== "undefined") {
   Bun.serve({
     port,
-    fetch: app.fetch,
+    fetch(req, server) {
+      // Upgrade WebSocket connections for /ws path
+      const url = new URL(req.url);
+      if (url.pathname === "/ws" && server.upgrade(req)) {
+        return;
+      }
+      return app.fetch(req, server);
+    },
+    websocket: {
+      open(ws) { handleOpen(ws as unknown as WebSocket); },
+      message(ws, message) { handleMessage(ws as unknown as WebSocket, message as string); },
+      close(ws) { handleClose(ws as unknown as WebSocket); },
+    },
     idleTimeout: 0,  // Disable idle timeout for SSE streaming
   });
   console.log(`DeepAnalyze server running on http://localhost:${port}`);
+  console.log("[WS] WebSocket endpoint available at ws://localhost:${port}/ws");
   console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
 } else {
   // Node.js runtime (fallback)
@@ -56,7 +75,23 @@ if (typeof Bun !== "undefined") {
     server.headersTimeout = 0;      // Disable headers timeout (Node 18.0+)
     server.keepAliveTimeout = 0;    // Disable keep-alive timeout
 
+    // WebSocket upgrade handler for Node.js using the 'ws' library
+    server.on("upgrade", (req, socket, head) => {
+      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      if (url.pathname === "/ws") {
+        import("ws").then(({ WebSocketServer }) => {
+          const wss = new WebSocketServer({ noServer: true });
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            handleOpen(ws);
+            ws.on("message", (data) => { handleMessage(ws, data as Buffer); });
+            ws.on("close", () => { handleClose(ws); });
+          });
+        });
+      }
+    });
+
     console.log(`DeepAnalyze server running on http://localhost:${port}`);
+    console.log("[WS] WebSocket endpoint available at ws://localhost:${port}/ws");
     console.log("[AgentSystem] Agent routes will initialize on first request to /api/agents/*");
   });
 }

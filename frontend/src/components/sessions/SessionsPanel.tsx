@@ -143,7 +143,7 @@ function SessionsPanelInner() {
             }}
           />
         </div>
-        <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />} onClick={loadSessions}>
+        <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />} onClick={() => loadSessions()}>
           刷新
         </Button>
         <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={handleNewChat}>

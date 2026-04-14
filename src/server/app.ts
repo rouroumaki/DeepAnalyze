@@ -15,12 +15,17 @@ import { createReportRoutes } from "./routes/reports.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSearchRoutes } from "./routes/search.js";
+import { migrateReports } from "../store/reports.js";
+import { DB } from "../store/database.js";
 
 // Frontend static files directory (built by `npm run build` in frontend/)
 const FRONTEND_DIST = resolve(import.meta.dirname ?? __dirname, "../../frontend/dist");
 
 export function createApp(): Hono {
   const app = new Hono();
+
+  // Run report schema migration (safe to call multiple times)
+  migrateReports(DB.getInstance().raw);
 
   // Global error handler (must be registered before routes)
   app.onError(errorHandler);

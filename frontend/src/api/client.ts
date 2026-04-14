@@ -497,3 +497,92 @@ export const api = {
   // --- Health ---
   health: () => request<{ status: string; version: string }>("/api/health"),
 };
+
+// =============================================================================
+// Upload with Retry & Timeout
+// =============================================================================
+
+export interface UploadResult {
+  docId: string;
+  kbId: string;
+  filename: string;
+  status: string;
+}
+
+export async function uploadDocumentWithRetry(
+  kbId: string,
+  file: File,
+  opts: {
+    onProgress?: (percent: number) => void;
+    signal?: AbortSignal;
+  } = {}
+): Promise<UploadResult> {
+  const MAX_ATTEMPTS = 3;
+  const TIMEOUT_MS = 30_000;
+  let attempt = 0;
+
+  while (attempt < MAX_ATTEMPTS) {
+    attempt++;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    if (opts.signal?.aborted) {
+      throw new DOMException("Upload cancelled", "AbortError");
+    }
+    opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+
+    try {
+      return await new Promise<UploadResult>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `/api/knowledge/${kbId}/documents`);
+        xhr.responseType = "json";
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 40);
+            opts.onProgress?.(pct);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr.response as UploadResult);
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.ontimeout = () => reject(new Error("Upload timed out"));
+
+        const formData = new FormData();
+        formData.append("file", file);
+        xhr.send(formData);
+
+        controller.signal.addEventListener("abort", () => {
+          xhr.abort();
+          reject(new DOMException("Upload cancelled", "AbortError"));
+        }, { once: true });
+      });
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (attempt >= MAX_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw new Error("Unreachable");
+}
+
+/** Poll document status (fallback when WebSocket is disconnected) */
+export async function fetchDocumentStatus(
+  kbId: string,
+  docId: string
+): Promise<{ stage: string; progress: number; error?: string }> {
+  const res = await fetch(`/api/knowledge/${kbId}/documents/${docId}/status`);
+  if (!res.ok) throw new Error(`Failed to fetch status: ${res.status}`);
+  return res.json();
+}

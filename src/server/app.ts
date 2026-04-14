@@ -14,6 +14,7 @@ import { chatRoutes } from "./routes/chat.js";
 import { createReportRoutes } from "./routes/reports.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { createSettingsRoutes } from "./routes/settings.js";
+import { createSearchRoutes } from "./routes/search.js";
 
 // Frontend static files directory (built by `npm run build` in frontend/)
 const FRONTEND_DIST = resolve(import.meta.dirname ?? __dirname, "../../frontend/dist");
@@ -39,6 +40,70 @@ export function createApp(): Hono {
   app.route("/api/reports", createReportRoutes());
   app.route("/api/knowledge", knowledgeRoutes);
   app.route("/api/settings", createSettingsRoutes());
+
+  // -----------------------------------------------------------------------
+  // Search routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
+  let searchRoutes: Hono | null = null;
+
+  app.use("/api/search/*", async (c, next) => {
+    if (!searchRoutes) {
+      try {
+        console.log("[SearchSystem] Initializing search routes...");
+        const { getRetriever } = await import("../services/agent/agent-system.js");
+        searchRoutes = createSearchRoutes(async () => getRetriever());
+        console.log("[SearchSystem] Search routes ready.");
+      } catch (err) {
+        console.error("[SearchSystem] Initialization failed:", err);
+      }
+    }
+    await next();
+  });
+
+  // Search root — endpoint discovery
+  app.get("/api/search", async (c) => {
+    if (!searchRoutes) {
+      return c.json({
+        status: "initializing",
+        message: "Unified Search API",
+        hint: "Routes are being initialized. Try again in a moment.",
+      });
+    }
+    const url = new URL(c.req.url);
+    url.pathname = "/";
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+    });
+    return searchRoutes.fetch(newRequest);
+  });
+
+  // Search sub-routes
+  app.all("/api/search/*", async (c) => {
+    if (!searchRoutes) {
+      return c.json({ error: "Search system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/search", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return searchRoutes.fetch(newRequest);
+  });
 
   // -----------------------------------------------------------------------
   // Agent routes — lazily initialized via middleware

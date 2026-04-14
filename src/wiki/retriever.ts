@@ -29,6 +29,26 @@ export interface SearchResult {
   source: "vector" | "bm25" | "linked" | "fusion";
 }
 
+/** A search result with hierarchical level annotation. */
+export interface LeveledSearchResult {
+  pageId: string;
+  title: string;
+  snippet: string;
+  highlights: Array<{ text: string; position: number }>;
+  level: "L0" | "L1" | "L2";
+  score: number;
+  kbId: string;
+  docId?: string;
+}
+
+/** An entity discovered in the knowledge base. */
+export interface EntitySearchResult {
+  name: string;
+  type: string;
+  count: number;
+  relatedPages: string[];
+}
+
 /** Options for configuring a search query. */
 export interface SearchOptions {
   /** Knowledge base IDs to search within. */
@@ -519,5 +539,215 @@ export class Retriever {
     if (end < text.length) snippet = snippet + "...";
 
     return snippet;
+  }
+
+  // -----------------------------------------------------------------------
+  // Multi-level search (L0 / L1 / L2)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Search by hierarchical levels:
+   *  - L0 = abstract (quick summary)
+   *  - L1 = overview (structured summary)
+   *  - L2 = fulltext (full content)
+   *
+   * All three levels are searched in parallel. Results include keyword
+   * highlights and are grouped by level.
+   *
+   * @param query   - The search query string
+   * @param kbId    - The knowledge base ID to search within
+   * @param options - Optional overrides for topK per level and entity search toggle
+   */
+  async searchByLevels(
+    query: string,
+    kbId: string,
+    options?: {
+      topK?: number;
+      includeEntities?: boolean;
+      docId?: string;
+    },
+  ): Promise<{
+    L0: LeveledSearchResult[];
+    L1: LeveledSearchResult[];
+    L2: LeveledSearchResult[];
+    entities: EntitySearchResult[];
+  }> {
+    const { topK = 10, includeEntities = false, docId } = options ?? {};
+
+    const keywords = query.split(/\s+/).filter((w) => w.length > 0);
+
+    // Mapping from level to page_type values in the DB
+    const levelMap: Record<string, string[]> = {
+      L0: ["abstract"],
+      L1: ["overview"],
+      L2: ["fulltext"],
+    };
+
+    // Run all three level searches in parallel
+    const [l0Results, l1Results, l2Results, entityResults] = await Promise.all([
+      this.searchLevel(query, kbId, levelMap.L0, "L0", keywords, topK, docId),
+      this.searchLevel(query, kbId, levelMap.L1, "L1", keywords, topK, docId),
+      this.searchLevel(query, kbId, levelMap.L2, "L2", keywords, topK, docId),
+      includeEntities ? this.searchEntities(query, kbId, topK) : Promise.resolve([]),
+    ]);
+
+    return {
+      L0: l0Results,
+      L1: l1Results,
+      L2: l2Results,
+      entities: entityResults,
+    };
+  }
+
+  /**
+   * Search a single level (set of page types) within a KB.
+   */
+  private async searchLevel(
+    query: string,
+    kbId: string,
+    pageTypes: string[],
+    level: "L0" | "L1" | "L2",
+    keywords: string[],
+    topK: number,
+    docId?: string,
+  ): Promise<LeveledSearchResult[]> {
+    // Delegate to the unified search and filter by page type
+    const opts: SearchOptions = {
+      kbIds: [kbId],
+      topK,
+      pageTypes,
+    };
+
+    const raw = await this.search(query, opts);
+
+    // Optionally filter by docId
+    const filtered = docId
+      ? raw.filter((r) => r.docId === docId || !r.docId)
+      : raw;
+
+    return filtered.map((r) => {
+      const highlightedSnippet = this.highlightKeywords(r.snippet, keywords);
+      const highlights = this.extractHighlights(r.snippet, keywords);
+
+      return {
+        pageId: r.pageId,
+        title: r.title,
+        snippet: highlightedSnippet,
+        highlights,
+        level,
+        score: r.score,
+        kbId: r.kbId,
+        docId: r.docId ?? undefined,
+      };
+    });
+  }
+
+  /**
+   * Search entities matching the query within a KB.
+   */
+  private async searchEntities(
+    query: string,
+    kbId: string,
+    topK: number,
+  ): Promise<EntitySearchResult[]> {
+    const db = DB.getInstance().raw;
+    const likePattern = `%${query}%`;
+
+    try {
+      const rows = db
+        .prepare(
+          `SELECT wp.id, wp.title, wp.page_type,
+                  COUNT(DISTINCT wl.source_page_id) as mention_count
+           FROM wiki_pages wp
+           LEFT JOIN wiki_links wl ON wl.target_page_id = wp.id AND wl.link_type = 'entity_ref'
+           WHERE wp.kb_id = ?
+             AND wp.page_type = 'entity'
+             AND wp.title LIKE ?
+           GROUP BY wp.id
+           ORDER BY mention_count DESC
+           LIMIT ?`,
+        )
+        .all(kbId, likePattern, topK) as Array<{
+        id: string;
+        title: string;
+        page_type: string;
+        mention_count: number;
+      }>;
+
+      // Also find related page IDs for each entity
+      return rows.map((row) => {
+        const relatedRows = db
+          .prepare(
+            `SELECT DISTINCT source_page_id
+             FROM wiki_links
+             WHERE target_page_id = ? AND link_type = 'entity_ref'
+             LIMIT 10`,
+          )
+          .all(row.id) as Array<{ source_page_id: string }>;
+
+        // Extract entity type from title (format: "Type: Name")
+        const parts = row.title.split(": ");
+        const type = parts.length > 1 ? parts[0] : "entity";
+        const name = parts.length > 1 ? parts.slice(1).join(": ") : row.title;
+
+        return {
+          name,
+          type,
+          count: row.mention_count,
+          relatedPages: relatedRows.map((r) => r.source_page_id),
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Keyword highlight helpers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Wrap occurrences of keywords in the text with `<mark>` tags.
+   */
+  highlightKeywords(text: string, keywords: string[]): string {
+    if (!text || keywords.length === 0) return text;
+
+    let result = text;
+    for (const kw of keywords) {
+      // Case-insensitive replacement preserving original casing
+      const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`(${escaped})`, "gi");
+      result = result.replace(regex, "<mark>$1</mark>");
+    }
+    return result;
+  }
+
+  /**
+   * Extract highlight positions for each keyword occurrence in the text.
+   */
+  extractHighlights(
+    text: string,
+    keywords: string[],
+  ): Array<{ text: string; position: number }> {
+    if (!text || keywords.length === 0) return [];
+
+    const highlights: Array<{ text: string; position: number }> = [];
+
+    for (const kw of keywords) {
+      const lowerText = text.toLowerCase();
+      const lowerKw = kw.toLowerCase();
+      let pos = lowerText.indexOf(lowerKw);
+      while (pos !== -1) {
+        highlights.push({
+          text: text.substring(pos, pos + kw.length),
+          position: pos,
+        });
+        pos = lowerText.indexOf(lowerKw, pos + 1);
+      }
+    }
+
+    // Sort by position
+    highlights.sort((a, b) => a.position - b.position);
+    return highlights;
   }
 }

@@ -13,6 +13,7 @@
 import type { Orchestrator } from "./orchestrator.js";
 import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 import type { PluginManager } from "../plugins/plugin-manager.js";
+import type { Retriever } from "../../wiki/retriever.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
@@ -22,6 +23,9 @@ let compounderInstance: KnowledgeCompounder | null = null;
 
 /** Singleton plugin manager instance. */
 let pluginManagerInstance: PluginManager | null = null;
+
+/** Singleton retriever instance. */
+let retrieverInstance: Retriever | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -77,6 +81,7 @@ export function resetOrchestrator(): void {
   orchestratorInstance = null;
   compounderInstance = null;
   pluginManagerInstance = null;
+  retrieverInstance = null;
   initPromise = null;
 }
 
@@ -97,6 +102,25 @@ export async function getCompounder(): Promise<KnowledgeCompounder> {
     await getOrchestrator();
   }
   return compounderInstance!;
+}
+
+// ---------------------------------------------------------------------------
+// Retriever
+// ---------------------------------------------------------------------------
+
+/**
+ * Get (or lazily initialize) the singleton Retriever instance.
+ *
+ * The Retriever is initialized alongside the Orchestrator during the first
+ * call to `getOrchestrator()`. If the orchestrator has not been initialized
+ * yet, this will trigger the full initialization pipeline.
+ */
+export async function getRetriever(): Promise<Retriever> {
+  // Ensure the orchestrator (and thus the retriever) is initialized
+  if (!retrieverInstance) {
+    await getOrchestrator();
+  }
+  return retrieverInstance!;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +175,7 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   const linker = new Linker();
   const indexer = new Indexer(embeddingManager);
   const retriever = new Retriever(indexer, linker, embeddingManager);
+  retrieverInstance = retriever;
   const expander = new Expander(DEEPANALYZE_CONFIG.dataDir);
   console.log("[AgentSystem] Wiki subsystem initialized");
 

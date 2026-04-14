@@ -14,6 +14,7 @@ import { WikiBrowser } from "./WikiBrowser";
 import { KnowledgeGraph } from "./KnowledgeGraph";
 import { EntityPage } from "./EntityPage";
 import { DropZone } from "../ui/DropZone";
+import { UnifiedSearch } from "../search/UnifiedSearch";
 import {
   Database,
   Plus,
@@ -42,8 +43,6 @@ interface KnowledgePanelProps {
 }
 
 type TabId = "documents" | "wiki" | "entities" | "graph" | "search" | "settings";
-
-type SearchMode = "semantic" | "exact" | "hybrid";
 
 interface HealthCheckResult {
   name: string;
@@ -118,24 +117,13 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   // --- Data state ---
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<
-    Array<{
-      docId: string;
-      level: string;
-      content: string;
-      score: number;
-    }>
-  >([]);
 
   // --- UI state ---
-  const [isSearching, setIsSearching] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("documents");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKbName, setNewKbName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [navigatingEntity, setNavigatingEntity] = useState<string | null>(null);
-  const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
   const [healthResults, setHealthResults] = useState<HealthCheckResult[]>([]);
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -191,19 +179,6 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   }, [activeTab, kbId]);
 
   // --- Handlers ---
-  const handleSearch = async () => {
-    if (!kbId || !searchQuery.trim()) return;
-    setIsSearching(true);
-    try {
-      const result = await api.searchWiki(kbId, searchQuery, searchMode);
-      setSearchResults(result.results);
-    } catch {
-      toastError("搜索失败");
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
 
   const refreshDocuments = useCallback(async () => {
     if (!kbId) return;
@@ -1312,260 +1287,20 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
           /* Graph Tab */
           <KnowledgeGraph kbId={kbId} />
         ) : activeTab === "search" ? (
-          /* Search Tab */
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-4)",
+          /* Unified Search Tab - replaces legacy search UI */
+          <UnifiedSearch
+            kbId={kbId}
+            onResultClick={(result) => {
+              // Navigate to wiki tab when a search result is clicked
+              if (result.docId) {
+                setActiveTab("wiki");
+              }
             }}
-          >
-            {/* Search mode selector */}
-            <div
-              style={{
-                display: "flex",
-                gap: "var(--space-1)",
-                padding: "2px",
-                backgroundColor: "var(--bg-tertiary)",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid var(--border-primary)",
-              }}
-            >
-              {([
-                { value: "semantic" as SearchMode, label: "语义" },
-                { value: "exact" as SearchMode, label: "精确" },
-                { value: "hybrid" as SearchMode, label: "混合" },
-              ]).map((mode) => (
-                <button
-                  key={mode.value}
-                  onClick={() => setSearchMode(mode.value)}
-                  style={{
-                    flex: 1,
-                    padding: "var(--space-1) var(--space-2)",
-                    fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)",
-                    borderRadius: "var(--radius-sm)",
-                    border: "none",
-                    cursor: "pointer",
-                    transition: "all var(--transition-fast)",
-                    backgroundColor:
-                      searchMode === mode.value ? "var(--interactive)" : "transparent",
-                    color:
-                      searchMode === mode.value ? "#fff" : "var(--text-tertiary)",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (searchMode !== mode.value) {
-                      e.currentTarget.style.color = "var(--text-secondary)";
-                      e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (searchMode !== mode.value) {
-                      e.currentTarget.style.color = "var(--text-tertiary)";
-                      e.currentTarget.style.backgroundColor = "transparent";
-                    }
-                  }}
-                >
-                  {mode.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Search input row */}
-            <div style={{ display: "flex", gap: "var(--space-2)" }}>
-              <div
-                style={{
-                  flex: 1,
-                  position: "relative",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
-                <Search
-                  size={16}
-                  style={{
-                    position: "absolute",
-                    left: "var(--space-3)",
-                    color: "var(--text-tertiary)",
-                    pointerEvents: "none",
-                  }}
-                />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                  placeholder="搜索知识库内容..."
-                  style={{
-                    width: "100%",
-                    padding: "var(--space-2) var(--space-4) var(--space-2) var(--space-10)",
-                    backgroundColor: "var(--bg-tertiary)",
-                    border: "1px solid var(--border-primary)",
-                    borderRadius: "var(--radius-lg)",
-                    fontSize: "var(--text-sm)",
-                    color: "var(--text-primary)",
-                    outline: "none",
-                    transition: "border-color var(--transition-fast)",
-                  }}
-                  onFocus={(e) => {
-                    e.currentTarget.style.borderColor = "var(--interactive)";
-                    e.currentTarget.style.boxShadow =
-                      "0 0 0 2px var(--interactive-light)";
-                  }}
-                  onBlur={(e) => {
-                    e.currentTarget.style.borderColor =
-                      "var(--border-primary)";
-                    e.currentTarget.style.boxShadow = "none";
-                  }}
-                />
-              </div>
-              <button
-                onClick={handleSearch}
-                disabled={isSearching}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "var(--space-2) var(--space-4)",
-                  backgroundColor: "var(--interactive)",
-                  color: "#fff",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)",
-                  borderRadius: "var(--radius-lg)",
-                  border: "none",
-                  cursor: isSearching ? "not-allowed" : "pointer",
-                  opacity: isSearching ? 0.5 : 1,
-                  transition:
-                    "background-color var(--transition-fast), opacity var(--transition-fast)",
-                  whiteSpace: "nowrap",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isSearching)
-                    e.currentTarget.style.backgroundColor =
-                      "var(--interactive-hover)";
-                }}
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.backgroundColor =
-                    "var(--interactive)")
-                }
-              >
-                <Search size={14} />
-                {isSearching ? "搜索中..." : "搜索"}
-              </button>
-            </div>
-
-            {/* Search results */}
-            {searchResults.length > 0 ? (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-2)",
-                }}
-              >
-                <p
-                  style={{
-                    fontSize: "var(--text-xs)",
-                    color: "var(--text-tertiary)",
-                    margin: 0,
-                  }}
-                >
-                  找到 {searchResults.length} 条结果
-                </p>
-                {searchResults.map((result, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      if (result.docId) {
-                        setActiveTab("wiki");
-                      }
-                    }}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "var(--space-3) var(--space-4)",
-                      backgroundColor: "var(--bg-tertiary)",
-                      border: "1px solid var(--border-primary)",
-                      borderRadius: "var(--radius-lg)",
-                      cursor: "pointer",
-                      transition: "border-color var(--transition-fast), background-color var(--transition-fast)",
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = "var(--interactive)";
-                      e.currentTarget.style.backgroundColor = "var(--interactive-light)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = "var(--border-primary)";
-                      e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--space-2)",
-                        marginBottom: "var(--space-1)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          fontWeight: "var(--font-semibold)",
-                          padding: "2px var(--space-1)",
-                          borderRadius: "var(--radius-sm)",
-                          backgroundColor: "var(--interactive-light)",
-                          color: "var(--interactive)",
-                        }}
-                      >
-                        {result.level}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        Score: {result.score.toFixed(3)}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        Doc: {result.docId}
-                      </span>
-                    </div>
-                    <p
-                      style={{
-                        fontSize: "var(--text-sm)",
-                        color: "var(--text-secondary)",
-                        margin: 0,
-                        display: "-webkit-box",
-                        WebkitLineClamp: 3,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {result.content}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            ) : searchQuery && !isSearching ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "var(--space-8) 0",
-                  color: "var(--text-tertiary)",
-                  fontSize: "var(--text-sm)",
-                }}
-              >
-                无搜索结果
-              </div>
-            ) : null}
-          </div>
+            onEntityClick={(entity) => {
+              // Navigate to the entity page
+              setNavigatingEntity(entity.name);
+            }}
+          />
         ) : activeTab === "settings" ? (
           /* Settings Tab */
           <div

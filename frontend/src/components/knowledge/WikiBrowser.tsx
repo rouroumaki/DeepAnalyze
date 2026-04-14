@@ -8,6 +8,7 @@ import { api } from "../../api/client";
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { useToast } from "../../hooks/useToast";
 import { Spinner } from "../ui/Spinner";
+import { LevelSwitcher } from "../search/LevelSwitcher";
 import {
   Search,
   ChevronDown,
@@ -589,7 +590,7 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
               )}
             </div>
 
-            {/* Level indicator & expand buttons */}
+            {/* Level switcher - integrated from Task 8 */}
             <div
               style={{
                 display: "flex",
@@ -598,152 +599,26 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                 flexWrap: "wrap",
               }}
             >
-              {/* L0 badge */}
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "2px var(--space-2)",
-                  fontSize: "var(--text-xs)",
-                  fontWeight: "var(--font-semibold)",
-                  borderRadius: "var(--radius-sm)",
-                  backgroundColor:
-                    expandedLevel === "L0"
-                      ? "var(--interactive)"
-                      : "var(--bg-tertiary)",
-                  color: expandedLevel === "L0" ? "#fff" : "var(--text-tertiary)",
-                  border: "1px solid var(--border-primary)",
+              <LevelSwitcher
+                pageId={selectedPage.id}
+                kbId={kbId}
+                currentLevel={expandedLevel}
+                availableLevels={["L0", "L1", "L2"]}
+                onLevelChange={(level, content) => {
+                  if (level === "L0") {
+                    // L0 is the default page content — reset to original page content
+                    setExpandedLevel("L0");
+                    setExpandedContent(null);
+                  } else {
+                    setExpandedLevel(level);
+                    setExpandedContent({
+                      content,
+                      level,
+                      expandable: level !== "L2",
+                    });
+                  }
                 }}
-              >
-                L0 摘要
-              </span>
-
-              {/* Expand to L1 */}
-              {expandedLevel === "L0" && (
-                <button
-                  onClick={() => handleExpand("L1")}
-                  disabled={isExpanding}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "2px var(--space-2)",
-                    fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)",
-                    borderRadius: "var(--radius-sm)",
-                    border: "1px solid var(--border-primary)",
-                    backgroundColor: "var(--bg-tertiary)",
-                    color: "var(--text-secondary)",
-                    cursor: isExpanding ? "not-allowed" : "pointer",
-                    opacity: isExpanding ? 0.6 : 1,
-                    transition:
-                      "background-color var(--transition-fast), color var(--transition-fast)",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isExpanding) {
-                      e.currentTarget.style.backgroundColor =
-                        "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text-primary)";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
-                    e.currentTarget.style.color = "var(--text-secondary)";
-                  }}
-                >
-                  {isExpanding ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <ChevronRight size={12} />
-                  )}
-                  展开到 L1 概览
-                </button>
-              )}
-
-              {/* L1 badge */}
-              {expandedLevel === "L1" && (
-                <>
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "2px var(--space-2)",
-                      fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-semibold)",
-                      borderRadius: "var(--radius-sm)",
-                      backgroundColor: "var(--interactive)",
-                      color: "#fff",
-                      border: "1px solid var(--border-primary)",
-                    }}
-                  >
-                    <ChevronDown size={12} />
-                    L1 概览
-                  </span>
-                  {/* Expand to L2 */}
-                  <button
-                    onClick={() => handleExpand("L2")}
-                    disabled={isExpanding}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "var(--space-1)",
-                      padding: "2px var(--space-2)",
-                      fontSize: "var(--text-xs)",
-                      fontWeight: "var(--font-medium)",
-                      borderRadius: "var(--radius-sm)",
-                      border: "1px solid var(--border-primary)",
-                      backgroundColor: "var(--bg-tertiary)",
-                      color: "var(--text-secondary)",
-                      cursor: isExpanding ? "not-allowed" : "pointer",
-                      opacity: isExpanding ? 0.6 : 1,
-                      transition:
-                        "background-color var(--transition-fast), color var(--transition-fast)",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isExpanding) {
-                        e.currentTarget.style.backgroundColor =
-                          "var(--bg-hover)";
-                        e.currentTarget.style.color = "var(--text-primary)";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor =
-                        "var(--bg-tertiary)";
-                      e.currentTarget.style.color = "var(--text-secondary)";
-                    }}
-                  >
-                    {isExpanding ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <ChevronRight size={12} />
-                    )}
-                    展开到 L2 全文
-                  </button>
-                </>
-              )}
-
-              {/* L2 badge */}
-              {expandedLevel === "L2" && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "2px var(--space-2)",
-                    fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-semibold)",
-                    borderRadius: "var(--radius-sm)",
-                    backgroundColor: "var(--interactive)",
-                    color: "#fff",
-                    border: "1px solid var(--border-primary)",
-                  }}
-                >
-                  <ChevronDown size={12} />
-                  L2 全文
-                </span>
-              )}
+              />
             </div>
 
             {/* Expanding spinner */}

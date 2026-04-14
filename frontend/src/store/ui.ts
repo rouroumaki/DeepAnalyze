@@ -106,8 +106,12 @@ export const useUIStore = create<UIState>((set, get) => {
     },
 
     // Sidebar
-    sidebarCollapsed: false,
-    toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+    sidebarCollapsed: storage.get<boolean>('sidebar', false),
+    toggleSidebar: () => set((s) => {
+      const next = !s.sidebarCollapsed;
+      storage.set('sidebar', next);
+      return { sidebarCollapsed: next };
+    }),
 
     // Active view
     activeView: 'chat',
@@ -126,8 +130,11 @@ export const useUIStore = create<UIState>((set, get) => {
     closeRightPanel: () => set({ rightPanelOpen: false, rightPanelContentType: null }),
 
     // Current knowledge base
-    currentKbId: "",
-    setCurrentKbId: (id) => set({ currentKbId: id }),
+    currentKbId: storage.get<string>('kb', ''),
+    setCurrentKbId: (id) => {
+      storage.set('kb', id);
+      set({ currentKbId: id });
+    },
 
     // Cross-module navigation
     navigateToDoc: (kbId, _docId) => {

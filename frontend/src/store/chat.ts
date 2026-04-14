@@ -51,9 +51,12 @@ interface ChatState {
   cancelAgentTask: (taskId: string) => Promise<void>;
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set, get) => {
+  const savedSession = localStorage.getItem('deepanalyze-session') || null;
+
+  return {
   sessions: [],
-  currentSessionId: null,
+  currentSessionId: savedSession,
   messages: [],
   agentTasks: [],
   isLoading: false,
@@ -80,6 +83,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createSession: async (title?: string) => {
     try {
       const session = await api.createSession(title);
+      localStorage.setItem('deepanalyze-session', session.id);
       set((s) => ({
         sessions: [session, ...s.sessions],
         currentSessionId: session.id,
@@ -96,6 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectSession: async (id: string) => {
     const state = get();
     if (state.currentSessionId === id) return;
+    localStorage.setItem('deepanalyze-session', id);
     set({
       currentSessionId: id,
       messages: [],
@@ -120,6 +125,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const state = get();
       const sessions = state.sessions.filter((s) => s.id !== id);
       const currentSessionId = state.currentSessionId === id ? null : state.currentSessionId;
+      if (state.currentSessionId === id) {
+        localStorage.removeItem('deepanalyze-session');
+      }
       set({
         sessions,
         currentSessionId,
@@ -524,4 +532,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ error: String(err) });
     }
   },
-}));
+  };
+});

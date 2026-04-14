@@ -48,6 +48,7 @@ export function createApp(): Hono {
   // by using a middleware that creates the Hono sub-app on demand.
 
   let agentRoutes: Hono | null = null;
+  let agentInitError: string | null = null;
 
   app.use("/api/agents/*", async (c, next) => {
     if (!agentRoutes) {
@@ -57,19 +58,23 @@ export function createApp(): Hono {
         const { createAgentRoutes } = await import("./routes/agents.js");
         const orchestrator = await getOrchestrator();
         agentRoutes = createAgentRoutes(orchestrator);
+        agentInitError = null;
         console.log("[AgentSystem] Agent routes ready.");
       } catch (err) {
-        console.error("[AgentSystem] Initialization failed:", err);
+        agentInitError = err instanceof Error ? err.message : String(err);
+        console.error("[AgentSystem] Initialization failed:", agentInitError);
         // Don't cache failure — retry on next request
       }
     }
     await next();
   });
 
-  // Agent root — endpoint discovery
+  // Agent root — endpoint discovery (includes initialization status)
   app.get("/api/agents", (c) => c.json({
-    status: "ok",
+    status: agentRoutes ? "ok" : "initializing",
     message: "Agent API",
+    initialized: !!agentRoutes,
+    ...(agentInitError ? { error: agentInitError } : {}),
     endpoints: [
       "POST /run",
       "POST /run-stream",
@@ -84,7 +89,10 @@ export function createApp(): Hono {
   // Agent sub-routes — delegate to the lazily-created sub-app
   app.all("/api/agents/*", async (c) => {
     if (!agentRoutes) {
-      return c.json({ error: "Agent system not ready yet" }, 503);
+      return c.json({
+        error: "Agent system not initialized",
+        detail: agentInitError || "Initialization pending. Check server logs for details.",
+      }, 503);
     }
 
     const fullPath = c.req.path; // e.g. "/api/agents/run"

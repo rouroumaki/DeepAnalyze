@@ -48,6 +48,8 @@ export class WikiCompiler {
     metadata: Record<string, unknown>,
     options?: { skipStatusUpdates?: boolean },
   ): Promise<void> {
+    // Allow reassignment for empty content fallback
+    let content = parsedContent;
     try {
       if (!options?.skipStatusUpdates) {
         updateDocumentStatus(docId, "compiling");
@@ -56,11 +58,19 @@ export class WikiCompiler {
       // Ensure the KB wiki directory structure exists
       await this.pageManager.initKb(kbId);
 
+      // Validate parsed content before compilation
+      if (!content || content.trim().length === 0) {
+        console.warn(
+          `[WikiCompiler] Empty parsed content for doc ${docId}, writing placeholder`,
+        );
+        content = `(Document parsed but produced no extractable text content. File may be empty or use an unsupported encoding.)`;
+      }
+
       // Step 1: Save L2 fulltext
-      await this.compileL2(kbId, docId, parsedContent, metadata);
+      await this.compileL2(kbId, docId, content, metadata);
 
       // Step 2: Generate L1 overview from fulltext
-      await this.compileL1(kbId, docId, parsedContent);
+      await this.compileL1(kbId, docId, content);
 
       // Step 3: Generate L0 abstract from L1
       await this.compileL0(kbId, docId);
@@ -157,12 +167,23 @@ ${truncated}`;
         { model: this.router.getDefaultModel("summarizer") },
       );
       response = result.content;
+      // Guard against empty LLM response
+      if (!response || response.trim().length === 0) {
+        console.warn(
+          `[WikiCompiler] L1 LLM returned empty content for doc ${docId}, using fallback`,
+        );
+        response = "";
+      }
     } catch (err) {
       console.warn(
         `[WikiCompiler] L1 generation failed for doc ${docId}, using truncated content as fallback:`,
         err instanceof Error ? err.message : String(err),
       );
-      // Fallback: use truncated content as the overview
+      response = "";
+    }
+
+    // Ensure we always have non-empty content for L1
+    if (!response || response.trim().length === 0) {
       response = `# Document Overview (auto-generated)\n\n${truncated}`;
     }
 
@@ -223,12 +244,23 @@ ${truncated}`;
         { model: this.router.getDefaultModel("summarizer") },
       );
       response = result.content;
+      // Guard against empty LLM response
+      if (!response || response.trim().length === 0) {
+        console.warn(
+          `[WikiCompiler] L0 LLM returned empty content for doc ${docId}, using fallback`,
+        );
+        response = "";
+      }
     } catch (err) {
       console.warn(
         `[WikiCompiler] L0 generation failed for doc ${docId}, using first line of L1 as fallback:`,
         err instanceof Error ? err.message : String(err),
       );
-      // Fallback: use first 200 chars of L1 as abstract
+      response = "";
+    }
+
+    // Ensure we always have non-empty content for L0
+    if (!response || response.trim().length === 0) {
       response = l1Content.slice(0, 200).split("\n")[0] || "No abstract available.";
     }
 

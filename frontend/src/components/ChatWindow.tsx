@@ -160,6 +160,7 @@ export function ChatWindow() {
               flexWrap: "wrap",
               gap: "var(--space-2)",
               justifyContent: "center",
+              marginBottom: "var(--space-6)",
             }}
           >
             {["分析一份文档的关键条款", "提取文档中的时间线", "对比分析多份文档的差异"].map(
@@ -198,6 +199,22 @@ export function ChatWindow() {
               ),
             )}
           </div>
+
+          {/* Scope selector on welcome screen */}
+          {kbList.length > 0 && (
+            <div style={{ maxWidth: 480, margin: "0 auto" }}>
+              <p style={{
+                fontSize: "var(--text-xs)",
+                color: "var(--text-tertiary)",
+                marginBottom: "var(--space-2)",
+                textTransform: "uppercase" as const,
+                letterSpacing: "0.05em",
+              }}>
+                分析范围
+              </p>
+              <ScopeSelector kbList={kbList} currentKbId={currentKbId} onScopeChange={handleScopeChange} />
+            </div>
+          )}
         </div>
       </div>
     );

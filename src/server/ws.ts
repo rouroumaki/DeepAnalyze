@@ -4,6 +4,21 @@
 // Clients subscribe to knowledge base IDs and receive progress events.
 // =============================================================================
 
+import { EventEmitter } from "events";
+
+// ---------------------------------------------------------------------------
+// Global workflow event bus
+// ---------------------------------------------------------------------------
+
+declare global {
+  var __workflowEvents: EventEmitter | undefined;
+}
+
+// Initialize global event bus for workflow events
+if (!globalThis.__workflowEvents) {
+  globalThis.__workflowEvents = new EventEmitter();
+}
+
 // ---------------------------------------------------------------------------
 // Types — Server-to-client message variants
 // ---------------------------------------------------------------------------
@@ -13,6 +28,13 @@ export type WsServerMessage =
   | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
   | { type: "doc_ready"; kbId: string; docId: string; filename: string }
   | { type: "doc_error"; kbId: string; docId: string; error: string }
+  | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number }
+  | { type: "workflow_agent_start"; workflowId: string; agentId: string; role: string; task: string }
+  | { type: "workflow_agent_tool_call"; workflowId: string; agentId: string; tool: string; args: Record<string, unknown> }
+  | { type: "workflow_agent_tool_result"; workflowId: string; agentId: string; tool: string; result: string }
+  | { type: "workflow_agent_chunk"; workflowId: string; agentId: string; chunk: string }
+  | { type: "workflow_agent_complete"; workflowId: string; agentId: string; status: string; duration: number }
+  | { type: "workflow_complete"; workflowId: string; status: string; totalDuration: number; resultCount: number }
   | { type: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +65,12 @@ interface ClientState {
  */
 const clients = new Map<WebSocket, ClientState>();
 
+/**
+ * Map of WebSocket clients to their workflow event handlers.
+ * Used to clean up event listeners when a client disconnects.
+ */
+const workflowHandlers = new Map<WebSocket, (event: any) => void>();
+
 // ---------------------------------------------------------------------------
 // WebSocket lifecycle handlers
 // ---------------------------------------------------------------------------
@@ -54,6 +82,13 @@ const clients = new Map<WebSocket, ClientState>();
 export function handleOpen(ws: WebSocket): void {
   clients.set(ws, { subscriptions: new Set() });
   console.log(`[WS] Client connected. Total clients: ${clients.size}`);
+
+  // Subscribe to workflow events and forward them to this client
+  const workflowHandler = (event: any) => {
+    try { ws.send(JSON.stringify(event)); } catch { /* ignore */ }
+  };
+  globalThis.__workflowEvents?.on("workflow", workflowHandler);
+  workflowHandlers.set(ws, workflowHandler);
 }
 
 /**
@@ -122,6 +157,12 @@ export function handleClose(ws: WebSocket): void {
     console.log(
       `[WS] Client disconnected. Had ${state.subscriptions.size} KB subscription(s). Total clients: ${clients.size - 1}`,
     );
+  }
+  // Clean up workflow event listener
+  const workflowHandler = workflowHandlers.get(ws);
+  if (workflowHandler) {
+    globalThis.__workflowEvents?.off("workflow", workflowHandler);
+    workflowHandlers.delete(ws);
   }
   clients.delete(ws);
 }

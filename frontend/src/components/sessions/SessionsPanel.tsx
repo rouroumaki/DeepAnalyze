@@ -35,20 +35,21 @@ function SessionsPanelInner() {
   const [searchQuery, setSearchQuery] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const loadSessions = useCallback(async () => {
-    setLoading(true);
+  const loadSessions = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await api.listSessions();
       setSessions(data);
     } catch {
       toastError("加载会话失败");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  }, [toastError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    loadSessions();
+    loadSessions(true);
   }, [loadSessions]);
 
   const handleNewChat = async () => {

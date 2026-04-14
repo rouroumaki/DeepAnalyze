@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search, Sun, Moon, Settings,
-  History, Puzzle, Clock,
+  History, Puzzle, Zap, Clock,
 } from 'lucide-react';
 import { useTheme } from '../../hooks/useTheme';
 import { useUIStore, type PanelContentType } from '../../store/ui';
@@ -26,6 +26,7 @@ type SearchItemType =
 const headerActions: { id: PanelContentType; icon: typeof History; title: string }[] = [
   { id: 'sessions', icon: History, title: '会话历史' },
   { id: 'plugins', icon: Puzzle, title: '插件管理' },
+  { id: 'skills', icon: Zap, title: '技能库' },
   { id: 'cron', icon: Clock, title: '定时任务' },
   { id: 'settings', icon: Settings, title: '设置' },
 ];

@@ -7,7 +7,7 @@ import { DB } from "./database.js";
 import type { Document } from "../types/index.js";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { copyFileSync, statSync, readFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, statSync, readFileSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -156,4 +156,39 @@ export function updateDocumentStatus(
 ): void {
   const db = DB.getInstance().raw;
   db.prepare("UPDATE documents SET status = ? WHERE id = ?").run(status, id);
+}
+
+/**
+ * Delete a document and clean up associated data.
+ * Removes: document DB row, wiki pages, wiki links, file from disk.
+ */
+export function deleteDocument(id: string): boolean {
+  const db = DB.getInstance().raw;
+  const doc = getDocument(id);
+  if (!doc) return false;
+
+  // Delete wiki links referencing this document's pages
+  db.prepare(
+    `DELETE FROM wiki_links WHERE source_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)
+     OR target_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)`,
+  ).run(id, id);
+
+  // Delete wiki pages for this document
+  const wikiRows = db
+    .prepare("SELECT file_path FROM wiki_pages WHERE doc_id = ?")
+    .all(id) as Array<{ file_path: string }>;
+  for (const row of wikiRows) {
+    try { unlinkSync(row.file_path); } catch { /* file may not exist */ }
+  }
+  db.prepare("DELETE FROM wiki_pages WHERE doc_id = ?").run(id);
+
+  // Delete the original file directory
+  try {
+    const dir = join(doc.filePath, "..");
+    rmSync(dir, { recursive: true, force: true });
+  } catch { /* directory may not exist */ }
+
+  // Delete the document DB row
+  db.prepare("DELETE FROM documents WHERE id = ?").run(id);
+  return true;
 }

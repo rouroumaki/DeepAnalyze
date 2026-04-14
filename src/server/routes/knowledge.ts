@@ -16,6 +16,7 @@ import {
   listDocuments,
   getDocument,
   updateDocumentStatus,
+  deleteDocument,
 } from "../../store/documents.js";
 import { createWikiPage, getWikiPage, getWikiPageByDoc, getWikiPagesByKb, getPageContent } from "../../store/wiki-pages.js";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
@@ -523,6 +524,28 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     status: "queued",
     message: "Document enqueued for processing",
   });
+});
+
+// =====================================================================
+// DELETE /kbs/:kbId/documents/:docId - Delete a document
+// =====================================================================
+
+knowledgeRoutes.delete("/kbs/:kbId/documents/:docId", (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+
+  // Verify document exists and belongs to this KB
+  const doc = getDocument(docId);
+  if (!doc || doc.kbId !== kbId) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const deleted = deleteDocument(docId);
+  if (!deleted) {
+    return c.json({ error: "Failed to delete document" }, 500);
+  }
+
+  return c.json({ id: docId, deleted: true });
 });
 
 // =====================================================================

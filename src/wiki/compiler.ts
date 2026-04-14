@@ -78,6 +78,19 @@ export class WikiCompiler {
       // Step 4: Extract entities and create entity pages / wiki_links
       await this.extractAndUpdateLinks(kbId, docId);
 
+      // Step 5: Build cross-document links based on shared entities
+      try {
+        const { Linker } = await import("../wiki/linker.js");
+        const linker = new Linker();
+        linker.buildForwardLinks(kbId);
+        console.log(`[WikiCompiler] Built cross-document links for KB ${kbId}`);
+      } catch (err) {
+        console.warn(
+          `[WikiCompiler] Cross-document linking failed for KB ${kbId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
       if (!options?.skipStatusUpdates) {
         updateDocumentStatus(docId, "ready");
       }

@@ -524,7 +524,10 @@ export class AgentRunner {
     agentCalledFinish?: boolean,
   ): boolean {
     if (agentCalledFinish) return true;
-    if (finishReason && STOP_FINISH_REASONS.has(finishReason)) return true;
+    // Only consider finishReason when there are no pending tool calls.
+    // Some LLM providers return finishReason="stop" even with tool calls,
+    // which would prematurely end the agent loop.
+    if ((!toolCalls || toolCalls.length === 0) && finishReason && STOP_FINISH_REASONS.has(finishReason)) return true;
     if (!toolCalls || toolCalls.length === 0) {
       if (content && content.trim().length > 0) return true;
     }

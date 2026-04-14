@@ -1309,13 +1309,31 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   找到 {searchResults.length} 条结果
                 </p>
                 {searchResults.map((result, i) => (
-                  <div
+                  <button
                     key={i}
+                    onClick={() => {
+                      if (result.docId) {
+                        setActiveTab("wiki");
+                      }
+                    }}
                     style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
                       padding: "var(--space-3) var(--space-4)",
                       backgroundColor: "var(--bg-tertiary)",
                       border: "1px solid var(--border-primary)",
                       borderRadius: "var(--radius-lg)",
+                      cursor: "pointer",
+                      transition: "border-color var(--transition-fast), background-color var(--transition-fast)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = "var(--interactive)";
+                      e.currentTarget.style.backgroundColor = "var(--interactive-light)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "var(--border-primary)";
+                      e.currentTarget.style.backgroundColor = "var(--bg-tertiary)";
                     }}
                   >
                     <div
@@ -1368,7 +1386,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                     >
                       {result.content}
                     </p>
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : searchQuery && !isSearching ? (

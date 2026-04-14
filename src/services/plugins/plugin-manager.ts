@@ -33,6 +33,7 @@ export class PluginManager {
   private pluginAgentTypes = new Map<string, string[]>();
   private toolRegistry: ToolRegistry;
   private agentRunner: AgentRunner | null = null;
+  private teamManager: any = null;
 
   constructor(toolRegistry: ToolRegistry) {
     this.toolRegistry = toolRegistry;
@@ -45,6 +46,11 @@ export class PluginManager {
   /** Set the agent runner (called after initialization). */
   setAgentRunner(runner: AgentRunner): void {
     this.agentRunner = runner;
+  }
+
+  /** Set the team manager for multi-agent workflow support. */
+  setTeamManager(tm: any): void {
+    this.teamManager = tm;
   }
 
   // -----------------------------------------------------------------------

@@ -109,6 +109,12 @@ export interface SkillDefinition {
   maxTurns?: number;
   /** Skill config as JSON. */
   config: Record<string, unknown>;
+  /** Optional multi-agent scheduling configuration for team-based skills. */
+  scheduling?: {
+    mode: "pipeline" | "graph" | "council" | "parallel";
+    teamName?: string;
+    agents?: Array<{ role: string; task: string; tools: string[] }>;
+  };
 }
 
 /** A variable placeholder in a skill template. */

@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useChatStore } from "../store/chat";
 import { useUIStore } from "../store/ui";
+import { useWorkflowStore } from "../store/workflow";
 import { MessageList } from "./chat/MessageList";
 import { MessageInput } from "./chat/MessageInput";
 import { SubtaskPanel } from "./chat/SubtaskPanel";
 import { ScopeSelector } from "./chat/ScopeSelector";
+import { SubAgentPanel } from "./teams/SubAgentPanel";
 import { useKeyboard } from "../hooks/useKeyboard";
 import { api } from "../api/client";
 import { Sparkles, Upload, BookOpen, MessageSquare } from "lucide-react";
@@ -22,6 +24,9 @@ export function ChatWindow() {
   const createSession = useChatStore((s) => s.createSession);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const currentKbId = useUIStore((s) => s.currentKbId);
+
+  // Workflow state — show SubAgentPanel for each active workflow
+  const activeWorkflowIds = useWorkflowStore((s) => Array.from(s.activeWorkflows.keys()));
 
   const [scope, setScope] = useState<AnalysisScope>({ knowledgeBases: [], webSearch: false });
   const [kbList, setKbList] = useState<KbEntry[]>([]);
@@ -263,6 +268,15 @@ export function ChatWindow() {
 
       {/* Subtask progress */}
       <SubtaskPanel />
+
+      {/* Active workflow sub-agent panels */}
+      {activeWorkflowIds.length > 0 && (
+        <div style={{ flexShrink: 0, maxHeight: 240, overflowY: "auto" }}>
+          {activeWorkflowIds.map((wfId) => (
+            <SubAgentPanel key={wfId} workflowId={wfId} />
+          ))}
+        </div>
+      )}
 
       {/* Input */}
       <MessageInput />

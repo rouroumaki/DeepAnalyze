@@ -5,6 +5,7 @@
 // =============================================================================
 
 import { useRef, useCallback, useEffect, useState } from "react";
+import { useWorkflowStore } from "../store/workflow.js";
 
 // ---------------------------------------------------------------------------
 // Types — Server-to-client message variants
@@ -15,6 +16,13 @@ export type WsServerMessage =
   | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
   | { type: "doc_ready"; kbId: string; docId: string; filename: string }
   | { type: "doc_error"; kbId: string; docId: string; error: string }
+  | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number }
+  | { type: "workflow_agent_start"; workflowId: string; agentId: string; role: string; task: string }
+  | { type: "workflow_agent_tool_call"; workflowId: string; agentId: string; tool: string; args: Record<string, unknown> }
+  | { type: "workflow_agent_tool_result"; workflowId: string; agentId: string; tool: string; result: string }
+  | { type: "workflow_agent_chunk"; workflowId: string; agentId: string; chunk: string }
+  | { type: "workflow_agent_complete"; workflowId: string; agentId: string; status: string; duration: number }
+  | { type: "workflow_complete"; workflowId: string; status: string; totalDuration: number; resultCount: number }
   | { type: "pong" };
 
 // ---------------------------------------------------------------------------
@@ -57,6 +65,69 @@ interface UseWebSocketReturn {
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Workflow event dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatches workflow_* WebSocket events to the workflow store.
+ * Called from the WebSocket onmessage handler so that workflow events
+ * received on the same connection as doc events are automatically routed.
+ */
+function handleWorkflowWsEvent(msg: WsServerMessage): void {
+  const wfStore = useWorkflowStore.getState();
+
+  switch (msg.type) {
+    case "workflow_start":
+      wfStore.handleWorkflowStart(msg);
+      break;
+    case "workflow_agent_start":
+      wfStore.handleAgentStart(msg);
+      break;
+    case "workflow_agent_tool_call":
+      wfStore.handleAgentToolCall({
+        workflowId: msg.workflowId,
+        agentId: msg.agentId,
+        toolName: msg.tool,
+        input: msg.args,
+      });
+      break;
+    case "workflow_agent_tool_result":
+      wfStore.handleAgentToolResult({
+        workflowId: msg.workflowId,
+        agentId: msg.agentId,
+        toolName: msg.tool,
+        output: msg.result,
+      });
+      break;
+    case "workflow_agent_chunk":
+      wfStore.handleAgentChunk({
+        workflowId: msg.workflowId,
+        agentId: msg.agentId,
+        content: msg.chunk,
+      });
+      break;
+    case "workflow_agent_complete":
+      wfStore.handleAgentComplete({
+        workflowId: msg.workflowId,
+        agentId: msg.agentId,
+        duration: msg.duration,
+        ...(msg.status === "error" ? { error: msg.status } : {}),
+      });
+      break;
+    case "workflow_complete":
+      wfStore.handleWorkflowComplete({
+        workflowId: msg.workflowId,
+        status: msg.status,
+        duration: msg.totalDuration,
+      });
+      break;
+    default:
+      // Not a workflow event — ignore
+      break;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -151,6 +222,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         if (msg.type !== "pong") {
           onMessageRef.current?.(msg);
         }
+        // Dispatch workflow events to the workflow store
+        handleWorkflowWsEvent(msg);
       } catch (err) {
         console.error("[KnowledgeWS] Failed to parse message:", err);
       }

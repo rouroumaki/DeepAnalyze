@@ -15,6 +15,7 @@ import { KnowledgeGraph } from "./KnowledgeGraph";
 import { EntityPage } from "./EntityPage";
 import { DropZone } from "../ui/DropZone";
 import { UnifiedSearch } from "../search/UnifiedSearch";
+import { TeamManager } from "../teams/TeamManager";
 import {
   Database,
   Plus,
@@ -42,7 +43,7 @@ interface KnowledgePanelProps {
   onKbIdChange: (id: string) => void;
 }
 
-type TabId = "documents" | "wiki" | "entities" | "graph" | "search" | "settings";
+type TabId = "documents" | "wiki" | "entities" | "graph" | "search" | "teams" | "settings";
 
 interface HealthCheckResult {
   name: string;
@@ -416,6 +417,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
     { id: "entities", label: "实体", icon: <Users size={14} /> },
     { id: "graph", label: "图谱", icon: <Share2 size={14} /> },
     { id: "search", label: "搜索", icon: <Search size={14} /> },
+    { id: "teams", label: "团队", icon: <Users size={14} /> },
     { id: "settings", label: "设置", icon: <Settings size={14} /> },
   ];
 
@@ -1301,6 +1303,9 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               setNavigatingEntity(entity.name);
             }}
           />
+        ) : activeTab === "teams" ? (
+          /* Agent Teams Tab */
+          <TeamManager />
         ) : activeTab === "settings" ? (
           /* Settings Tab */
           <div

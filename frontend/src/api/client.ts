@@ -413,6 +413,15 @@ export const api = {
       body: JSON.stringify(settings),
     }),
 
+  // --- Key-Value Settings ---
+  getSetting: (key: string) =>
+    request<{ key: string; value: string }>(`/api/settings/key/${key}`),
+  setSetting: (key: string, value: string) =>
+    request<{ key: string; value: string }>(`/api/settings/key/${key}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    }),
+
   // --- Enhanced Models ---
   getEnhancedModels: () =>
     request<import("../types/index.js").EnhancedModelEntry[]>("/api/settings/enhanced-models"),

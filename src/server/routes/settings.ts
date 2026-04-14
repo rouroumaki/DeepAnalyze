@@ -31,6 +31,10 @@ export function createSettingsRoutes(): Hono {
       "PUT    /defaults — Update default role assignments",
       "GET    /agent — Get agent runtime settings",
       "PUT    /agent — Update agent runtime settings",
+      "GET    /key/:key — Get a single setting value",
+      "PUT    /key/:key — Set a single setting value",
+      "GET    /enhanced-models — List enhanced model configs",
+      "PUT    /enhanced-models — Update enhanced model configs",
     ],
   }));
 

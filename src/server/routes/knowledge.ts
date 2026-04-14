@@ -741,6 +741,36 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
 
     const content = getPageContent(page.filePath);
 
+    // Query links for this page using the Linker
+    let links: Array<{
+      sourcePageId: string;
+      targetPageId: string;
+      linkType: string;
+      entityName?: string;
+    }> = [];
+    try {
+      const { Linker } = await import("../../wiki/linker.js");
+      const linker = new Linker();
+      const outgoing = linker.getOutgoingLinks(page.id);
+      const incoming = linker.getIncomingLinks(page.id);
+      links = [
+        ...outgoing.map((l) => ({
+          sourcePageId: l.sourcePageId,
+          targetPageId: l.targetPageId,
+          linkType: l.linkType,
+          entityName: l.entityName || undefined,
+        })),
+        ...incoming.map((l) => ({
+          sourcePageId: l.sourcePageId,
+          targetPageId: l.targetPageId,
+          linkType: l.linkType,
+          entityName: l.entityName || undefined,
+        })),
+      ];
+    } catch {
+      // Linker may fail if wiki_links table doesn't exist yet
+    }
+
     return c.json({
       id: page.id,
       kbId: page.kbId,
@@ -749,6 +779,7 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
       title: page.title,
       content,
       tokenCount: page.tokenCount,
+      links,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
     });

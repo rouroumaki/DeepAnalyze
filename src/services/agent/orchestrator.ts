@@ -81,6 +81,15 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Reload model providers/default assignments from the latest settings.
+   * Safe to call after settings updates so running server picks changes
+   * without restart.
+   */
+  async reloadModelRouter(): Promise<void> {
+    await this.modelRouter.reload();
+  }
+
   // -----------------------------------------------------------------------
   // Single task execution
   // -----------------------------------------------------------------------

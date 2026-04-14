@@ -8,6 +8,21 @@ import { Hono } from "hono";
 import { SettingsStore, type ProviderConfig, type ProviderDefaults } from "../../store/settings.js";
 import { getAllProviders, getProviderMetadata, type ProviderMetadata } from "../../models/provider-registry.js";
 
+async function reloadModelRouterIfAgentSystemReady(): Promise<void> {
+  try {
+    const { isOrchestratorReady, getOrchestrator } = await import("../../services/agent/agent-system.js");
+    if (!isOrchestratorReady()) return;
+    const orchestrator = await getOrchestrator();
+    await orchestrator.reloadModelRouter();
+    console.log("[Settings] ModelRouter reloaded from updated provider settings");
+  } catch (err) {
+    console.warn(
+      "[Settings] Failed to reload ModelRouter after settings update:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 export function createSettingsRoutes(): Hono {
   const router = new Hono();
   const store = new SettingsStore();
@@ -81,15 +96,17 @@ export function createSettingsRoutes(): Hono {
     }
 
     store.upsertProvider(body);
+    await reloadModelRouterIfAgentSystemReady();
     return c.json({ success: true, provider: body });
   });
 
   /** Delete a provider */
-  router.delete("/providers/:id", (c) => {
+  router.delete("/providers/:id", async (c) => {
     const deleted = store.deleteProvider(c.req.param("id"));
     if (!deleted) {
       return c.json({ error: "Provider not found" }, 404);
     }
+    await reloadModelRouterIfAgentSystemReady();
     return c.json({ success: true });
   });
 
@@ -107,6 +124,7 @@ export function createSettingsRoutes(): Hono {
   router.put("/defaults", async (c) => {
     const body = await c.req.json<Partial<ProviderDefaults>>();
     store.updateDefaults(body);
+    await reloadModelRouterIfAgentSystemReady();
     const settings = store.getProviderSettings();
     return c.json({ success: true, defaults: settings.defaults });
   });

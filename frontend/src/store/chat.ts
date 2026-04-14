@@ -133,6 +133,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (content: string) => {
     const { currentSessionId } = get();
     if (!currentSessionId) return;
+    let streamError: string | null = null;
+    let completeOutput: string | null = null;
 
     // Optimistically show user message in UI
     const userMessage: MessageInfo = {
@@ -186,18 +188,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
             get().updateStreamToolResult(data.id, data.output, "completed");
           },
           onComplete: (_data) => {
-            // Agent completed with final output
+            completeOutput = _data.output ?? null;
+            if (completeOutput) {
+              set((s) => ({
+                streamingContent: s.streamingContent || completeOutput!,
+                messages: s.messages.map((m) =>
+                  m.id === s.streamingMessageId
+                    ? { ...m, content: m.content || completeOutput! }
+                    : m,
+                ),
+              }));
+            }
           },
           onError: (data) => {
+            streamError = data.error;
             set({ error: data.error });
           },
           onDone: (data) => {
             // Streaming finished — finalize the message
             const state = get();
-            const finalContent = state.streamingContent;
+            const finalContent =
+              state.streamingContent ||
+              completeOutput ||
+              data.error ||
+              streamError ||
+              "";
             const finalToolCalls = state.streamingToolCalls.map((tc) => ({
               ...tc,
-              status: tc.status === "running" ? "completed" as const : tc.status,
+              status:
+                tc.status === "running"
+                  ? ((data.status === "failed" || !!streamError) ? "error" : "completed")
+                  : tc.status,
             }));
 
             state.finishStreaming(finalContent, finalToolCalls);
@@ -215,8 +236,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // Mark sending as done
             set({ isSending: false });
 
-            if (data.status === "failed") {
-              set({ error: "Agent run failed" });
+            if (data.status === "failed" || streamError) {
+              set({ error: data.error ?? streamError ?? "Agent run failed" });
             }
           },
         },
@@ -406,6 +427,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   runAgent: async (input: string, agentType?: string) => {
     const { currentSessionId } = get();
     if (!currentSessionId) return;
+    let streamError: string | null = null;
+    let completeOutput: string | null = null;
 
     const userMessage: MessageInfo = {
       id: `temp-agent-${Date.now()}`,
@@ -445,15 +468,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
           onToolResult: (data) => {
             get().updateStreamToolResult(data.id, data.output, "completed");
           },
+          onComplete: (data) => {
+            completeOutput = data.output ?? null;
+            if (completeOutput) {
+              set((s) => ({
+                streamingContent: s.streamingContent || completeOutput!,
+                messages: s.messages.map((m) =>
+                  m.id === s.streamingMessageId
+                    ? { ...m, content: m.content || completeOutput! }
+                    : m,
+                ),
+              }));
+            }
+          },
           onError: (data) => {
+            streamError = data.error;
             set({ error: data.error });
           },
           onDone: (data) => {
             const state = get();
-            const finalContent = state.streamingContent;
+            const finalContent =
+              state.streamingContent ||
+              completeOutput ||
+              data.error ||
+              streamError ||
+              "";
             const finalToolCalls = state.streamingToolCalls.map((tc) => ({
               ...tc,
-              status: tc.status === "running" ? "completed" as const : tc.status,
+              status:
+                tc.status === "running"
+                  ? ((data.status === "failed" || !!streamError) ? "error" : "completed")
+                  : tc.status,
             }));
             state.finishStreaming(finalContent, finalToolCalls);
 
@@ -465,8 +510,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
             set({ isSending: false });
 
-            if (data.status === "failed") {
-              set({ error: "Agent run failed" });
+            if (data.status === "failed" || streamError) {
+              set({ error: data.error ?? streamError ?? "Agent run failed" });
             }
           },
         },

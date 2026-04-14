@@ -37,6 +37,131 @@ import type {
 
 const BASE_URL = "";
 
+type AgentStreamCallbacks = {
+  onStart?: (taskId: string, agentType: string) => void;
+  onContent?: (content: string, accumulated: string) => void;
+  onToolCall?: (tc: { id: string; toolName: string; input: Record<string, unknown>; status: string }) => void;
+  onToolResult?: (data: { id: string; toolName: string; output: string }) => void;
+  onProgress?: (progress: { turn: number; type: string; content: string }) => void;
+  onComplete?: (data: { taskId: string; output: string; toolCalls: unknown[] }) => void;
+  onError?: (data: { taskId: string; error: string }) => void;
+  onDone?: (data: { taskId: string; status: string; turnsUsed?: number; error?: string }) => void;
+  onAdvisoryLimit?: (data: { taskId: string; turn: number }) => void;
+  onCompaction?: (data: { taskId: string; turn: number; method: string; tokensSaved: number }) => void;
+};
+
+type ParsedSseFrame = {
+  event: string;
+  data: string;
+};
+
+function parseSseFrames(buffer: string): {
+  frames: ParsedSseFrame[];
+  remaining: string;
+} {
+  const frames: ParsedSseFrame[] = [];
+  let cursor = 0;
+
+  while (true) {
+    const lfBoundary = buffer.indexOf("\n\n", cursor);
+    const crlfBoundary = buffer.indexOf("\r\n\r\n", cursor);
+
+    let boundaryIndex = -1;
+    let boundaryLength = 0;
+
+    if (lfBoundary !== -1 && (crlfBoundary === -1 || lfBoundary < crlfBoundary)) {
+      boundaryIndex = lfBoundary;
+      boundaryLength = 2;
+    } else if (crlfBoundary !== -1) {
+      boundaryIndex = crlfBoundary;
+      boundaryLength = 4;
+    }
+
+    if (boundaryIndex === -1) {
+      break;
+    }
+
+    const rawFrame = buffer.slice(cursor, boundaryIndex);
+    cursor = boundaryIndex + boundaryLength;
+
+    if (!rawFrame.trim()) {
+      continue;
+    }
+
+    let event = "";
+    const dataLines: string[] = [];
+    const lines = rawFrame.split(/\r?\n/);
+
+    for (const line of lines) {
+      if (!line || line.startsWith(":")) {
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (event && dataLines.length > 0) {
+      frames.push({ event, data: dataLines.join("\n") });
+    }
+  }
+
+  return {
+    frames,
+    remaining: buffer.slice(cursor),
+  };
+}
+
+function dispatchAgentStreamEvent(
+  event: string,
+  payload: string,
+  callbacks?: AgentStreamCallbacks,
+): void {
+  let data: any;
+  try {
+    data = JSON.parse(payload);
+  } catch {
+    return;
+  }
+
+  switch (event) {
+    case "start":
+      callbacks?.onStart?.(data.taskId, data.agentType);
+      break;
+    case "content":
+      callbacks?.onContent?.(data.content, data.accumulated);
+      break;
+    case "tool_call":
+      callbacks?.onToolCall?.(data);
+      break;
+    case "tool_result":
+      callbacks?.onToolResult?.(data);
+      break;
+    case "progress":
+      callbacks?.onProgress?.(data);
+      break;
+    case "complete":
+      callbacks?.onComplete?.(data);
+      break;
+    case "error":
+      callbacks?.onError?.(data);
+      break;
+    case "done":
+      callbacks?.onDone?.(data);
+      break;
+    case "advisory_limit_reached":
+      callbacks?.onAdvisoryLimit?.(data);
+      break;
+    case "compaction":
+      callbacks?.onCompaction?.(data);
+      break;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -85,18 +210,7 @@ export const api = {
     sessionId: string,
     input: string,
     agentType?: string,
-    callbacks?: {
-      onStart?: (taskId: string, agentType: string) => void;
-      onContent?: (content: string, accumulated: string) => void;
-      onToolCall?: (tc: { id: string; toolName: string; input: Record<string, unknown>; status: string }) => void;
-      onToolResult?: (data: { id: string; toolName: string; output: string }) => void;
-      onProgress?: (progress: { turn: number; type: string; content: string }) => void;
-      onComplete?: (data: { taskId: string; output: string; toolCalls: unknown[] }) => void;
-      onError?: (data: { taskId: string; error: string }) => void;
-      onDone?: (data: { taskId: string; status: string; turnsUsed?: number }) => void;
-      onAdvisoryLimit?: (data: { taskId: string; turn: number }) => void;
-      onCompaction?: (data: { taskId: string; turn: number; method: string; tokensSaved: number }) => void;
-    },
+    callbacks?: AgentStreamCallbacks,
   ) => {
     const controller = new AbortController();
     const fetchPromise = fetch(`${BASE_URL}/api/agents/run-stream`, {
@@ -121,62 +235,22 @@ export const api = {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE events from buffer
-        const lines = buffer.split("\n");
-        // Keep the last incomplete line in the buffer
-        buffer = lines.pop() || "";
+        const { frames, remaining } = parseSseFrames(buffer);
+        buffer = remaining;
 
-        let currentEvent = "";
-        let currentData = "";
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            currentData = line.slice(6);
-          } else if (line === "" && currentEvent && currentData) {
-            // Empty line = end of event
-            try {
-              const data = JSON.parse(currentData);
-              switch (currentEvent) {
-                case "start":
-                  callbacks?.onStart?.(data.taskId, data.agentType);
-                  break;
-                case "content":
-                  callbacks?.onContent?.(data.content, data.accumulated);
-                  break;
-                case "tool_call":
-                  callbacks?.onToolCall?.(data);
-                  break;
-                case "tool_result":
-                  callbacks?.onToolResult?.(data);
-                  break;
-                case "progress":
-                  callbacks?.onProgress?.(data);
-                  break;
-                case "complete":
-                  callbacks?.onComplete?.(data);
-                  break;
-                case "error":
-                  callbacks?.onError?.(data);
-                  break;
-                case "done":
-                  callbacks?.onDone?.(data);
-                  break;
-                case "advisory_limit_reached":
-                  callbacks?.onAdvisoryLimit?.(data);
-                  break;
-                case "compaction":
-                  callbacks?.onCompaction?.(data);
-                  break;
-              }
-            } catch {
-              // Ignore parse errors for individual events
-            }
-            currentEvent = "";
-            currentData = "";
-          }
+        for (const frame of frames) {
+          dispatchAgentStreamEvent(frame.event, frame.data, callbacks);
         }
+      }
+
+      const trailing = decoder.decode();
+      if (trailing) {
+        buffer += trailing;
+      }
+
+      const { frames } = parseSseFrames(buffer);
+      for (const frame of frames) {
+        dispatchAgentStreamEvent(frame.event, frame.data, callbacks);
       }
     });
 

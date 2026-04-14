@@ -169,13 +169,19 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
     return stream(c, async (s) => {
       // Helper to send SSE events
+      let writeChain = Promise.resolve<unknown>(undefined);
+      const enqueueWrite = (chunk: string) => {
+        writeChain = writeChain
+          .then(() => s.write(chunk))
+          .catch(() => {});
+      };
       const sendEvent = (event: string, data: unknown) => {
-        s.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        enqueueWrite(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
       // Keepalive heartbeat to prevent proxy/server timeout on long-running agents.
       let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
-        s.write(": keepalive\n\n");
+        enqueueWrite(": keepalive\n\n");
       }, 15_000);
 
       // Collect tool calls for the final message
@@ -189,6 +195,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
       let fullContent = "";
       let taskId = "";
+      let streamError: string | null = null;
 
       const onEvent = (event: AgentEvent) => {
         switch (event.type) {
@@ -257,6 +264,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
             break;
 
           case "error":
+            streamError = event.error;
             sendEvent("error", { taskId: event.taskId, error: event.error });
             break;
 
@@ -299,7 +307,8 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         // Send done event with final metadata
         sendEvent("done", {
           taskId: result.taskId,
-          status: "completed",
+          status: streamError ? "failed" : "completed",
+          error: streamError ?? undefined,
           turnsUsed: result.turnsUsed,
           usage: result.usage,
           compactionEvents: result.compactionEvents,
@@ -314,6 +323,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
           clearInterval(keepaliveTimer);
           keepaliveTimer = null;
         }
+        await writeChain;
       }
     });
   });

@@ -220,7 +220,18 @@ export class ModelRouter {
 
       if (this.providers.size === 0) return false;
 
-      this.dbDefaults = settings.defaults;
+      const availableProviderIds = [...this.providers.keys()];
+      const rawDefaults = settings.defaults ?? { main: "", summarizer: "", embedding: "", vlm: "" };
+      const resolveRoleDefault = (value: string | undefined): string =>
+        value && availableProviderIds.includes(value) ? value : "";
+      const resolvedMain = resolveRoleDefault(rawDefaults.main) || availableProviderIds[0];
+
+      this.dbDefaults = {
+        main: resolvedMain,
+        summarizer: resolveRoleDefault(rawDefaults.summarizer),
+        embedding: resolveRoleDefault(rawDefaults.embedding),
+        vlm: resolveRoleDefault(rawDefaults.vlm),
+      };
       return true;
     } catch {
       return false;

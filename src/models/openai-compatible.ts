@@ -116,27 +116,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): Promise<ChatResponse> {
-    const url = `${this.endpoint}/chat/completions`;
-    const body = this.buildRequestBody(messages, options, false);
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: options.signal,
-    });
+    const { response, errorText } = await this.postChatCompletionsWithFallback(
+      messages,
+      options,
+      false,
+    );
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "unknown error");
       throw new Error(
-        `OpenAI-compatible provider "${this.name}" returned HTTP ${response.status}: ${errorText}`,
+        `OpenAI-compatible provider "${this.name}" returned HTTP ${response.status}: ${errorText ?? "unknown error"}`,
       );
     }
 
@@ -180,24 +168,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): AsyncGenerator<StreamChunk> {
-    const url = `${this.endpoint}/chat/completions`;
-    const body = this.buildRequestBody(messages, options, true);
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
-    }
-
-    let response: Response;
+    let requestResult: { response: Response; errorText?: string };
     try {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: options.signal,
-      });
+      requestResult = await this.postChatCompletionsWithFallback(
+        messages,
+        options,
+        true,
+      );
     } catch (err) {
       yield {
         type: "error",
@@ -206,11 +183,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return;
     }
 
+    const response = requestResult.response;
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "unknown error");
       yield {
         type: "error",
-        error: `Provider "${this.name}" returned HTTP ${response.status}: ${errorText}`,
+        error: `Provider "${this.name}" returned HTTP ${response.status}: ${requestResult.errorText ?? "unknown error"}`,
       };
       return;
     }
@@ -337,6 +314,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: ChatMessage[],
     options: ChatOptions,
     stream: boolean,
+    tokenParamName: "max_tokens" | "max_completion_tokens" = "max_tokens",
   ): Record<string, unknown> {
     const openaiMessages: OpenAIMessage[] = messages.map((msg) => {
       const oai: OpenAIMessage = {
@@ -362,9 +340,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       model: options.model ?? this.defaultModel,
       messages: openaiMessages,
-      max_tokens: options.maxTokens ?? this.defaultMaxTokens,
       stream,
     };
+    body[tokenParamName] = options.maxTokens ?? this.defaultMaxTokens;
 
     if (options.temperature !== undefined) {
       body.temperature = options.temperature;
@@ -375,6 +353,78 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     return body;
+  }
+
+  private async postChatCompletionsWithFallback(
+    messages: ChatMessage[],
+    options: ChatOptions,
+    stream: boolean,
+  ): Promise<{ response: Response; errorText?: string }> {
+    const firstAttempt = await this.postChatCompletions(
+      this.buildRequestBody(messages, options, stream, "max_tokens"),
+      options.signal,
+    );
+
+    if (firstAttempt.response.ok) {
+      return firstAttempt;
+    }
+
+    if (
+      !this.isUnsupportedMaxTokensError(
+        firstAttempt.response.status,
+        firstAttempt.errorText,
+      )
+    ) {
+      return firstAttempt;
+    }
+
+    // Compatibility path for newer OpenAI models (e.g. GPT-5.x) that
+    // reject max_tokens and require max_completion_tokens.
+    return this.postChatCompletions(
+      this.buildRequestBody(messages, options, stream, "max_completion_tokens"),
+      options.signal,
+    );
+  }
+
+  private async postChatCompletions(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ response: Response; errorText?: string }> {
+    const url = `${this.endpoint}/chat/completions`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (response.ok) {
+      return { response };
+    }
+
+    const errorText = await response.text().catch(() => "unknown error");
+    return { response, errorText };
+  }
+
+  private isUnsupportedMaxTokensError(
+    status: number,
+    errorText: string | undefined,
+  ): boolean {
+    if (status !== 400 || !errorText) return false;
+
+    const lower = errorText.toLowerCase();
+    return (
+      lower.includes("unsupported parameter") &&
+      lower.includes("max_tokens") &&
+      lower.includes("max_completion_tokens")
+    );
   }
 
   private formatTools(tools: ToolDefinition[]): OpenAITool[] {

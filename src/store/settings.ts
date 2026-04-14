@@ -48,6 +48,53 @@ export class SettingsStore {
     return DB.getInstance().raw;
   }
 
+  private emptyProviderSettings(): ProviderSettings {
+    return {
+      providers: [],
+      defaults: { main: "", summarizer: "", embedding: "", vlm: "" },
+    };
+  }
+
+  private normalizeProviderSettings(input: unknown): ProviderSettings {
+    if (!input || typeof input !== "object") {
+      return this.emptyProviderSettings();
+    }
+
+    const raw = input as Partial<ProviderSettings>;
+    const providers = Array.isArray(raw.providers)
+      ? raw.providers.filter((p): p is ProviderConfig => !!p && typeof p.id === "string")
+      : [];
+
+    const defaultObj = (raw.defaults && typeof raw.defaults === "object")
+      ? raw.defaults as Partial<ProviderDefaults>
+      : {};
+
+    const enabledProviderIds = providers.filter((p) => p.enabled).map((p) => p.id);
+    const allProviderIds = providers.map((p) => p.id);
+    const candidateIds = enabledProviderIds.length > 0 ? enabledProviderIds : allProviderIds;
+
+    const main = candidateIds.includes(defaultObj.main ?? "")
+      ? (defaultObj.main as string)
+      : (candidateIds[0] ?? "");
+
+    const normalizeRole = (roleValue: unknown): string => {
+      if (typeof roleValue !== "string" || roleValue.length === 0) {
+        return "";
+      }
+      return candidateIds.includes(roleValue) ? roleValue : "";
+    };
+
+    return {
+      providers,
+      defaults: {
+        main,
+        summarizer: normalizeRole(defaultObj.summarizer),
+        embedding: normalizeRole(defaultObj.embedding),
+        vlm: normalizeRole(defaultObj.vlm),
+      },
+    };
+  }
+
   // -----------------------------------------------------------------------
   // Provider settings
   // -----------------------------------------------------------------------
@@ -59,19 +106,32 @@ export class SettingsStore {
       .get() as { value: string } | undefined;
 
     if (!row) {
-      return { providers: [], defaults: { main: "", summarizer: "", embedding: "", vlm: "" } };
+      return this.emptyProviderSettings();
     }
 
-    return JSON.parse(row.value) as ProviderSettings;
+    try {
+      const parsed = JSON.parse(row.value) as unknown;
+      const normalized = this.normalizeProviderSettings(parsed);
+
+      // Auto-repair stale defaults (e.g. defaults.main points to a removed provider).
+      if (JSON.stringify(normalized) !== JSON.stringify(parsed)) {
+        this.saveProviderSettings(normalized);
+      }
+
+      return normalized;
+    } catch {
+      return this.emptyProviderSettings();
+    }
   }
 
   /** Save the full provider configuration. */
   saveProviderSettings(settings: ProviderSettings): void {
+    const normalized = this.normalizeProviderSettings(settings);
     this.db
       .prepare(
         "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('providers', ?, datetime('now'))"
       )
-      .run(JSON.stringify(settings));
+      .run(JSON.stringify(normalized));
   }
 
   /** Get a single provider by ID. */

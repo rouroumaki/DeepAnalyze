@@ -21,7 +21,6 @@ export function ChatWindow() {
   const sessions = useChatStore((s) => s.sessions);
   const createSession = useChatStore((s) => s.createSession);
   const sendMessage = useChatStore((s) => s.sendMessage);
-  const setActiveView = useUIStore((s) => s.setActiveView);
   const currentKbId = useUIStore((s) => s.currentKbId);
 
   const [scope, setScope] = useState<AnalysisScope>({ knowledgeBases: [], webSearch: false });
@@ -138,12 +137,12 @@ export function ChatWindow() {
             <WelcomeAction
               icon={<Upload size={18} />}
               label="上传文档"
-              onClick={() => setActiveView("knowledge")}
+              onClick={() => { window.location.hash = "#/knowledge/" + (currentKbId || ""); }}
             />
             <WelcomeAction
               icon={<BookOpen size={18} />}
               label="选择知识库"
-              onClick={() => setActiveView("knowledge")}
+              onClick={() => { window.location.hash = "#/knowledge/" + (currentKbId || ""); }}
             />
             <WelcomeAction
               icon={<MessageSquare size={18} />}

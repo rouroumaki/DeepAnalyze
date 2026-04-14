@@ -30,7 +30,6 @@ export function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const activeView = useUIStore((s) => s.activeView);
-  const setActiveView = useUIStore((s) => s.setActiveView);
 
   // Chat store for session management
   const sessions = useChatStore((s) => s.sessions);
@@ -57,7 +56,7 @@ export function Sidebar() {
     : 'var(--sidebar-width)';
 
   const handleNewChat = async () => {
-    setActiveView('chat');
+    window.location.hash = '#/chat';
     await createSession();
   };
 
@@ -179,6 +178,7 @@ export function Sidebar() {
                     key={session.id}
                     onClick={() => {
                       selectSession(session.id);
+                      window.location.hash = "#/sessions/" + session.id;
                     }}
                     onMouseEnter={() => setHoveredSession(session.id)}
                     onMouseLeave={() => setHoveredSession(null)}
@@ -304,7 +304,9 @@ export function Sidebar() {
             item={item}
             active={activeView === item.id}
             collapsed={collapsed}
-            onClick={() => setActiveView(item.id)}
+            onClick={() => {
+              window.location.hash = `#/${item.id}`;
+            }}
           />
         ))}
       </nav>

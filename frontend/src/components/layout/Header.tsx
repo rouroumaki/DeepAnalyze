@@ -183,11 +183,11 @@ export function Header() {
   const handleResultClick = (r: SearchItemType) => {
     if (r.kind === "session") {
       useChatStore.getState().selectSession(r.id);
-      useUIStore.getState().setActiveView("chat");
+      window.location.hash = "#/sessions/" + r.id;
     } else {
       // document or wiki -> switch to knowledge view
       setCurrentKbId(r.kbId);
-      useUIStore.getState().setActiveView("knowledge");
+      window.location.hash = "#/knowledge/" + r.kbId;
     }
     setSearchOpen(false);
     setSearchQuery("");

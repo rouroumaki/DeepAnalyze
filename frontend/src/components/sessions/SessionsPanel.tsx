@@ -27,7 +27,6 @@ function SessionsPanelInner() {
   const confirm = useConfirm();
   const selectSession = useChatStore((s) => s.selectSession);
   const currentSessionId = useChatStore((s) => s.currentSessionId);
-  const setActiveView = useUIStore((s) => s.setActiveView);
   const closeRightPanel = useUIStore((s) => s.closeRightPanel);
 
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -56,7 +55,7 @@ function SessionsPanelInner() {
     try {
       const session = await api.createSession();
       selectSession(session.id);
-      setActiveView("chat");
+      window.location.hash = "#/chat";
       closeRightPanel();
       success("已创建新对话");
     } catch {
@@ -66,7 +65,7 @@ function SessionsPanelInner() {
 
   const handleSelectSession = (id: string) => {
     selectSession(id);
-    setActiveView("chat");
+    window.location.hash = "#/sessions/" + id;
     closeRightPanel();
   };
 

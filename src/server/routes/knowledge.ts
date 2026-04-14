@@ -211,6 +211,7 @@ knowledgeRoutes.get("/", (c) => {
       "GET    /kbs/:kbId/documents",
       "GET    /kbs/:kbId/entities",
       "POST   /kbs/:kbId/upload",
+      "GET    /kbs/:kbId/documents/:docId/status",
       "POST   /kbs/:kbId/process/:docId",
       "POST   /kbs/:kbId/process-all",
       "POST   /kbs/:kbId/trigger-processing",
@@ -546,6 +547,46 @@ knowledgeRoutes.delete("/kbs/:kbId/documents/:docId", (c) => {
   }
 
   return c.json({ id: docId, deleted: true });
+});
+
+// =====================================================================
+// GET /knowledge/:kbId/documents/:docId/status — 文档处理状态轮询端点
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/status", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+
+  const { DB } = await import("../../store/database.js");
+  const db = DB.getInstance().raw;
+
+  const doc = db
+    .prepare("SELECT id, filename, status FROM documents WHERE id = ? AND kb_id = ?")
+    .get(docId, kbId) as { id: string; filename: string; status: string } | undefined;
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const stageMap: Record<string, { stage: string; progress: number }> = {
+    uploaded:   { stage: "Parsing",    progress: 45 },
+    parsing:    { stage: "Parsing",    progress: 50 },
+    compiling:  { stage: "Compiling",  progress: 60 },
+    indexing:   { stage: "Indexing",   progress: 75 },
+    linking:    { stage: "Linking",    progress: 90 },
+    ready:      { stage: "Ready",      progress: 100 },
+    error:      { stage: "Error",      progress: 0 },
+  };
+
+  const info = stageMap[doc.status] ?? { stage: doc.status, progress: 0 };
+
+  return c.json({
+    docId: doc.id,
+    filename: doc.filename,
+    stage: info.stage,
+    progress: info.progress,
+    status: doc.status,
+  });
 });
 
 // =====================================================================

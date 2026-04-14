@@ -210,6 +210,8 @@ knowledgeRoutes.get("/", (c) => {
       "DELETE /kbs/:kbId",
       "GET    /kbs/:kbId/documents",
       "GET    /kbs/:kbId/entities",
+      "GET    /kbs/:kbId/pages/:pageId?level=L1",
+      "GET    /kbs/:kbId/pages/:pageId/preview?level=L1&q=keyword",
       "POST   /kbs/:kbId/upload",
       "GET    /kbs/:kbId/documents/:docId/status",
       "POST   /kbs/:kbId/process/:docId",
@@ -405,6 +407,191 @@ knowledgeRoutes.get("/kbs/:kbId/entities", async (c) => {
   } catch (err) {
     return c.json({
       error: "Failed to fetch entities",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/pages/:pageId - Get page with level parameter
+// Returns page content and lists all available levels for the document.
+// =====================================================================
+
+const PAGE_TYPE_TO_LEVEL: Record<string, "L0" | "L1" | "L2"> = {
+  abstract: "L0",
+  overview: "L1",
+  fulltext: "L2",
+};
+
+const LEVEL_TO_PAGE_TYPE: Record<string, string> = {
+  L0: "abstract",
+  L1: "overview",
+  L2: "fulltext",
+};
+
+knowledgeRoutes.get("/kbs/:kbId/pages/:pageId", async (c) => {
+  const kbId = c.req.param("kbId");
+  const pageId = c.req.param("pageId");
+  const levelParam = c.req.query("level"); // "L0", "L1", "L2"
+  const pageTypeParam = c.req.query("pageType"); // "abstract", "overview", "fulltext"
+
+  try {
+    const { DB } = await import("../../store/database.js");
+    const db = DB.getInstance().raw;
+
+    // Look up the original page
+    const page = getWikiPage(pageId);
+    if (!page || page.kbId !== kbId) {
+      return c.json({ error: "Page not found" }, 404);
+    }
+
+    // Determine which page type to return
+    // If levelParam or pageTypeParam is given, try to find the sibling page at that level
+    let targetPage = page;
+    const requestedPageType = pageTypeParam ?? (levelParam ? LEVEL_TO_PAGE_TYPE[levelParam] : undefined);
+
+    if (requestedPageType && requestedPageType !== page.pageType && page.docId) {
+      const sibling = getWikiPageByDoc(page.docId, requestedPageType);
+      if (sibling) {
+        targetPage = sibling;
+      }
+    }
+
+    const content = getPageContent(targetPage.filePath);
+
+    // Find all available levels for this document
+    const availableLevels: Array<"L0" | "L1" | "L2"> = [];
+    if (targetPage.docId) {
+      const siblingRows = db.prepare(
+        `SELECT DISTINCT page_type FROM wiki_pages WHERE doc_id = ? AND page_type IN ('abstract', 'overview', 'fulltext')`,
+      ).all(targetPage.docId) as Array<{ page_type: string }>;
+
+      for (const row of siblingRows) {
+        const lvl = PAGE_TYPE_TO_LEVEL[row.page_type];
+        if (lvl) availableLevels.push(lvl);
+      }
+    } else {
+      // Single page without document association - just report its own level
+      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.pageType];
+      if (lvl) availableLevels.push(lvl);
+    }
+
+    return c.json({
+      id: targetPage.id,
+      kbId: targetPage.kbId,
+      docId: targetPage.docId,
+      pageType: targetPage.pageType,
+      level: PAGE_TYPE_TO_LEVEL[targetPage.pageType] ?? "L1",
+      title: targetPage.title,
+      content,
+      tokenCount: targetPage.tokenCount,
+      availableLevels,
+      createdAt: targetPage.createdAt,
+      updatedAt: targetPage.updatedAt,
+    });
+  } catch (err) {
+    return c.json({
+      error: "Failed to get page",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/pages/:pageId/preview - Preview snippet with highlights
+// Returns a short snippet with keyword highlighting for hover preview.
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/pages/:pageId/preview", async (c) => {
+  const kbId = c.req.param("kbId");
+  const pageId = c.req.param("pageId");
+  const level = c.req.query("level") || "L1"; // "L0", "L1", "L2"
+  const q = c.req.query("q") || ""; // query keywords (space-separated)
+  const snippetLen = parseInt(c.req.query("snippetLen") || "300", 10);
+
+  try {
+    const page = getWikiPage(pageId);
+    if (!page || page.kbId !== kbId) {
+      return c.json({ error: "Page not found" }, 404);
+    }
+
+    // If a specific level is requested, try to load that sibling page
+    let targetPage = page;
+    const requestedType = LEVEL_TO_PAGE_TYPE[level];
+    if (requestedType && requestedType !== page.pageType && page.docId) {
+      const sibling = getWikiPageByDoc(page.docId, requestedType);
+      if (sibling) targetPage = sibling;
+    }
+
+    const fullContent = getPageContent(targetPage.filePath);
+    const keywords = q.split(/\s+/).map((w) => w.trim()).filter(Boolean);
+
+    // Find the best snippet position based on keyword density
+    let snippetStart = 0;
+    if (keywords.length > 0 && fullContent.length > snippetLen) {
+      let bestPos = 0;
+      let bestScore = -1;
+
+      // Slide a window of snippetLen over the content and score by keyword matches
+      const step = Math.max(50, Math.floor(snippetLen / 4));
+      for (let pos = 0; pos < fullContent.length - snippetLen; pos += step) {
+        const window = fullContent.substring(pos, pos + snippetLen).toLowerCase();
+        let score = 0;
+        for (const kw of keywords) {
+          const idx = window.indexOf(kw.toLowerCase());
+          if (idx >= 0) score += 1;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestPos = pos;
+        }
+      }
+
+      if (bestScore > 0) {
+        snippetStart = bestPos;
+      }
+    }
+
+    // Extract snippet
+    let snippet: string;
+    if (fullContent.length <= snippetLen) {
+      snippet = fullContent;
+    } else {
+      const end = Math.min(fullContent.length, snippetStart + snippetLen);
+      snippet = fullContent.substring(snippetStart, end);
+      if (snippetStart > 0) snippet = "..." + snippet;
+      if (end < fullContent.length) snippet = snippet + "...";
+    }
+
+    // Compute available levels
+    const { DB } = await import("../../store/database.js");
+    const db = DB.getInstance().raw;
+    const availableLevels: Array<"L0" | "L1" | "L2"> = [];
+
+    if (targetPage.docId) {
+      const siblingRows = db.prepare(
+        `SELECT DISTINCT page_type FROM wiki_pages WHERE doc_id = ? AND page_type IN ('abstract', 'overview', 'fulltext')`,
+      ).all(targetPage.docId) as Array<{ page_type: string }>;
+
+      for (const row of siblingRows) {
+        const lvl = PAGE_TYPE_TO_LEVEL[row.page_type];
+        if (lvl) availableLevels.push(lvl);
+      }
+    } else {
+      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.pageType];
+      if (lvl) availableLevels.push(lvl);
+    }
+
+    return c.json({
+      title: targetPage.title,
+      level: PAGE_TYPE_TO_LEVEL[targetPage.pageType] ?? level,
+      tokenCount: targetPage.tokenCount,
+      snippet,
+      availableLevels,
+    });
+  } catch (err) {
+    return c.json({
+      error: "Failed to get preview",
       detail: err instanceof Error ? err.message : String(err),
     }, 500);
   }

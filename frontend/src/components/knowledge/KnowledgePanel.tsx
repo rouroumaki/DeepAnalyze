@@ -4,7 +4,7 @@
 // =============================================================================
 
 import { useState, useEffect, useCallback } from "react";
-import { api } from "../../api/client";
+import { api, uploadDocumentWithRetry, fetchDocumentStatus } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useConfirm } from "../../hooks/useConfirm";
 import { useFileUpload, selectFolder } from "../../hooks/useFileUpload";
@@ -49,6 +49,15 @@ interface HealthCheckResult {
   name: string;
   status: "ok" | "error" | "warning";
   message: string;
+}
+
+interface UploadState {
+  docId: string;
+  filename: string;
+  stage: string;
+  progress: number;
+  error?: string;
+  retrying?: boolean;
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -131,6 +140,10 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingKbs, setIsLoadingKbs] = useState(true);
+
+  // --- Upload tracking state ---
+  const [uploads, setUploads] = useState<UploadState[]>([]);
+  const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
 
   // --- Entities state ---
   const [entities, setEntities] = useState<Array<{ name: string; type: string; mentions: number; docCount: number }>>([]);
@@ -228,6 +241,113 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       refreshDocuments();
     } catch {
       toastError("删除失败");
+    }
+  };
+
+  // --- Non-blocking upload with progress tracking ---
+  const handleFiles = async (files: FileList | File[]) => {
+    if (!kbId) return;
+    for (const file of Array.from(files)) {
+      const tempId = `temp-${Date.now()}-${file.name}`;
+      setUploads((prev) => [...prev, { docId: tempId, filename: file.name, stage: "Upload", progress: 0 }]);
+      uploadDocumentWithRetry(kbId, file, {
+        onProgress: (pct) =>
+          setUploads((prev) =>
+            prev.map((u) => (u.docId === tempId ? { ...u, progress: pct } : u))
+          ),
+      })
+        .then((result) => {
+          setUploads((prev) =>
+            prev.map((u) =>
+              u.docId === tempId
+                ? { ...u, docId: result.docId, stage: "Parsing", progress: 45 }
+                : u
+            )
+          );
+          refreshDocuments();
+        })
+        .catch((err) => {
+          setUploads((prev) =>
+            prev.map((u) =>
+              u.docId === tempId
+                ? { ...u, stage: "Error", progress: 0, error: err instanceof Error ? err.message : String(err) }
+                : u
+            )
+          );
+        });
+    }
+  };
+
+  // --- WebSocket disconnect polling fallback ---
+  useEffect(() => {
+    if (!wsConnected && uploads.length > 0) {
+      const interval = setInterval(async () => {
+        for (const upload of uploads) {
+          if (
+            upload.stage !== "Ready" &&
+            upload.stage !== "Error" &&
+            !upload.docId.startsWith("temp-")
+          ) {
+            try {
+              const status = await fetchDocumentStatus(kbId, upload.docId);
+              setUploads((prev) =>
+                prev.map((u) =>
+                  u.docId === upload.docId
+                    ? { ...u, stage: status.stage, progress: status.progress, error: status.error }
+                    : u
+                )
+              );
+            } catch {
+              /* ignore polling errors */
+            }
+          }
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [wsConnected, uploads, kbId]);
+
+  // --- Batch operations ---
+  const toggleSelect = (docId: string) =>
+    setSelectedDocs((prev) => {
+      const next = new Set(prev);
+      next.has(docId) ? next.delete(docId) : next.add(docId);
+      return next;
+    });
+
+  const selectAll = () => setSelectedDocs(new Set(documents.map((d) => d.id)));
+
+  const deselectAll = () => setSelectedDocs(new Set());
+
+  const batchDelete = async () => {
+    if (!kbId || selectedDocs.size === 0) return;
+    const confirmed = await confirm({
+      title: "批量删除",
+      message: `确定要删除选中的 ${selectedDocs.size} 个文档吗？此操作不可撤销。`,
+      confirmLabel: "删除",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+    try {
+      for (const docId of selectedDocs) {
+        await api.deleteDocument(kbId, docId);
+      }
+      success(`已删除 ${selectedDocs.size} 个文档`);
+      setSelectedDocs(new Set());
+      refreshDocuments();
+    } catch {
+      toastError("批量删除失败");
+    }
+  };
+
+  const retryFailed = async (docId: string) => {
+    if (!kbId) return;
+    try {
+      await fetch(`/api/knowledge/kbs/${kbId}/process/${docId}`, { method: "POST" });
+      success("已重新提交处理");
+      refreshDocuments();
+    } catch {
+      toastError("重试失败");
     }
   };
 
@@ -588,8 +708,18 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             {/* Upload toolbar */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                {documents.length > 0 && (
+                  <input
+                    type="checkbox"
+                    checked={selectedDocs.size === documents.length && documents.length > 0}
+                    onChange={() => selectedDocs.size === documents.length ? deselectAll() : selectAll()}
+                    title={selectedDocs.size === documents.length ? "取消全选" : "全选"}
+                    style={{ cursor: "pointer", accentColor: "var(--interactive)" }}
+                  />
+                )}
                 <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
                   {documents.length > 0 ? `${documents.length} 个文档` : ""}
+                  {selectedDocs.size > 0 ? ` (已选 ${selectedDocs.size})` : ""}
                 </span>
                 {/* WS connection indicator */}
                 <span
@@ -605,42 +735,56 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 />
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                {/* Batch delete button */}
+                {selectedDocs.size > 0 && (
+                  <button
+                    onClick={batchDelete}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-2) var(--space-3)",
+                      backgroundColor: "transparent",
+                      color: "var(--error)",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid var(--error)",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    删除 ({selectedDocs.size})
+                  </button>
+                )}
                 {/* Upload folder button */}
                 <button
                   onClick={async () => {
                     if (!kbId) { toastError("请先选择知识库"); return; }
                     const files = await selectFolder();
                     if (files && files.length > 0) {
-                      fileUpload.addFiles(files);
-                      const results = await fileUpload.uploadToKb(kbId);
-                      if (results.length > 0) {
-                        success(`成功上传 ${results.length} 个文件`);
-                        refreshDocuments();
-                      }
+                      handleFiles(files);
                     }
                   }}
-                  disabled={fileUpload.hasPending}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: "var(--space-1)",
                     padding: "var(--space-2) var(--space-3)",
                     backgroundColor: "transparent",
-                    color: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--text-secondary)",
+                    color: "var(--text-secondary)",
                     fontSize: "var(--text-sm)",
                     fontWeight: "var(--font-medium)",
                     borderRadius: "var(--radius-md)",
                     border: "1px solid var(--border-primary)",
-                    cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
-                    opacity: fileUpload.hasPending ? 0.6 : 1,
+                    cursor: "pointer",
                     transition: "all var(--transition-fast)",
                     whiteSpace: "nowrap",
                   }}
                   onMouseEnter={(e) => {
-                    if (!fileUpload.hasPending) {
-                      e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                      e.currentTarget.style.borderColor = "var(--interactive)";
-                    }
+                    e.currentTarget.style.backgroundColor = "var(--bg-hover)";
+                    e.currentTarget.style.borderColor = "var(--interactive)";
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = "transparent";
@@ -656,44 +800,33 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                     if (!kbId) { toastError("请先选择知识库"); return; }
                     const files = await fileUpload.selectFiles(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
                     if (files && files.length > 0) {
-                      const results = await fileUpload.uploadToKb(kbId);
-                      if (results.length > 0) {
-                        success(`成功上传 ${results.length} 个文件`);
-                        refreshDocuments();
-                      }
+                      handleFiles(files);
                     }
                   }}
-                  disabled={fileUpload.hasPending}
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: "var(--space-1)",
                     padding: "var(--space-2) var(--space-3)",
-                    backgroundColor: fileUpload.hasPending ? "var(--text-tertiary)" : "var(--interactive)",
+                    backgroundColor: "var(--interactive)",
                     color: "#fff",
                     fontSize: "var(--text-sm)",
                     fontWeight: "var(--font-medium)",
                     borderRadius: "var(--radius-md)",
                     border: "none",
-                    cursor: fileUpload.hasPending ? "not-allowed" : "pointer",
-                    opacity: fileUpload.hasPending ? 0.6 : 1,
-                    transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
+                    cursor: "pointer",
+                    transition: "background-color var(--transition-fast)",
                     whiteSpace: "nowrap",
                   }}
                   onMouseEnter={(e) => {
-                    if (!fileUpload.hasPending)
-                      e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
+                    e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
                   }}
                   onMouseLeave={(e) =>
                     (e.currentTarget.style.backgroundColor = "var(--interactive)")
                   }
                 >
-                  {fileUpload.hasPending ? (
-                    <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
-                  ) : (
-                    <Upload size={14} />
-                  )}
-                  {fileUpload.hasPending ? "上传中..." : "上传文档"}
+                  <Upload size={14} />
+                  上传文档
                 </button>
                 {/* Manual processing trigger — shown when there are uploaded docs awaiting processing */}
                 {documents.some((d) => d.status === "uploaded" || d.status === "error") && (
@@ -730,54 +863,79 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             </div>
 
             {/* Upload progress indicators */}
-            {fileUpload.uploads.filter((u) => u.status === "uploading" || u.status === "error").map((upload) => (
+            {uploads.map((upload) => (
               <div
-                key={upload.id}
+                key={upload.docId}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: "var(--space-3)",
                   padding: "var(--space-3) var(--space-4)",
-                  backgroundColor: upload.status === "error" ? "var(--error-light)" : "var(--bg-tertiary)",
-                  border: upload.status === "error" ? "1px solid var(--error)" : "1px solid var(--border-primary)",
+                  backgroundColor: upload.stage === "Error" ? "var(--error-light)" : "var(--bg-tertiary)",
+                  border: upload.stage === "Error" ? "1px solid var(--error)" : "1px solid var(--border-primary)",
                   borderRadius: "var(--radius-lg)",
                 }}
               >
-                {upload.status === "uploading" ? (
-                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--interactive)" }} />
-                ) : (
+                {upload.stage === "Error" ? (
                   <AlertCircle size={14} style={{ color: "var(--error)" }} />
+                ) : upload.stage === "Ready" ? (
+                  <CheckCircle size={14} style={{ color: "var(--success)" }} />
+                ) : (
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--interactive)" }} />
                 )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontSize: "var(--text-sm)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {upload.file.name}
+                    {upload.filename}
                   </p>
-                  {upload.status === "uploading" && (
-                    <div style={{ marginTop: "var(--space-1)", height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
-                      <div style={{ width: `${upload.progress}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
+                  {upload.stage !== "Ready" && upload.stage !== "Error" && (
+                    <div style={{ marginTop: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                      <div style={{ flex: 1, height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
+                        <div style={{ width: `${upload.progress}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
+                      </div>
+                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", flexShrink: 0 }}>
+                        {upload.stage} {upload.progress}%
+                      </span>
                     </div>
                   )}
-                  {upload.status === "error" && (
+                  {upload.stage === "Error" && (
                     <p style={{ fontSize: "var(--text-xs)", color: "var(--error)", margin: "var(--space-1) 0 0" }}>
-                      上传失败
+                      {upload.error ?? "上传失败"}
                     </p>
                   )}
                 </div>
+                {upload.stage === "Error" && (
+                  <button
+                    onClick={() => {
+                      if (!upload.docId.startsWith("temp-")) {
+                        retryFailed(upload.docId);
+                      }
+                    }}
+                    style={{
+                      padding: "var(--space-1) var(--space-2)",
+                      border: "1px solid var(--interactive)",
+                      borderRadius: "var(--radius-sm)",
+                      cursor: "pointer",
+                      color: "var(--interactive)",
+                      backgroundColor: "transparent",
+                      fontSize: "var(--text-xs)",
+                      fontWeight: "var(--font-medium)",
+                      flexShrink: 0,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    重试
+                  </button>
+                )}
               </div>
             ))}
 
-            {documents.length === 0 && fileUpload.uploads.length === 0 ? (
+            {documents.length === 0 && uploads.length === 0 ? (
               /* Empty state with DropZone */
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", alignItems: "center" }}>
                 <DropZone
-                  onFiles={async (files) => {
+                  onFiles={(files) => {
                     if (!kbId) { toastError("请先选择知识库"); return; }
-                    fileUpload.addFiles(files);
-                    const results = await fileUpload.uploadToKb(kbId);
-                    if (results.length > 0) {
-                      success(`成功上传 ${results.length} 个文件`);
-                      refreshDocuments();
-                    }
+                    handleFiles(files);
                   }}
                   accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm"
                   label="拖拽文件到此处上传"
@@ -849,11 +1007,17 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                       alignItems: "center",
                       gap: "var(--space-3)",
                       padding: "var(--space-3) var(--space-4)",
-                      backgroundColor: showError ? "var(--error-light)" : "var(--bg-tertiary)",
-                      border: showError ? "1px solid var(--error)" : "1px solid var(--border-primary)",
+                      backgroundColor: showError ? "var(--error-light)" : selectedDocs.has(doc.id) ? "var(--interactive-light)" : "var(--bg-tertiary)",
+                      border: showError ? "1px solid var(--error)" : selectedDocs.has(doc.id) ? "1px solid var(--interactive)" : "1px solid var(--border-primary)",
                       borderRadius: "var(--radius-lg)",
                     }}
                   >
+                    <input
+                      type="checkbox"
+                      checked={selectedDocs.has(doc.id)}
+                      onChange={() => toggleSelect(doc.id)}
+                      style={{ cursor: "pointer", accentColor: "var(--interactive)", flexShrink: 0 }}
+                    />
                     <FileText
                       size={18}
                       style={{

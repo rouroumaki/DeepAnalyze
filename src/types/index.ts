@@ -9,7 +9,7 @@ export type Visibility = 'private' | 'team' | 'public';
 export type DocumentStatus = 'uploaded' | 'parsing' | 'compiling' | 'ready' | 'error';
 
 /** Wiki page types */
-export type PageType = 'abstract' | 'overview' | 'fulltext' | 'entity' | 'concept' | 'report';
+export type PageType = 'abstract' | 'overview' | 'fulltext' | 'structure' | 'entity' | 'concept' | 'report';
 
 /** Wiki link types */
 export type LinkType = 'forward' | 'backward' | 'entity_ref' | 'concept_ref';

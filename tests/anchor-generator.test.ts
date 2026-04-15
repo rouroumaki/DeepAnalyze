@@ -118,4 +118,67 @@ describe('AnchorGenerator', () => {
       expect(anchors[2].id).toBe('doc:table:Sheet2_0');
     });
   });
+
+  describe('generateImageAnchors', () => {
+    test('generates single anchor for image', () => {
+      const anchors = gen.generateImageAnchors('doc1', 'kb1', {
+        description: '系统架构图，展示了微服务的组件关系',
+        ocrText: '用户服务 → API网关 → 数据处理',
+        width: 1920,
+        height: 1080,
+        format: 'PNG',
+      });
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0].id).toBe('doc1:image:0');
+      expect(anchors[0].element_type).toBe('image');
+      expect(anchors[0].section_path).toBe('image');
+      expect(anchors[0].content_preview).toContain('系统架构图');
+      expect(anchors[0].metadata.format).toBe('PNG');
+    });
+  });
+
+  describe('generateAudioAnchors', () => {
+    test('generates anchors per speaker turn', () => {
+      const anchors = gen.generateAudioAnchors('doc2', 'kb1', {
+        duration: 120,
+        speakers: [{ id: 'A', label: '主持人' }, { id: 'B', label: '嘉宾' }],
+        turns: [
+          { speaker: 'A', startTime: 0, endTime: 15, text: '大家好' },
+          { speaker: 'B', startTime: 15, endTime: 45, text: '谢谢邀请' },
+          { speaker: 'A', startTime: 45, endTime: 90, text: '请介绍一下' },
+        ],
+      });
+      expect(anchors).toHaveLength(3);
+      expect(anchors[0].id).toBe('doc2:turn:0');
+      expect(anchors[0].section_title).toBe('主持人');
+      expect(anchors[1].id).toBe('doc2:turn:1');
+      expect(anchors[1].section_title).toBe('嘉宾');
+      expect(anchors[0].page_number).toBe(0);
+      expect(anchors[1].page_number).toBe(15);
+    });
+  });
+
+  describe('generateVideoAnchors', () => {
+    test('generates scene and turn anchors', () => {
+      const anchors = gen.generateVideoAnchors('doc3', 'kb1', {
+        duration: 180,
+        keyframes: [
+          { time: 0, description: '开场白，主持人站在屏幕前' },
+          { time: 60, description: '幻灯片展示，显示数据图表' },
+        ],
+        transcript: {
+          duration: 180,
+          speakers: [{ id: 'A', label: '旁白' }],
+          turns: [
+            { speaker: 'A', startTime: 5, endTime: 30, text: '今天我们来讨论...' },
+            { speaker: 'A', startTime: 65, endTime: 90, text: '从图表可以看出...' },
+          ],
+        },
+      });
+      expect(anchors.filter(a => a.element_type === 'scene')).toHaveLength(2);
+      expect(anchors.filter(a => a.element_type === 'turn')).toHaveLength(2);
+      expect(anchors[0].id).toBe('doc3:scene:0');
+      expect(anchors[2].id).toBe('doc3:turn:0');
+    });
+  });
 });

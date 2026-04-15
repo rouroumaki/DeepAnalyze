@@ -146,4 +146,119 @@ export class AnchorGenerator {
     const text = child.text ?? child.content ?? null;
     return text ? String(text) : null;
   }
+
+  // -----------------------------------------------------------------------
+  // Multimodal anchor generators
+  // -----------------------------------------------------------------------
+
+  /**
+   * Generate anchors for an image — single anchor per image.
+   */
+  generateImageAnchors(
+    docId: string, kbId: string, raw: { description?: string; ocrText?: string; width?: number; height?: number; format?: string },
+  ): AnchorDef[] {
+    return [{
+      id: `${docId}:image:0`,
+      doc_id: docId,
+      kb_id: kbId,
+      element_type: 'image',
+      element_index: 0,
+      section_path: 'image',
+      section_title: undefined,
+      page_number: undefined,
+      raw_json_path: '#/image',
+      structure_page_id: undefined,
+      content_preview: raw.description?.slice(0, MAX_PREVIEW_LENGTH) ?? null,
+      content_hash: null,
+      metadata: {
+        format: raw.format,
+        width: raw.width,
+        height: raw.height,
+      },
+    }];
+  }
+
+  /**
+   * Generate anchors for audio — one anchor per speaker turn.
+   */
+  generateAudioAnchors(
+    docId: string, kbId: string, raw: {
+      duration: number;
+      speakers: Array<{ id: string; label: string }>;
+      turns: Array<{ speaker: string; startTime: number; endTime: number; text: string }>;
+    },
+  ): AnchorDef[] {
+    return raw.turns.map((turn, index) => ({
+      id: `${docId}:turn:${index}`,
+      doc_id: docId,
+      kb_id: kbId,
+      element_type: 'turn',
+      element_index: index,
+      section_path: turn.speaker,
+      section_title: raw.speakers.find(s => s.id === turn.speaker)?.label ?? turn.speaker,
+      page_number: Math.floor(turn.startTime),
+      raw_json_path: `#/turns/${index}`,
+      structure_page_id: undefined,
+      content_preview: turn.text.slice(0, MAX_PREVIEW_LENGTH),
+      content_hash: null,
+      metadata: {
+        startTime: turn.startTime,
+        endTime: turn.endTime,
+        speaker: turn.speaker,
+      },
+    }));
+  }
+
+  /**
+   * Generate anchors for video — scene anchors + dialog turn anchors.
+   */
+  generateVideoAnchors(
+    docId: string, kbId: string, raw: {
+      duration: number;
+      keyframes: Array<{ time: number; description: string }>;
+      transcript: {
+        duration: number;
+        speakers: Array<{ id: string; label: string }>;
+        turns: Array<{ speaker: string; startTime: number; endTime: number; text: string }>;
+      };
+    },
+  ): AnchorDef[] {
+    const sceneAnchors = raw.keyframes.map((kf, index) => ({
+      id: `${docId}:scene:${index}`,
+      doc_id: docId,
+      kb_id: kbId,
+      element_type: 'scene',
+      element_index: index,
+      section_path: `scene_${index}`,
+      section_title: `场景${index + 1}`,
+      page_number: Math.floor(kf.time),
+      raw_json_path: `#/keyframes/${index}`,
+      structure_page_id: undefined,
+      content_preview: kf.description.slice(0, MAX_PREVIEW_LENGTH),
+      content_hash: null,
+      metadata: { time: kf.time },
+    }));
+
+    const turnAnchors = raw.transcript.turns.map((turn, index) => ({
+      id: `${docId}:turn:${index}`,
+      doc_id: docId,
+      kb_id: kbId,
+      element_type: 'turn',
+      element_index: index,
+      section_path: turn.speaker,
+      section_title: raw.transcript.speakers.find(s => s.id === turn.speaker)?.label ?? turn.speaker,
+      page_number: Math.floor(turn.startTime),
+      raw_json_path: `#/transcript/turns/${index}`,
+      structure_page_id: undefined,
+      content_preview: turn.text.slice(0, MAX_PREVIEW_LENGTH),
+      content_hash: null,
+      metadata: {
+        startTime: turn.startTime,
+        endTime: turn.endTime,
+        speaker: turn.speaker,
+      },
+    }));
+
+    return [...sceneAnchors, ...turnAnchors];
+  }
 }

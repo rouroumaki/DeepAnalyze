@@ -24,6 +24,10 @@ import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ParsedContent } from "../services/document-processors/types.js";
 import type { RepoSet } from "../store/repos/interfaces.js";
+import type { ImageRawData, AudioRawData, VideoRawData } from "../services/document-processors/modality-types.js";
+import { compileImageStructure } from "./modality-compilers/image-structure.js";
+import { compileAudioStructure } from "./modality-compilers/audio-structure.js";
+import { compileVideoStructure } from "./modality-compilers/video-structure.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,7 +114,7 @@ export class WikiCompiler {
         await this.compileStructure(kbId, docId, richContent);
 
         // Step 3: Generate Abstract from Structure sections
-        await this.compileAbstract(kbId, docId);
+        await this.compileAbstract(kbId, docId, richContent.modality);
 
         // Also save fulltext for backward compatibility
         this.compileFulltext(
@@ -214,7 +218,7 @@ export class WikiCompiler {
   }
 
   // -----------------------------------------------------------------------
-  // Structure layer: Generate anchor IDs + DocTags section pages
+  // Structure layer: Modality-aware dispatch
   // -----------------------------------------------------------------------
 
   private async compileStructure(
@@ -222,7 +226,9 @@ export class WikiCompiler {
     docId: string,
     content: ParsedContent,
   ): Promise<void> {
+    const modality = content.modality ?? "document";
     const raw = content.raw;
+
     if (!raw) {
       console.log(
         `[WikiCompiler] No raw data for Structure compilation of doc ${docId}, skipping`,
@@ -230,7 +236,74 @@ export class WikiCompiler {
       return;
     }
 
-    // Generate anchors based on modality
+    // Dispatch to modality-specific Structure compilers when PG repos are available
+    if (process.env.PG_HOST && content.doctags) {
+      try {
+        const { createReposAsync } = await import("../store/repos/index.js");
+        const repos = await createReposAsync();
+
+        switch (modality) {
+          case "image":
+            await compileImageStructure({
+              kbId, docId,
+              raw: raw as unknown as ImageRawData,
+              doctags: content.doctags,
+              wikiPageRepo: repos.wikiPage,
+              anchorRepo: repos.anchor,
+              ftsRepo: repos.ftsSearch,
+              anchorGenerator: this.anchorGenerator,
+            });
+            console.log(`[WikiCompiler] Image Structure compiled for doc ${docId}`);
+            return;
+
+          case "audio":
+            await compileAudioStructure({
+              kbId, docId,
+              raw: raw as unknown as AudioRawData,
+              doctags: content.doctags,
+              wikiPageRepo: repos.wikiPage,
+              anchorRepo: repos.anchor,
+              ftsRepo: repos.ftsSearch,
+              anchorGenerator: this.anchorGenerator,
+            });
+            console.log(`[WikiCompiler] Audio Structure compiled for doc ${docId}`);
+            return;
+
+          case "video":
+            await compileVideoStructure({
+              kbId, docId,
+              raw: raw as unknown as VideoRawData,
+              doctags: content.doctags,
+              wikiPageRepo: repos.wikiPage,
+              anchorRepo: repos.anchor,
+              ftsRepo: repos.ftsSearch,
+              anchorGenerator: this.anchorGenerator,
+            });
+            console.log(`[WikiCompiler] Video Structure compiled for doc ${docId}`);
+            return;
+        }
+      } catch (err) {
+        console.warn(
+          `[WikiCompiler] PG modality compiler failed, falling back to document mode:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    // Default: document / excel — use existing anchor + doctags splitting logic
+    await this.compileStructureDocument(kbId, docId, content);
+  }
+
+  // -----------------------------------------------------------------------
+  // Structure layer: Document/Excel fallback (non-PG or PG failure)
+  // -----------------------------------------------------------------------
+
+  private async compileStructureDocument(
+    kbId: string,
+    docId: string,
+    content: ParsedContent,
+  ): Promise<void> {
+    const raw = content.raw!;
     const modality = content.modality ?? "document";
     const anchors: AnchorDef[] =
       modality === "excel"
@@ -272,14 +345,6 @@ export class WikiCompiler {
         section.content,
         wikiDir,
       );
-
-      // Update anchor structure_page_id references
-      if (section.anchorIds.length > 0) {
-        // Get the page we just created to link anchors
-        const createdPage = getWikiPageByDoc(docId, "structure");
-        // Note: This gets the last created structure page. For multiple pages,
-        // we need a better approach - see below.
-      }
     }
 
     console.log(
@@ -294,6 +359,7 @@ export class WikiCompiler {
   private async compileAbstract(
     kbId: string,
     docId: string,
+    modality?: string,
   ): Promise<void> {
     // Collect all structure section titles + previews for the prompt
     const structureSections = await this.getStructureSectionSummaries(docId);
@@ -318,7 +384,17 @@ export class WikiCompiler {
         ? abstractInput.slice(0, 4000) + "\n...(truncated)"
         : abstractInput;
 
-    const prompt = `请为以下文档的结构化章节概要生成一份综合摘要（约200字），包含：
+    // Modality-aware prompt hints
+    const modalityHints: Record<string, string> = {
+      image: '这是一个图片文件。请根据视觉描述和 OCR 文本生成摘要。',
+      audio: '这是一个音频转写文件。请根据对话内容生成主题摘要和关键观点。',
+      video: '这是一个视频文件。请根据场景描述和对话内容生成摘要。',
+      document: '',
+      excel: '这是一个 Excel 表格文件。请根据表格内容生成摘要。',
+    };
+    const hint = modalityHints[modality ?? 'document'] ?? '';
+
+    const prompt = `${hint ? hint + '\n\n' : ''}请为以下文档的结构化章节概要生成一份综合摘要（约200字），包含：
 1. 文档主题和类型判断
 2. 核心要点总结（3-5个关键发现）
 3. 标签：标签1,标签2,...（5-10个关键标签）

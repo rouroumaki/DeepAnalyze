@@ -186,6 +186,7 @@ export interface WikiPageRepo {
   create(data: WikiPageCreate): Promise<WikiPage>;
   getById(id: string): Promise<WikiPage | undefined>;
   getByDocAndType(docId: string, pageType: string): Promise<WikiPage | undefined>;
+  getManyByDocAndType(docId: string, pageType: string): Promise<WikiPage[]>;
   getByKbAndType(kbId: string, pageType?: string): Promise<WikiPage[]>;
   updateMetadata(id: string, metadata: Record<string, unknown>): Promise<void>;
   updateContent(id: string, content: string, contentHash: string, tokenCount: number): Promise<void>;

@@ -21,6 +21,8 @@ import {
 } from "../../store/reports.js";
 import { getOrchestrator } from "../../services/agent/agent-system.js";
 import { randomUUID } from "node:crypto";
+import { createReposAsync } from "../../store/repos/index.js";
+import { DisplayResolver } from "../../services/display-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -570,6 +572,76 @@ export function createReportRoutes(): Hono {
   });
 
   // =====================================================================
+  // GET /reports/:id/sources - Get source documents and anchors for a report
+  // =====================================================================
+
+  router.get("/reports/:id/sources", async (c) => {
+    const id = c.req.param("id");
+
+    const report = getReport(id);
+    if (!report) {
+      return c.json({ error: "Report not found" }, 404);
+    }
+
+    // Extract anchor IDs from report content
+    const anchorIds = extractAnchorIds(report.cleanContent);
+
+    if (anchorIds.length === 0) {
+      // Fallback: extract source page IDs from references
+      const docIds = (report.references ?? [])
+        .map((r) => r.docId)
+        .filter((d): d is string => !!d);
+      const displayResolver = new DisplayResolver();
+      const displayMap = await displayResolver.resolveBatch(docIds);
+
+      return c.json({
+        sources: docIds.map((docId) => ({
+          docId,
+          originalName: displayMap[docId]?.originalName ?? docId,
+          kbName: displayMap[docId]?.kbName ?? "",
+          anchors: [],
+        })),
+      });
+    }
+
+    // Query anchor details
+    const repos = await createReposAsync();
+    const anchors = [];
+    for (const anchorId of anchorIds) {
+      const anchor = await repos.anchor.getById(anchorId);
+      if (anchor) anchors.push(anchor);
+    }
+
+    // Group by document
+    const byDoc = new Map<string, typeof anchors>();
+    for (const a of anchors) {
+      const list = byDoc.get(a.doc_id) || [];
+      list.push(a);
+      byDoc.set(a.doc_id, list);
+    }
+
+    // Display names
+    const displayResolver = new DisplayResolver();
+    const displayMap = await displayResolver.resolveBatch([...byDoc.keys()]);
+
+    const sources = [...byDoc.entries()].map(([docId, docAnchors]) => ({
+      docId,
+      originalName: displayMap[docId]?.originalName ?? docId,
+      kbName: displayMap[docId]?.kbName ?? "",
+      fileType: displayMap[docId]?.fileType ?? "",
+      anchors: docAnchors.map((a) => ({
+        id: a.id,
+        type: a.element_type,
+        sectionTitle: a.section_title,
+        pageNumber: a.page_number,
+        preview: a.content_preview,
+      })),
+    }));
+
+    return c.json({ sources });
+  });
+
+  // =====================================================================
   // GET /tasks/:taskId - Poll report generation task status
   // =====================================================================
 
@@ -901,4 +973,26 @@ function mapPageTypeToNodeType(pageType: string): string {
     default:
       return "document";
   }
+}
+
+/**
+ * Extract anchor IDs from report content.
+ * Matches patterns like (#anchor:docId:paragraph:5) or [来源: ...](#anchor:xxx)
+ */
+function extractAnchorIds(content: string): string[] {
+  const ids: string[] = [];
+  // Match anchor IDs in markdown links: ](#anchor:ID)
+  const anchorLinkRe = /\(#anchor:([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = anchorLinkRe.exec(content)) !== null) {
+    ids.push(match[1]);
+  }
+
+  // Also match 锚点: ID pattern from compound content
+  const anchorRefRe = /锚点:\s*([a-zA-Z0-9_:.-]+)/g;
+  while ((match = anchorRefRe.exec(content)) !== null) {
+    if (!ids.includes(match[1])) ids.push(match[1]);
+  }
+
+  return ids;
 }

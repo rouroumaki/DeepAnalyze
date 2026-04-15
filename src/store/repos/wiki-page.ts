@@ -40,10 +40,18 @@ export class PgWikiPageRepo implements WikiPageRepo {
 
   async getByDocAndType(docId: string, pageType: string): Promise<WikiPage | undefined> {
     const { rows } = await this.pool.query(
-      'SELECT * FROM wiki_pages WHERE doc_id = $1 AND page_type = $2',
+      'SELECT * FROM wiki_pages WHERE doc_id = $1 AND page_type = $2 LIMIT 1',
       [docId, pageType],
     );
     return rows[0] ? this.mapRow(rows[0]) : undefined;
+  }
+
+  async getManyByDocAndType(docId: string, pageType: string): Promise<WikiPage[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM wiki_pages WHERE doc_id = $1 AND page_type = $2 ORDER BY created_at',
+      [docId, pageType],
+    );
+    return rows.map((r: any) => this.mapRow(r));
   }
 
   async getByKbAndType(kbId: string, pageType?: string): Promise<WikiPage[]> {

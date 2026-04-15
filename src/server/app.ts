@@ -16,6 +16,8 @@ import { knowledgeRoutes } from "./routes/knowledge.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSearchRoutes } from "./routes/search.js";
 import { createAgentTeamRoutes } from "./routes/agent-teams.js";
+import { createPreviewRoutes } from "./routes/preview.js";
+import { createSearchTestRoutes } from "./routes/search-test.js";
 import { migrateReports } from "../store/reports.js";
 import { migrateAgentTeams } from "../store/agent-teams.js";
 import { DB } from "../store/database.js";
@@ -50,6 +52,24 @@ export function createApp(): Hono {
   app.route("/api/reports", createReportRoutes());
   app.route("/api/knowledge", knowledgeRoutes);
   app.route("/api/settings", createSettingsRoutes());
+
+  // Preview & Anchor API (lazily initialized)
+  let previewRoutes: Hono | null = null;
+  app.use("/api/preview/*", async (c, next) => {
+    if (!previewRoutes) {
+      previewRoutes = createPreviewRoutes();
+    }
+    await previewRoutes.fetch(c.req.raw, c.env);
+  });
+
+  // Search Test API
+  let searchTestRoutes: Hono | null = null;
+  app.use("/api/search-test/*", async (c, next) => {
+    if (!searchTestRoutes) {
+      searchTestRoutes = createSearchTestRoutes();
+    }
+    await searchTestRoutes.fetch(c.req.raw, c.env);
+  });
 
   // -----------------------------------------------------------------------
   // Search routes — lazily initialized via middleware

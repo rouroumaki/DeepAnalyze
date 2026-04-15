@@ -19,7 +19,7 @@ import {
   deleteDocument,
 } from "../../store/documents.js";
 import { createWikiPage, getWikiPage, getWikiPageByDoc, getWikiPagesByKb, getPageContent } from "../../store/wiki-pages.js";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync, createReadStream } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -1114,6 +1114,124 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
   } catch (err) {
     return c.json({
       error: "Expand failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/documents/:docId/download - Download original file
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/download", async (c) => {
+  const { kbId, docId } = c.req.param();
+
+  const doc = getDocument(docId);
+  if (!doc || doc.kbId !== kbId) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const filePath = doc.filePath;
+  const originalName = doc.filename;
+
+  try {
+    const stream = createReadStream(filePath);
+    return new Response(stream as any, {
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(originalName)}"`,
+      },
+    });
+  } catch {
+    return c.json({ error: "File not found on disk" }, 404);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/documents/:docId/export/:format - Multi-format export
+// format: "raw-json" | "doctags" | "markdown" | "structure-bundle"
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
+  const { kbId, docId, format } = c.req.param();
+
+  try {
+    const { createReposAsync } = await import("../../store/repos/index.js");
+    const repos = await createReposAsync();
+
+    switch (format) {
+      case "raw-json": {
+        const rawPath = join(DEEPANALYZE_CONFIG.dataDir, kbId, "documents", docId, "raw", "docling.json");
+        try {
+          const content = readFileSync(rawPath, "utf-8");
+          return new Response(content, {
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Disposition": `attachment; filename="${docId}_raw.json"`,
+            },
+          });
+        } catch {
+          return c.json({ error: "Raw JSON not found" }, 404);
+        }
+      }
+
+      case "doctags": {
+        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        if (pages.length === 0) return c.json({ error: "No structure pages found" }, 404);
+        const doctags = pages.map((p) => `# ${p.title}\n\n${p.content}`).join("\n\n---\n\n");
+        return new Response(doctags, {
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${docId}_doctags.txt"`,
+          },
+        });
+      }
+
+      case "markdown": {
+        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        if (pages.length === 0) return c.json({ error: "No structure pages found" }, 404);
+        const md = pages.map((p) => `## ${p.title}\n\n${p.content}`).join("\n\n");
+        return new Response(md, {
+          headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${docId}.md"`,
+          },
+        });
+      }
+
+      case "structure-bundle": {
+        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        const anchors = await repos.anchor.getByDocId(docId);
+        const manifest = JSON.stringify({
+          docId,
+          kbId,
+          pages: pages.map((p) => ({
+            id: p.id,
+            title: p.title,
+            pageType: p.page_type,
+            metadata: p.metadata,
+          })),
+          anchors: anchors.map((a) => ({
+            id: a.id,
+            type: a.element_type,
+            sectionTitle: a.section_title,
+            pageNumber: a.page_number,
+          })),
+        }, null, 2);
+        return new Response(manifest, {
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Disposition": `attachment; filename="${docId}_structure_manifest.json"`,
+          },
+        });
+      }
+
+      default:
+        return c.json({ error: `Invalid format: ${format}. Use raw-json, doctags, markdown, or structure-bundle.` }, 400);
+    }
+  } catch (err) {
+    return c.json({
+      error: "Export failed",
       detail: err instanceof Error ? err.message : String(err),
     }, 500);
   }

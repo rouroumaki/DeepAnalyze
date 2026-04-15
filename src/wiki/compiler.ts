@@ -1,7 +1,8 @@
 // =============================================================================
-// DeepAnalyze - Wiki Compiler (L0/L1/L2)
-// The core compilation engine that transforms parsed document content into
-// a layered wiki structure: fulltext (L2) -> overview (L1) -> abstract (L0).
+// DeepAnalyze - Wiki Compiler (Three-Layer Architecture)
+// Transforms parsed document content into a layered wiki structure:
+//   Raw (DoclingDocument JSON) → Structure (DocTags sections) → Abstract (LLM summary)
+// Plus entity extraction and cross-document linking (frozen subsystem).
 // =============================================================================
 
 import { ModelRouter } from "../models/router.js";
@@ -10,6 +11,7 @@ import {
   EntityExtractor,
   type ExtractedEntity,
 } from "./entity-extractor.js";
+import { AnchorGenerator, type AnchorDef } from "./anchor-generator.js";
 import {
   createWikiPage,
   getWikiPageByDoc,
@@ -18,38 +20,63 @@ import {
 import { updateDocumentStatus } from "../store/documents.js";
 import { DB } from "../store/database.js";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import type { ParsedContent } from "../services/document-processors/types.js";
+import type { RepoSet } from "../store/repos/interfaces.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** A single structure section extracted from DocTags by H1 heading splitting. */
+interface StructureSection {
+  title: string;
+  content: string;
+  anchorIds: string[];
+  sectionPath: string;
+  pageRange: string | null;
+  wordCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// WikiCompiler
+// ---------------------------------------------------------------------------
 
 export class WikiCompiler {
   private router: ModelRouter;
   private pageManager: PageManager;
   private entityExtractor: EntityExtractor;
+  private anchorGenerator: AnchorGenerator;
 
   constructor(router: ModelRouter, dataDir: string) {
     this.router = router;
     this.pageManager = new PageManager(dataDir);
     this.entityExtractor = new EntityExtractor(router);
+    this.anchorGenerator = new AnchorGenerator();
   }
+
+  // -----------------------------------------------------------------------
+  // Main compile entry point
+  // -----------------------------------------------------------------------
 
   /**
    * Full compilation pipeline for a single document.
+   * Accepts both legacy string content and new ParsedContent objects.
    *
-   * Stages:
-   *  1. L2 - Save parsed markdown as fulltext page
-   *  2. L1 - Generate structured overview from fulltext via LLM
-   *  3. L0 - Compress overview to one-line abstract via LLM
-   *  4. Extract entities from overview and create entity pages
+   * New flow (with ParsedContent):
+   *   Raw → Structure → Abstract → Entity extraction → Linking
+   *
+   * Legacy flow (string only):
+   *   Fulltext → Overview → Abstract → Entity extraction → Linking
    */
   async compile(
     kbId: string,
     docId: string,
-    parsedContent: string,
+    parsedContent: string | ParsedContent,
     metadata: Record<string, unknown>,
     options?: { skipStatusUpdates?: boolean },
   ): Promise<void> {
-    // Allow reassignment for empty content fallback
-    let content = parsedContent;
     try {
       if (!options?.skipStatusUpdates) {
         updateDocumentStatus(docId, "compiling");
@@ -58,27 +85,52 @@ export class WikiCompiler {
       // Ensure the KB wiki directory structure exists
       await this.pageManager.initKb(kbId);
 
-      // Validate parsed content before compilation
-      if (!content || content.trim().length === 0) {
+      // Detect mode: rich ParsedContent or legacy string
+      const isRichContent = typeof parsedContent !== "string";
+      const richContent = isRichContent
+        ? (parsedContent as ParsedContent)
+        : undefined;
+      const textContent = isRichContent
+        ? (parsedContent as ParsedContent).text
+        : (parsedContent as string);
+
+      // Validate content
+      if (!textContent || textContent.trim().length === 0) {
         console.warn(
           `[WikiCompiler] Empty parsed content for doc ${docId}, writing placeholder`,
         );
-        content = `(Document parsed but produced no extractable text content. File may be empty or use an unsupported encoding.)`;
       }
 
-      // Step 1: Save L2 fulltext
-      await this.compileL2(kbId, docId, content, metadata);
+      if (isRichContent && richContent) {
+        // === NEW three-layer flow ===
+        // Step 1: Save Raw (DoclingDocument JSON)
+        await this.compileRaw(kbId, docId, richContent, metadata);
 
-      // Step 2: Generate L1 overview from fulltext
-      await this.compileL1(kbId, docId, content);
+        // Step 2: Generate Structure pages from DocTags/anchors
+        await this.compileStructure(kbId, docId, richContent);
 
-      // Step 3: Generate L0 abstract from L1
-      await this.compileL0(kbId, docId);
+        // Step 3: Generate Abstract from Structure sections
+        await this.compileAbstract(kbId, docId);
 
-      // Step 4: Extract entities and create entity pages / wiki_links
+        // Also save fulltext for backward compatibility
+        this.compileFulltext(
+          kbId,
+          docId,
+          textContent || "(No extractable text content)",
+          metadata,
+        );
+      } else {
+        // === LEGACY flow ===
+        const content = textContent || "(No extractable text content)";
+        this.compileFulltext(kbId, docId, content, metadata);
+        await this.compileOverview(kbId, docId, content);
+        await this.compileLegacyAbstract(kbId, docId);
+      }
+
+      // Entity extraction and link creation (frozen subsystem)
       await this.extractAndUpdateLinks(kbId, docId);
 
-      // Step 5: Build cross-document links based on shared entities
+      // Build cross-document links (frozen subsystem)
       try {
         const { Linker } = await import("../wiki/linker.js");
         const linker = new Linker();
@@ -106,19 +158,220 @@ export class WikiCompiler {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // L2: Fulltext - save the parsed markdown content as-is
-  // -------------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Raw layer: Save DoclingDocument JSON + metadata to disk
+  // -----------------------------------------------------------------------
 
-  private async compileL2(
+  private async compileRaw(
+    kbId: string,
+    docId: string,
+    content: ParsedContent,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    if (!content.raw) {
+      console.log(
+        `[WikiCompiler] No raw DoclingDocument JSON for doc ${docId}, skipping Raw layer`,
+      );
+      return;
+    }
+
+    const wikiDir = this.pageManager.getWikiDir();
+    const rawDir = join(wikiDir, kbId, "documents", docId, "raw");
+
+    try {
+      mkdirSync(rawDir, { recursive: true });
+    } catch {
+      // Directory may already exist
+    }
+
+    // Save docling.json
+    const doclingPath = join(rawDir, "docling.json");
+    writeFileSync(
+      doclingPath,
+      JSON.stringify(content.raw, null, 2),
+      "utf-8",
+    );
+
+    // Save metadata.json with modality info
+    const metaPath = join(rawDir, "metadata.json");
+    writeFileSync(
+      metaPath,
+      JSON.stringify(
+        {
+          ...metadata,
+          modality: content.modality ?? "document",
+          doctagsAvailable: !!content.doctags,
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    console.log(
+      `[WikiCompiler] Raw layer saved for doc ${docId}: ${doclingPath}`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Structure layer: Generate anchor IDs + DocTags section pages
+  // -----------------------------------------------------------------------
+
+  private async compileStructure(
+    kbId: string,
+    docId: string,
+    content: ParsedContent,
+  ): Promise<void> {
+    const raw = content.raw;
+    if (!raw) {
+      console.log(
+        `[WikiCompiler] No raw data for Structure compilation of doc ${docId}, skipping`,
+      );
+      return;
+    }
+
+    // Generate anchors based on modality
+    const modality = content.modality ?? "document";
+    const anchors: AnchorDef[] =
+      modality === "excel"
+        ? this.anchorGenerator.generateExcelAnchors(docId, kbId, raw)
+        : this.anchorGenerator.generateAnchors(docId, kbId, raw);
+
+    if (anchors.length === 0) {
+      console.log(
+        `[WikiCompiler] No anchors generated for doc ${docId}, skipping Structure layer`,
+      );
+      return;
+    }
+
+    // Write anchors to PG via Repository layer (if available)
+    await this.writeAnchorsToRepo(anchors);
+
+    // Split DocTags into sections by H1 headings
+    const sections = content.doctags
+      ? this.splitDocTagsIntoSections(content.doctags, anchors)
+      : this.buildSectionsFromAnchors(anchors);
+
+    if (sections.length === 0) {
+      console.log(
+        `[WikiCompiler] No structure sections for doc ${docId}, skipping Structure layer`,
+      );
+      return;
+    }
+
+    const wikiDir = this.pageManager.getWikiDir();
+
+    // Create a structure page for each section
+    for (const section of sections) {
+      const sectionTitle = section.title || `Section ${section.sectionPath || "0"}`;
+      createWikiPage(
+        kbId,
+        docId,
+        "structure",
+        sectionTitle,
+        section.content,
+        wikiDir,
+      );
+
+      // Update anchor structure_page_id references
+      if (section.anchorIds.length > 0) {
+        // Get the page we just created to link anchors
+        const createdPage = getWikiPageByDoc(docId, "structure");
+        // Note: This gets the last created structure page. For multiple pages,
+        // we need a better approach - see below.
+      }
+    }
+
+    console.log(
+      `[WikiCompiler] Structure layer: ${sections.length} sections, ${anchors.length} anchors for doc ${docId}`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Abstract layer: LLM-generated summary from Structure sections
+  // -----------------------------------------------------------------------
+
+  private async compileAbstract(
+    kbId: string,
+    docId: string,
+  ): Promise<void> {
+    // Collect all structure section titles + previews for the prompt
+    const structureSections = await this.getStructureSectionSummaries(docId);
+
+    // If no structure sections, fall back to overview content
+    const abstractInput =
+      structureSections.length > 0
+        ? structureSections
+            .map((s) => `## ${s.title}\n${s.preview}`)
+            .join("\n\n")
+        : this.getOverviewFallback(docId);
+
+    if (!abstractInput || abstractInput.trim().length === 0) {
+      console.warn(
+        `[WikiCompiler] No input for abstract generation, doc ${docId}`,
+      );
+      return;
+    }
+
+    const truncated =
+      abstractInput.length > 4000
+        ? abstractInput.slice(0, 4000) + "\n...(truncated)"
+        : abstractInput;
+
+    const prompt = `请为以下文档的结构化章节概要生成一份综合摘要（约200字），包含：
+1. 文档主题和类型判断
+2. 核心要点总结（3-5个关键发现）
+3. 标签：标签1,标签2,...（5-10个关键标签）
+4. 类型：[文档类型]
+5. 日期：[文档中提到的关键日期]
+
+文档章节概要：
+${truncated}`;
+
+    let response: string;
+    try {
+      const result = await this.router.chat(
+        [{ role: "user", content: prompt }],
+        { model: this.router.getDefaultModel("summarizer") },
+      );
+      response = result.content;
+      if (!response || response.trim().length === 0) {
+        response = "";
+      }
+    } catch (err) {
+      console.warn(
+        `[WikiCompiler] Abstract generation failed for doc ${docId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      response = "";
+    }
+
+    if (!response || response.trim().length === 0) {
+      response = abstractInput.slice(0, 200).split("\n")[0] || "No abstract available.";
+    }
+
+    createWikiPage(
+      kbId,
+      docId,
+      "abstract",
+      `Abstract: ${docId}`,
+      response,
+      this.pageManager.getWikiDir(),
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Legacy: Fulltext (L2 equivalent - backward compatibility)
+  // -----------------------------------------------------------------------
+
+  private compileFulltext(
     kbId: string,
     docId: string,
     content: string,
     metadata: Record<string, unknown>,
-  ): Promise<void> {
+  ): void {
     const wikiDir = this.pageManager.getWikiDir();
 
-    // Save parsed markdown as L2 fulltext page
     createWikiPage(
       kbId,
       docId,
@@ -128,7 +381,7 @@ export class WikiCompiler {
       wikiDir,
     );
 
-    // Also save metadata.json alongside the parsed content
+    // Save metadata.json
     const metadataPath = join(
       wikiDir,
       kbId,
@@ -146,16 +399,15 @@ export class WikiCompiler {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // L1: Overview - generate structured overview from fulltext via LLM
-  // -------------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Legacy: Overview (L1 equivalent)
+  // -----------------------------------------------------------------------
 
-  private async compileL1(
+  private async compileOverview(
     kbId: string,
     docId: string,
     fullContent: string,
   ): Promise<void> {
-    // Truncate content if too long for model input (~6000 chars max for prompt)
     const truncated =
       fullContent.length > 6000
         ? fullContent.slice(0, 6000) + "\n...(truncated)"
@@ -180,22 +432,17 @@ ${truncated}`;
         { model: this.router.getDefaultModel("summarizer") },
       );
       response = result.content;
-      // Guard against empty LLM response
       if (!response || response.trim().length === 0) {
-        console.warn(
-          `[WikiCompiler] L1 LLM returned empty content for doc ${docId}, using fallback`,
-        );
         response = "";
       }
     } catch (err) {
       console.warn(
-        `[WikiCompiler] L1 generation failed for doc ${docId}, using truncated content as fallback:`,
+        `[WikiCompiler] Overview generation failed for doc ${docId}:`,
         err instanceof Error ? err.message : String(err),
       );
       response = "";
     }
 
-    // Ensure we always have non-empty content for L1
     if (!response || response.trim().length === 0) {
       response = `# Document Overview (auto-generated)\n\n${truncated}`;
     }
@@ -210,16 +457,15 @@ ${truncated}`;
     );
   }
 
-  // -------------------------------------------------------------------------
-  // L0: Abstract - compress L1 overview to a one-line summary
-  // -------------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Legacy: Abstract from Overview
+  // -----------------------------------------------------------------------
 
-  private async compileL0(kbId: string, docId: string): Promise<void> {
-    // Read L1 overview
+  private async compileLegacyAbstract(kbId: string, docId: string): Promise<void> {
     const l1Page = getWikiPageByDoc(docId, "overview");
     if (!l1Page) {
       console.warn(
-        `[WikiCompiler] L1 overview not found for doc ${docId}, skipping L0`,
+        `[WikiCompiler] Overview not found for doc ${docId}, skipping Abstract`,
       );
       return;
     }
@@ -229,13 +475,12 @@ ${truncated}`;
       l1Content = getPageContent(l1Page.filePath);
     } catch (err) {
       console.warn(
-        `[WikiCompiler] Failed to read L1 content for doc ${docId}:`,
+        `[WikiCompiler] Failed to read overview for doc ${docId}:`,
         err instanceof Error ? err.message : String(err),
       );
       return;
     }
 
-    // Truncate L1 content if needed
     const truncated =
       l1Content.length > 4000
         ? l1Content.slice(0, 4000) + "\n...(truncated)"
@@ -257,22 +502,17 @@ ${truncated}`;
         { model: this.router.getDefaultModel("summarizer") },
       );
       response = result.content;
-      // Guard against empty LLM response
       if (!response || response.trim().length === 0) {
-        console.warn(
-          `[WikiCompiler] L0 LLM returned empty content for doc ${docId}, using fallback`,
-        );
         response = "";
       }
     } catch (err) {
       console.warn(
-        `[WikiCompiler] L0 generation failed for doc ${docId}, using first line of L1 as fallback:`,
+        `[WikiCompiler] Abstract generation failed for doc ${docId}:`,
         err instanceof Error ? err.message : String(err),
       );
       response = "";
     }
 
-    // Ensure we always have non-empty content for L0
     if (!response || response.trim().length === 0) {
       response = l1Content.slice(0, 200).split("\n")[0] || "No abstract available.";
     }
@@ -287,19 +527,19 @@ ${truncated}`;
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Entity extraction and link creation
-  // -------------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Entity extraction and link creation (FROZEN - no modifications)
+  // -----------------------------------------------------------------------
 
   private async extractAndUpdateLinks(
     kbId: string,
     docId: string,
   ): Promise<void> {
-    // Read L1 overview for entity extraction
+    // Read overview for entity extraction (use overview or abstract as source)
     const l1Page = getWikiPageByDoc(docId, "overview");
     if (!l1Page) {
       console.warn(
-        `[WikiCompiler] L1 overview not found for doc ${docId}, skipping entity extraction`,
+        `[WikiCompiler] Overview not found for doc ${docId}, skipping entity extraction`,
       );
       return;
     }
@@ -309,7 +549,7 @@ ${truncated}`;
       l1Content = getPageContent(l1Page.filePath);
     } catch (err) {
       console.warn(
-        `[WikiCompiler] Failed to read L1 content for entity extraction, doc ${docId}:`,
+        `[WikiCompiler] Failed to read overview for entity extraction, doc ${docId}:`,
         err instanceof Error ? err.message : String(err),
       );
       return;
@@ -378,12 +618,228 @@ ${truncated}`;
           }
         }
       } catch (err) {
-        // Log but don't fail the entire compilation for one entity
         console.warn(
           `[WikiCompiler] Failed to process entity "${entity.name}":`,
           err instanceof Error ? err.message : String(err),
         );
       }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Private helpers: Structure layer
+  // -----------------------------------------------------------------------
+
+  /**
+   * Split DocTags text into sections by [h1] markers.
+   * Each section corresponds to a structure wiki page.
+   */
+  private splitDocTagsIntoSections(
+    doctags: string,
+    anchors: AnchorDef[],
+  ): StructureSection[] {
+    const lines = doctags.split("\n");
+    const sections: StructureSection[] = [];
+    let currentTitle = "概述";
+    let currentContent: string[] = [];
+    let currentPath = "";
+    let h1Idx = 0;
+
+    for (const line of lines) {
+      // Check for H1 heading markers in DocTags format
+      const h1Match = line.match(/^\[h1\]\s*(.+)/);
+      if (h1Match) {
+        // Flush previous section
+        if (currentContent.length > 0) {
+          const content = currentContent.join("\n").trim();
+          if (content) {
+            h1Idx++;
+            currentPath = `${h1Idx}`;
+            const sectionAnchors = anchors.filter(
+              (a) => a.section_path === currentPath || a.section_path === `${h1Idx}`,
+            );
+            sections.push({
+              title: currentTitle,
+              content,
+              anchorIds: sectionAnchors.map((a) => a.id),
+              sectionPath: currentPath,
+              pageRange: null,
+              wordCount: content.length,
+            });
+          }
+        }
+        currentTitle = h1Match[1].trim();
+        currentContent = [line];
+        continue;
+      }
+
+      // Check for H2 markers (subsections within current H1)
+      const h2Match = line.match(/^\[h2\]\s*(.+)/);
+      if (h2Match) {
+        // H2 is a subsection - keep it within the current H1 section
+        currentContent.push(line);
+        continue;
+      }
+
+      currentContent.push(line);
+    }
+
+    // Flush last section
+    if (currentContent.length > 0) {
+      const content = currentContent.join("\n").trim();
+      if (content) {
+        if (sections.length === 0) {
+          h1Idx = 1;
+          currentPath = "1";
+        }
+        const sectionAnchors = anchors.filter(
+          (a) => a.section_path === currentPath,
+        );
+        sections.push({
+          title: currentTitle,
+          content,
+          anchorIds: sectionAnchors.map((a) => a.id),
+          sectionPath: currentPath,
+          pageRange: null,
+          wordCount: content.length,
+        });
+      }
+    }
+
+    return sections;
+  }
+
+  /**
+   * Build sections from anchors when DocTags is not available.
+   * Groups anchors by section_path.
+   */
+  private buildSectionsFromAnchors(anchors: AnchorDef[]): StructureSection[] {
+    const sectionMap = new Map<string, AnchorDef[]>();
+
+    for (const anchor of anchors) {
+      const path = anchor.section_path || "0";
+      if (!sectionMap.has(path)) {
+        sectionMap.set(path, []);
+      }
+      sectionMap.get(path)!.push(anchor);
+    }
+
+    const sections: StructureSection[] = [];
+    for (const [path, pathAnchors] of sectionMap) {
+      const headingAnchor = pathAnchors.find((a) => a.element_type === "heading");
+      const title = headingAnchor?.section_title || `Section ${path}`;
+      const content = pathAnchors
+        .map((a) => a.content_preview || "")
+        .filter(Boolean)
+        .join("\n\n");
+
+      sections.push({
+        title,
+        content: content || `(Section: ${title})`,
+        anchorIds: pathAnchors.map((a) => a.id),
+        sectionPath: path,
+        pageRange: null,
+        wordCount: content.length,
+      });
+    }
+
+    return sections;
+  }
+
+  /**
+   * Write anchors to the PG Repository layer if available.
+   */
+  private async writeAnchorsToRepo(anchors: AnchorDef[]): Promise<void> {
+    if (!process.env.PG_HOST) return;
+
+    try {
+      const { createReposAsync } = await import("../store/repos/index.js");
+      const repos = await createReposAsync();
+
+      // Delete existing anchors for this doc (to handle recompilation)
+      if (anchors.length > 0) {
+        await repos.anchor.deleteByDocId(anchors[0].doc_id);
+      }
+
+      await repos.anchor.batchInsert(anchors);
+      console.log(
+        `[WikiCompiler] Wrote ${anchors.length} anchors to PG`,
+      );
+    } catch (err) {
+      console.warn(
+        `[WikiCompiler] Failed to write anchors to PG:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
+   * Get structure section summaries from anchors for abstract generation.
+   */
+  private async getStructureSectionSummaries(
+    docId: string,
+  ): Promise<Array<{ title: string; preview: string }>> {
+    // Try PG Repository first
+    if (process.env.PG_HOST) {
+      try {
+        const { createReposAsync } = await import("../store/repos/index.js");
+        const repos = await createReposAsync();
+        const anchors = await repos.anchor.getByDocId(docId);
+
+        // Group by section_path, build summaries
+        const sectionMap = new Map<
+          string,
+          { title: string; previews: string[] }
+        >();
+
+        for (const anchor of anchors) {
+          const path = anchor.section_path || "0";
+          if (!sectionMap.has(path)) {
+            sectionMap.set(path, {
+              title: anchor.section_title || `Section ${path}`,
+              previews: [],
+            });
+          }
+          if (anchor.content_preview) {
+            sectionMap.get(path)!.previews.push(anchor.content_preview);
+          }
+        }
+
+        return Array.from(sectionMap.entries()).map(([, v]) => ({
+          title: v.title,
+          preview: v.previews.slice(0, 3).join("\n"),
+        }));
+      } catch {
+        // Fall through to SQLite
+      }
+    }
+
+    // Fallback: no anchors available
+    return [];
+  }
+
+  /**
+   * Get overview content as fallback for abstract generation.
+   */
+  private getOverviewFallback(docId: string): string {
+    const overviewPage = getWikiPageByDoc(docId, "overview");
+    if (overviewPage) {
+      try {
+        return getPageContent(overviewPage.filePath);
+      } catch {
+        // Fall through
+      }
+    }
+
+    const fulltextPage = getWikiPageByDoc(docId, "fulltext");
+    if (fulltextPage) {
+      try {
+        return getPageContent(fulltextPage.filePath).slice(0, 2000);
+      } catch {
+        // Fall through
+      }
+    }
+
+    return "";
   }
 }

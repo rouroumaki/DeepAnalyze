@@ -15,6 +15,7 @@ import { migration as m004_settings } from './migrations/004_settings.ts';
 import { migration as m005_session_memory } from './migrations/005_session_memory.ts';
 import { migration as m006_cron_jobs } from './migrations/006_cron_jobs.ts';
 import { migration as m007_processing_steps } from './migrations/007_processing_steps.ts';
+import { migration as m008_embedding_stale } from './migrations/008_embedding_stale.ts';
 
 /** Ordered list of migrations */
 const MIGRATIONS = [
@@ -25,6 +26,7 @@ const MIGRATIONS = [
   m005_session_memory,
   m006_cron_jobs,
   m007_processing_steps,
+  m008_embedding_stale,
 ] as const;
 
 // ---------------------------------------------------------------------------

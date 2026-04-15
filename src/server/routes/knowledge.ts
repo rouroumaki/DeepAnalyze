@@ -1237,3 +1237,47 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
     }, 500);
   }
 });
+
+// =============================================================================
+// POST /kbs/:kbId/reindex — Reindex all documents in a knowledge base
+// Triggered when embedding model dimension changes to rebuild stale embeddings.
+// =============================================================================
+
+knowledgeRoutes.post("/kbs/:kbId/reindex", async (c) => {
+  const kbId = c.req.param("kbId");
+
+  try {
+    const kb = getKnowledgeBase(kbId);
+    if (!kb) {
+      return c.json({ error: "Knowledge base not found" }, 404);
+    }
+
+    const docs = listDocuments(kbId);
+    const queue = getProcessingQueue();
+    let enqueued = 0;
+
+    for (const doc of docs) {
+      if (doc.status === "ready") {
+        queue.enqueue({
+          kbId,
+          docId: doc.id,
+          filename: doc.filename,
+          filePath: doc.filePath,
+          fileType: doc.fileType,
+        });
+        enqueued++;
+      }
+    }
+
+    return c.json({
+      message: `Reindex triggered for ${enqueued} documents in knowledge base ${kbId}`,
+      enqueued,
+      total: docs.length,
+    });
+  } catch (err) {
+    return c.json({
+      error: "Reindex failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});

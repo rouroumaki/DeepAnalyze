@@ -140,16 +140,16 @@ export class Indexer {
     const db = DB.getInstance().raw;
     const modelName = this.embeddingManager.providerName;
 
-    // Check for an existing embedding
+    // Check for an existing embedding (skip if stale)
     const existing = db
       .prepare(
-        "SELECT vector FROM embeddings WHERE page_id = ? AND model_name = ? AND chunk_index = ?",
+        "SELECT vector, stale FROM embeddings WHERE page_id = ? AND model_name = ? AND chunk_index = ?",
       )
       .get(pageId, modelName, chunkIndex) as
       | Record<string, unknown>
       | undefined;
 
-    if (existing) {
+    if (existing && !existing.stale) {
       const blob = existing.vector as Buffer;
       return new Float32Array(
         blob.buffer,

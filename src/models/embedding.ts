@@ -247,9 +247,51 @@ export class EmbeddingManager {
     this.provider = this.resolveProvider(router);
   }
 
-  /** Initialize the manager — registers the global singleton. */
+  /** Initialize the manager — registers the global singleton and checks dimension changes. */
   async initialize(): Promise<void> {
     setEmbeddingManager(this);
+    await this.checkDimensionChange();
+  }
+
+  /**
+   * Compare current embedding dimension with previously stored value.
+   * If different, mark all existing embeddings as stale and log a warning.
+   * The actual reindex should be triggered separately via the knowledge route
+   * or processing queue.
+   */
+  private async checkDimensionChange(): Promise<void> {
+    try {
+      const store = new SettingsStore();
+      const storedDimStr = store.get("embedding_dimension");
+      const currentDim = this.provider.dimension;
+
+      if (storedDimStr === null) {
+        // First run — store current dimension
+        store.set("embedding_dimension", String(currentDim));
+        return;
+      }
+
+      const storedDim = parseInt(storedDimStr, 10);
+      if (storedDim === currentDim) return;
+
+      // Dimension changed — mark all embeddings as stale
+      console.warn(
+        `[EmbeddingManager] Dimension changed: ${storedDim} → ${currentDim}. ` +
+        `Marking all existing embeddings as stale. Trigger reindex to rebuild.`,
+      );
+
+      const db = DB.getInstance().raw;
+      db.prepare("UPDATE embeddings SET stale = 1").run();
+
+      // Update stored dimension
+      store.set("embedding_dimension", String(currentDim));
+    } catch (err) {
+      // Non-critical — dimension check failure should not prevent startup
+      console.warn(
+        "[EmbeddingManager] Dimension change check failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   /** Generate an embedding for a single piece of text. */
@@ -283,6 +325,22 @@ export class EmbeddingManager {
   /** Get the name of the current embedding provider. */
   get providerName(): string {
     return this.provider.name;
+  }
+
+  /**
+   * Check whether there are stale embeddings in the database.
+   * Returns the count of stale embedding rows, or 0 if none.
+   */
+  getStaleCount(): number {
+    try {
+      const db = DB.getInstance().raw;
+      const row = db
+        .prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE stale = 1")
+        .get() as { cnt: number } | undefined;
+      return row?.cnt ?? 0;
+    } catch {
+      return 0;
+    }
   }
 
   // -----------------------------------------------------------------------

@@ -18,6 +18,7 @@ import { CompactionEngine } from "./compaction.js";
 import { MicroCompactor } from "./micro-compact.js";
 import { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
 import { SettingsStore } from "../../store/settings.js";
+import { DisplayResolver } from "../display-resolver.js";
 import type {
   AgentDefinition,
   AgentRunOptions,
@@ -65,6 +66,7 @@ export class AgentRunner {
   private modelRouter: ModelRouter;
   private toolRegistry: ToolRegistry;
   private agentDefinitions = new Map<string, AgentDefinition>();
+  private displayResolver: DisplayResolver | null = null;
 
   constructor(modelRouter: ModelRouter, toolRegistry: ToolRegistry) {
     this.modelRouter = modelRouter;
@@ -138,7 +140,16 @@ export class AgentRunner {
     const compactionEvents: Array<{ turn: number; method: string; tokensSaved: number }> = [];
 
     // Track accessed wiki pages for source tracing
-    const accessedPages = new Map<string, { pageId: string; title: string }>();
+    const accessedPages = new Map<string, {
+      pageId: string;
+      title: string;
+      docId?: string;
+      originalName?: string;
+      kbName?: string;
+      sectionTitle?: string;
+      pageNumber?: number | null;
+      anchorId?: string;
+    }>();
 
     // Initialize context management components (reused across turns, L1/L2 fix)
     const contextManager = new ContextManager(this.modelRouter, modelId, toolDefs, agentSettings);
@@ -359,16 +370,49 @@ export class AgentRunner {
         });
 
         // Trigger compound with source tracing
-        const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
+        const { KnowledgeCompounder, compoundWithAnchors } = await import("../../wiki/knowledge-compound.js");
         const { DEEPANALYZE_CONFIG } = await import("../../core/config.js");
         const compounder = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
-        compounder.compoundWithTracing(
-          kbId,
-          agentType,
-          options.input,
-          finalOutput,
-          Array.from(accessedPages.values()),
-        );
+
+        // Check if we have anchor-level data for enhanced tracing
+        const anchorData = Array.from(accessedPages.values())
+          .filter(p => p.anchorId && p.docId)
+          .map(p => ({
+            anchorId: p.anchorId!,
+            docId: p.docId!,
+            originalName: p.originalName ?? p.docId ?? p.pageId,
+            sectionTitle: p.sectionTitle ?? null,
+            pageNumber: p.pageNumber ?? null,
+            role: "supporting" as const,
+          }));
+
+        if (anchorData.length > 0) {
+          // Anchor-level tracing
+          const anchorContent = compoundWithAnchors(
+            kbId,
+            agentType,
+            options.input,
+            finalOutput,
+            anchorData,
+          );
+          if (anchorContent) {
+            compounder.compoundAgentResult(
+              kbId,
+              agentType,
+              options.input,
+              finalOutput + "\n\n" + anchorContent,
+            );
+          }
+        } else {
+          // Fallback to page-level tracing
+          compounder.compoundWithTracing(
+            kbId,
+            agentType,
+            options.input,
+            finalOutput,
+            Array.from(accessedPages.values()).map(p => ({ pageId: p.pageId, title: p.title })),
+          );
+        }
       } catch (err) {
         // Compound failure should not break the agent flow
         console.warn("[AgentRunner] Auto-compound failed:", err instanceof Error ? err.message : String(err));
@@ -452,6 +496,11 @@ export class AgentRunner {
       this.collectAccessedPages(toolName, result, accessedPages);
     }
 
+    // Inject display names (originalName, kbName) into tool results
+    if (["kb_search", "wiki_browse", "expand"].includes(toolName)) {
+      result = await this.injectDisplayNames(toolName, result);
+    }
+
     let resultContent: string;
     try {
       resultContent = JSON.stringify(result);
@@ -476,7 +525,16 @@ export class AgentRunner {
   private collectAccessedPages(
     toolName: string,
     result: unknown,
-    accessedPages: Map<string, { pageId: string; title: string }>,
+    accessedPages: Map<string, {
+      pageId: string;
+      title: string;
+      docId?: string;
+      originalName?: string;
+      kbName?: string;
+      sectionTitle?: string;
+      pageNumber?: number | null;
+      anchorId?: string;
+    }>,
   ): void {
     try {
       const obj = result as Record<string, unknown>;
@@ -485,14 +543,30 @@ export class AgentRunner {
       if (toolName === "kb_search" && Array.isArray(obj.results)) {
         for (const r of obj.results as Array<Record<string, unknown>>) {
           if (typeof r.pageId === "string" && typeof r.title === "string") {
-            accessedPages.set(r.pageId, { pageId: r.pageId, title: r.title });
+            accessedPages.set(r.pageId, {
+              pageId: r.pageId,
+              title: r.title,
+              docId: typeof r.docId === "string" ? r.docId : undefined,
+              originalName: typeof r.originalName === "string" ? r.originalName : undefined,
+              kbName: typeof r.kbName === "string" ? r.kbName : undefined,
+              sectionTitle: typeof r.sectionTitle === "string" ? r.sectionTitle : undefined,
+              anchorId: typeof r.anchorId === "string" ? r.anchorId : undefined,
+            });
           }
         }
       } else if (toolName === "wiki_browse") {
         // wiki_browse returns { page: { id, title } } when viewing a specific page
         const page = obj.page as Record<string, unknown> | undefined;
         if (page && typeof page.id === "string" && typeof page.title === "string") {
-          accessedPages.set(page.id, { pageId: page.id, title: page.title });
+          accessedPages.set(page.id, {
+            pageId: page.id,
+            title: page.title,
+            docId: typeof page.docId === "string" ? page.docId : undefined,
+            originalName: typeof page.originalName === "string" ? page.originalName : undefined,
+            sectionTitle: typeof page.sectionTitle === "string" ? page.sectionTitle : undefined,
+            pageNumber: typeof page.pageNumber === "number" ? page.pageNumber : undefined,
+            anchorId: typeof page.anchorId === "string" ? page.anchorId : undefined,
+          });
         }
         // Also collect pages from listed results
         if (Array.isArray(obj.pages)) {
@@ -505,7 +579,15 @@ export class AgentRunner {
       } else if (toolName === "expand" && obj.result) {
         const expandResult = obj.result as Record<string, unknown>;
         if (typeof expandResult.pageId === "string" && typeof expandResult.title === "string") {
-          accessedPages.set(expandResult.pageId, { pageId: expandResult.pageId, title: expandResult.title });
+          accessedPages.set(expandResult.pageId, {
+            pageId: expandResult.pageId,
+            title: expandResult.title,
+            docId: typeof expandResult.docId === "string" ? expandResult.docId : undefined,
+            originalName: typeof expandResult.originalName === "string" ? expandResult.originalName : undefined,
+            sectionTitle: typeof expandResult.sectionTitle === "string" ? expandResult.sectionTitle : undefined,
+            pageNumber: typeof expandResult.pageNumber === "number" ? expandResult.pageNumber : undefined,
+            anchorId: typeof expandResult.anchorId === "string" ? expandResult.anchorId : undefined,
+          });
         }
       }
     } catch {
@@ -514,7 +596,73 @@ export class AgentRunner {
   }
 
   // -----------------------------------------------------------------------
-  // Completion detection
+  // Display name injection
+  // -----------------------------------------------------------------------
+
+  /**
+   * Inject originalName and kbName into tool results so the LLM sees
+   * user-visible file names instead of internal UUIDs.
+   */
+  private async injectDisplayNames(toolName: string, result: unknown): Promise<unknown> {
+    try {
+      if (!this.displayResolver) {
+        this.displayResolver = new DisplayResolver();
+      }
+
+      const obj = result as Record<string, unknown>;
+      if (!obj || typeof obj !== "object") return result;
+
+      // Extract docIds from the result structure
+      const docIds: string[] = [];
+
+      if (toolName === "kb_search" && Array.isArray(obj.results)) {
+        for (const r of obj.results as Array<Record<string, unknown>>) {
+          if (typeof r.docId === "string") docIds.push(r.docId);
+        }
+      } else if (toolName === "wiki_browse") {
+        const page = obj.page as Record<string, unknown> | undefined;
+        if (page && typeof page.docId === "string") docIds.push(page.docId);
+      } else if (toolName === "expand" && obj.result) {
+        const expandResult = obj.result as Record<string, unknown>;
+        if (typeof expandResult.docId === "string") docIds.push(expandResult.docId);
+      }
+
+      if (docIds.length === 0) return result;
+
+      const displayMap = await this.displayResolver.resolveBatch(docIds);
+
+      // Inject display names into result objects
+      if (toolName === "kb_search" && Array.isArray(obj.results)) {
+        for (const r of obj.results as Array<Record<string, unknown>>) {
+          const display = displayMap[r.docId as string];
+          if (display) {
+            (r as Record<string, unknown>).originalName = display.originalName;
+            (r as Record<string, unknown>).kbName = display.kbName;
+          }
+        }
+      } else if (toolName === "wiki_browse") {
+        const page = obj.page as Record<string, unknown> | undefined;
+        if (page) {
+          const display = displayMap[page.docId as string];
+          if (display) {
+            (page as Record<string, unknown>).originalName = display.originalName;
+            (page as Record<string, unknown>).kbName = display.kbName;
+          }
+        }
+      } else if (toolName === "expand" && obj.result) {
+        const expandResult = obj.result as Record<string, unknown>;
+        const display = displayMap[expandResult.docId as string];
+        if (display) {
+          (expandResult as Record<string, unknown>).originalName = display.originalName;
+          (expandResult as Record<string, unknown>).kbName = display.kbName;
+        }
+      }
+    } catch {
+      // Non-critical: display name injection should never break tool execution
+    }
+
+    return result;
+  }
   // -----------------------------------------------------------------------
 
   private isDone(

@@ -383,3 +383,73 @@ export class KnowledgeCompounder {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Anchor-level source tracing (standalone function)
+// ---------------------------------------------------------------------------
+
+/**
+ * Anchor-level source tracing (enhanced alternative to page-level tracing).
+ * Generates a structured source tracing section with confidence scoring.
+ */
+export function compoundWithAnchors(
+  kbId: string,
+  agentType: string,
+  input: string,
+  output: string,
+  anchors: Array<{
+    anchorId: string;
+    docId: string;
+    originalName: string;
+    sectionTitle: string | null;
+    pageNumber: number | null;
+    role: "supporting" | "contradicting" | "referenced";
+  }>,
+): string | null {
+  if (anchors.length === 0) return null;
+
+  // Group by document
+  const byDoc = new Map<string, typeof anchors>();
+  for (const a of anchors) {
+    const existing = byDoc.get(a.docId) || [];
+    existing.push(a);
+    byDoc.set(a.docId, existing);
+  }
+
+  // Calculate confidence
+  const supportingCount = anchors.filter(a => a.role === "supporting").length;
+  const confidence = supportingCount >= 3 ? "高" : supportingCount >= 1 ? "中" : "低";
+
+  // Generate compound content
+  const sections: string[] = [];
+
+  sections.push(`## 来源溯源（锚点级）`);
+  sections.push(`**置信度:** ${confidence}（${supportingCount} 个独立来源）`);
+  sections.push("");
+
+  for (const [, docAnchors] of byDoc) {
+    const docName = docAnchors[0].originalName;
+    sections.push(`### ${docName}`);
+
+    for (const a of docAnchors) {
+      const location = [
+        a.sectionTitle,
+        a.pageNumber != null ? `第${a.pageNumber}页` : null,
+      ].filter(Boolean).join(" → ");
+
+      const roleLabel = {
+        supporting: "支持",
+        contradicting: "矛盾",
+        referenced: "引用",
+      }[a.role];
+
+      sections.push(`- [${roleLabel}] ${location} (锚点: ${a.anchorId})`);
+    }
+    sections.push("");
+  }
+
+  sections.push("---");
+  sections.push(`**元数据:** agentType=${agentType}, 来源数量=${anchors.length}, 置信度=${confidence}`);
+
+  return sections.join("\n");
+}

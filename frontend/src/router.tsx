@@ -29,9 +29,11 @@ export const router = createHashRouter([
   { path: "/chat", element: withSuspense(ChatWindow) },
   { path: "/knowledge/:kbId", element: withSuspense(KnowledgePanel) },
   { path: "/knowledge/:kbId/search", element: withSuspense(KnowledgePanel) },
+  { path: "/knowledge", element: <Navigate to="/chat" replace /> },
   { path: "/reports", element: withSuspense(ReportPanel) },
   { path: "/reports/:reportId", element: withSuspense(ReportPanel) },
   { path: "/tasks", element: withSuspense(TaskPanel) },
   { path: "/sessions/:sessionId", element: withSuspense(ChatWindow) },
   { path: "/", element: <Navigate to="/chat" replace /> },
+  { path: "*", element: <Navigate to="/chat" replace /> },
 ]);

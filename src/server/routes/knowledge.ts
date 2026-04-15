@@ -756,7 +756,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/status", async (c) => {
   }
 
   const stageMap: Record<string, { stage: string; progress: number }> = {
-    uploaded:   { stage: "Parsing",    progress: 45 },
+    uploaded:   { stage: "Queued",     progress: 5 },
     parsing:    { stage: "Parsing",    progress: 50 },
     compiling:  { stage: "Compiling",  progress: 60 },
     indexing:   { stage: "Indexing",   progress: 75 },
@@ -871,7 +871,9 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
     // Simple search: use wiki_pages table to find matching content
     const { DB } = await import("../../store/database.js");
     const db = DB.getInstance().raw;
-    const likePattern = `%${query}%`;
+    // Escape SQL LIKE wildcards in user query
+    const escaped = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const likePattern = `%${escaped}%`;
 
     // Search by title and page content
     const titleRows = db.prepare(

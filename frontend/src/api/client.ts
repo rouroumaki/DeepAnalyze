@@ -543,7 +543,7 @@ export async function uploadDocumentWithRetry(
     try {
       return await new Promise<UploadResult>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", `/api/knowledge/${kbId}/documents`);
+        xhr.open("POST", `/api/knowledge/kbs/${kbId}/upload`);
         xhr.responseType = "json";
 
         xhr.upload.onprogress = (e) => {
@@ -591,7 +591,7 @@ export async function fetchDocumentStatus(
   kbId: string,
   docId: string
 ): Promise<{ stage: string; progress: number; error?: string }> {
-  const res = await fetch(`/api/knowledge/${kbId}/documents/${docId}/status`);
+  const res = await fetch(`/api/knowledge/kbs/${kbId}/documents/${docId}/status`);
   if (!res.ok) throw new Error(`Failed to fetch status: ${res.status}`);
   return res.json();
 }

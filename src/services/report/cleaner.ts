@@ -114,6 +114,9 @@ function stage2_referenceMarking(
 
   if (sourceDocuments && sourceDocuments.length > 0) {
     // For each source document, look for verbatim quotes of >= 30 characters
+    // Collect all matches first, then replace from back-to-front to avoid index shifting
+    const matches: Array<{ start: number; end: number; refIndex: number; ref: Reference }> = [];
+
     for (const doc of sourceDocuments) {
       const docContent = doc.content;
       if (!docContent) continue;
@@ -128,21 +131,33 @@ function stage2_referenceMarking(
         // Check if this fragment appears in the content
         const idx = content.indexOf(fragment);
         if (idx !== -1) {
+          // Skip if this range overlaps with an existing match
+          const overlaps = matches.some(
+            (m) => idx < m.end && idx + fragment.length > m.start,
+          );
+          if (overlaps) continue;
+
           refIndex++;
-          references.push({
+          const ref: Reference = {
             index: refIndex,
             docId: doc.docId,
             pageId: doc.pageId,
             title: doc.title,
             snippet: fragment.substring(0, 120) + (fragment.length > 120 ? "..." : ""),
-          });
-          // Replace the quoted passage with a reference marker
-          content =
-            content.substring(0, idx) +
-            `[${refIndex}]` +
-            content.substring(idx + fragment.length);
+          };
+          references.push(ref);
+          matches.push({ start: idx, end: idx + fragment.length, refIndex, ref });
         }
       }
+    }
+
+    // Sort matches by start position descending (back-to-front) for safe replacement
+    matches.sort((a, b) => b.start - a.start);
+    for (const match of matches) {
+      content =
+        content.substring(0, match.start) +
+        `[${match.refIndex}]` +
+        content.substring(match.end);
     }
   }
 

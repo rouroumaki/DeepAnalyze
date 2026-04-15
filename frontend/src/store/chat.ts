@@ -537,46 +537,5 @@ export const useChatStore = create<ChatState>((set, get) => {
 });
 
 // ---------------------------------------------------------------------------
-// Workflow WebSocket event dispatcher
-// ---------------------------------------------------------------------------
-
-/**
- * Dispatches a workflow_* WebSocket event to the workflow store.
- * Can be called from any WebSocket message handler (e.g., a dedicated
- * workflow WS connection) to feed events into the workflow state.
- *
- * Usage:
- *   import { handleWorkflowWsEvent } from "../store/chat.js";
- *   ws.onmessage = (e) => {
- *     const event = JSON.parse(e.data);
- *     handleWorkflowWsEvent(event);
- *   };
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function handleWorkflowWsEvent(event: { type: string; [key: string]: any }): void {
-  const wfStore = useWorkflowStore.getState();
-  // Cast through unknown because the incoming WebSocket event is a loose bag of
-  // key-value pairs; we trust the server to send the correct shape per event type.
-  const e = event as unknown;
-
-  switch (event.type) {
-    case "workflow_start":
-      wfStore.handleWorkflowStart(e as Parameters<typeof wfStore.handleWorkflowStart>[0]);
-      break;
-    case "workflow_agent_start":
-      wfStore.handleAgentStart(e as Parameters<typeof wfStore.handleAgentStart>[0]);
-      break;
-    case "workflow_agent_tool_call":
-      wfStore.handleAgentToolCall(e as Parameters<typeof wfStore.handleAgentToolCall>[0]);
-      break;
-    case "workflow_agent_tool_result":
-      wfStore.handleAgentToolResult(e as Parameters<typeof wfStore.handleAgentToolResult>[0]);
-      break;
-    case "workflow_agent_complete":
-      wfStore.handleAgentComplete(e as Parameters<typeof wfStore.handleAgentComplete>[0]);
-      break;
-    case "workflow_complete":
-      wfStore.handleWorkflowComplete(e as Parameters<typeof wfStore.handleWorkflowComplete>[0]);
-      break;
-  }
-}
+// Workflow WebSocket event dispatching is handled in useWebSocket.ts
+// which automatically routes workflow_* events to the workflow store.

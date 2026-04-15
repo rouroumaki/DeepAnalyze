@@ -28,6 +28,7 @@ const mainNavItems: NavItem[] = [
 
 export function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
+  const currentKbId = useUIStore((s) => s.currentKbId);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const activeView = useUIStore((s) => s.activeView);
 
@@ -305,7 +306,17 @@ export function Sidebar() {
             active={activeView === item.id}
             collapsed={collapsed}
             onClick={() => {
-              window.location.hash = `#/${item.id}`;
+              // Knowledge needs a kbId; if none available, go to chat
+              if (item.id === 'knowledge') {
+                if (currentKbId) {
+                  window.location.hash = `#/knowledge/${currentKbId}`;
+                } else {
+                  // No KB selected yet — redirect to chat where user can create one
+                  window.location.hash = '#/chat';
+                }
+              } else {
+                window.location.hash = `#/${item.id}`;
+              }
             }}
           />
         ))}

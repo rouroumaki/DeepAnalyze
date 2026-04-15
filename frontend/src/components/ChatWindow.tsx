@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useChatStore } from "../store/chat";
 import { useUIStore } from "../store/ui";
 import { useWorkflowStore } from "../store/workflow";
@@ -26,7 +26,12 @@ export function ChatWindow() {
   const currentKbId = useUIStore((s) => s.currentKbId);
 
   // Workflow state — show SubAgentPanel for each active workflow
-  const activeWorkflowIds = useWorkflowStore((s) => Array.from(s.activeWorkflows.keys()));
+  // Get the Map reference (stable identity) and derive array via useMemo
+  const activeWorkflows = useWorkflowStore((s) => s.activeWorkflows);
+  const activeWorkflowIds = useMemo(
+    () => (activeWorkflows ? Array.from(activeWorkflows.keys()) : []),
+    [activeWorkflows],
+  );
 
   const [scope, setScope] = useState<AnalysisScope>({ knowledgeBases: [], webSearch: false });
   const [kbList, setKbList] = useState<KbEntry[]>([]);

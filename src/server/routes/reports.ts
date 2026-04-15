@@ -565,6 +565,35 @@ export function createReportRoutes(): Hono {
     });
   });
 
+  // =====================================================================
+  // GET /tasks/:taskId - Poll report generation task status
+  // =====================================================================
+
+  router.get("/tasks/:taskId", async (c) => {
+    const taskId = c.req.param("taskId");
+    const entry = pendingTasks.get(taskId);
+
+    if (!entry) {
+      return c.json({ error: "Task not found" }, 404);
+    }
+
+    // Check if the promise has settled
+    const settled = await Promise.race([
+      entry.then(
+        (r) => ({ status: "completed" as const, result: r })),
+      new Promise<{ status: "running" }>((resolve) =>
+        setTimeout(() => resolve({ status: "running" as const }), 100)),
+    ]);
+
+    if (settled.status === "completed") {
+      // Clean up completed task from memory
+      pendingTasks.delete(taskId);
+      return c.json(settled.result);
+    }
+
+    return c.json({ taskId, status: "running" });
+  });
+
   return router;
 }
 

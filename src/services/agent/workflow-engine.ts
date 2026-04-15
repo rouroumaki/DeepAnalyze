@@ -87,6 +87,8 @@ export interface WorkflowStartEvent {
   workflowId: string;
   mode: WorkflowMode;
   goal: string;
+  teamName?: string;
+  agentCount?: number;
 }
 
 export interface WorkflowCompleteEvent {
@@ -101,6 +103,7 @@ export interface WorkflowAgentStartEvent {
   workflowId: string;
   agentId: string;
   role: string;
+  task?: string;
 }
 
 export interface WorkflowAgentCompleteEvent {
@@ -117,6 +120,8 @@ export interface WorkflowAgentChunkEvent {
   workflowId: string;
   agentId: string;
   content: string;
+  /** Alias for content — matches WsServerMessage field name */
+  chunk: string;
 }
 
 export interface WorkflowAgentToolCallEvent {
@@ -124,7 +129,11 @@ export interface WorkflowAgentToolCallEvent {
   workflowId: string;
   agentId: string;
   toolName: string;
+  /** Alias for toolName — matches WsServerMessage field name */
+  tool: string;
   input: Record<string, unknown>;
+  /** Alias for input — matches WsServerMessage field name */
+  args: Record<string, unknown>;
 }
 
 export interface WorkflowAgentToolResultEvent {
@@ -132,6 +141,8 @@ export interface WorkflowAgentToolResultEvent {
   workflowId: string;
   agentId: string;
   toolName: string;
+  /** Alias for toolName — matches WsServerMessage field name */
+  tool: string;
   result: unknown;
 }
 
@@ -204,6 +215,8 @@ export class WorkflowEngine {
       workflowId: this.input.workflowId,
       mode: this.input.mode,
       goal: this.input.goal,
+      teamName: this.input.teamName,
+      agentCount: this.input.agents.length,
     });
 
     let agentResults: WorkflowAgentResult[];
@@ -297,6 +310,18 @@ export class WorkflowEngine {
 
     // Cycle detection
     this.detectCycles(agents);
+
+    // Validate dependsOn references point to valid node IDs
+    const agentIds = new Set(agents.map((a) => a.id));
+    for (const agent of agents) {
+      for (const depId of agent.dependsOn ?? []) {
+        if (!agentIds.has(depId)) {
+          throw new Error(
+            `Invalid dependsOn: agent "${agent.id}" references non-existent agent "${depId}". Valid IDs: ${[...agentIds].join(", ")}`,
+          );
+        }
+      }
+    }
 
     // Build execution state map
     const stateMap = new Map<string, AgentExecState>();
@@ -572,6 +597,7 @@ export class WorkflowEngine {
       workflowId: this.input.workflowId,
       agentId: agent.id,
       role: agent.role,
+      task: taskOverride ?? agent.task,
     });
 
     try {
@@ -648,6 +674,7 @@ export class WorkflowEngine {
           workflowId: this.input.workflowId,
           agentId,
           content: event.content,
+          chunk: event.content,
         });
         break;
 
@@ -657,7 +684,9 @@ export class WorkflowEngine {
           workflowId: this.input.workflowId,
           agentId,
           toolName: event.toolName,
+          tool: event.toolName,
           input: event.input,
+          args: event.input,
         });
         break;
 
@@ -667,6 +696,7 @@ export class WorkflowEngine {
           workflowId: this.input.workflowId,
           agentId,
           toolName: event.toolName,
+          tool: event.toolName,
           result: event.result,
         });
         break;

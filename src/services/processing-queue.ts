@@ -235,7 +235,7 @@ export class ProcessingQueue {
     // Update DB status
     this.updateDbStatus(docId, "parsing", "parsing", 0.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -253,7 +253,7 @@ export class ProcessingQueue {
     // Update progress
     this.updateDbStatus(docId, "parsing", "parsing", 1.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -302,7 +302,7 @@ export class ProcessingQueue {
     // Update DB status
     this.updateDbStatus(docId, "compiling", "compiling", 0.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -323,7 +323,7 @@ export class ProcessingQueue {
     // We update the step info without changing the overall status.
     this.updateDbStatus(docId, "compiling", "compiling", 1.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -346,7 +346,7 @@ export class ProcessingQueue {
     // Update DB status
     this.updateDbStatus(docId, "indexing", "indexing", 0.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -378,7 +378,7 @@ export class ProcessingQueue {
     // Update progress
     this.updateDbStatus(docId, "indexing", "indexing", 1.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -401,7 +401,7 @@ export class ProcessingQueue {
     // Update DB status
     this.updateDbStatus(docId, "linking", "linking", 0.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -422,7 +422,7 @@ export class ProcessingQueue {
     // Update progress
     this.updateDbStatus(docId, "linking", "linking", 1.0);
     this.broadcast(kbId, "kb", {
-      type: "doc_status",
+      type: "doc_processing_step",
       kbId,
       docId,
       filename,
@@ -475,15 +475,14 @@ export class ProcessingQueue {
    * Broadcast a WebSocket event to a knowledge base channel.
    * Wrapped in try/catch so the queue works even when WS is not initialized.
    */
-  private broadcast(
+  private async broadcast(
     kbId: string,
     _channel: string,
     payload: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     try {
-      // Dynamic import — broadcastToKb may not exist yet (Task 2).
-      // Using require-style dynamic import to avoid failing at load time.
-      const wsModule = require("../server/ws.js") as {
+      // Dynamic import — broadcastToKb may not exist yet.
+      const wsModule = await import("../server/ws.js") as {
         broadcastToKb?: (kbId: string, payload: Record<string, unknown>) => void;
       };
 
@@ -492,7 +491,6 @@ export class ProcessingQueue {
       }
     } catch {
       // WS module not available or not initialized — this is fine.
-      // The queue should still function without WebSocket broadcasting.
     }
   }
 

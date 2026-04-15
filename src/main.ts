@@ -76,16 +76,24 @@ if (typeof Bun !== "undefined") {
     server.keepAliveTimeout = 0;    // Disable keep-alive timeout
 
     // WebSocket upgrade handler for Node.js using the 'ws' library
+    // Create WSS singleton once, reuse for all upgrade requests
+    let wssPromise: Promise<InstanceType<typeof import("ws").WebSocketServer>> | null = null;
+
     server.on("upgrade", (req, socket, head) => {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (url.pathname === "/ws") {
-        import("ws").then(({ WebSocketServer }) => {
-          const wss = new WebSocketServer({ noServer: true });
+        if (!wssPromise) {
+          wssPromise = import("ws").then(({ WebSocketServer }) => new WebSocketServer({ noServer: true }));
+        }
+        wssPromise.then((wss) => {
           wss.handleUpgrade(req, socket, head, (ws) => {
             handleOpen(ws);
             ws.on("message", (data) => { handleMessage(ws, data as Buffer); });
             ws.on("close", () => { handleClose(ws); });
           });
+        }).catch((err) => {
+          console.error("[WS] Failed to initialize WebSocketServer:", err);
+          socket.destroy();
         });
       }
     });

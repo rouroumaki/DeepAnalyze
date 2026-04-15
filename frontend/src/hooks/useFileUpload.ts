@@ -176,11 +176,16 @@ export function useFileUpload() {
 
   const uploadToKbFromHook = useCallback(
     async (kbId: string, fileIds?: string[]) => {
-      const targets = uploads.filter(
-        (u) =>
-          (fileIds ? fileIds.includes(u.id) : u.status === "pending") &&
-          u.status !== "done",
-      );
+      // Read current uploads via functional updater to avoid stale closure
+      let targets: UploadingFile[] = [];
+      setUploads((prev) => {
+        targets = prev.filter(
+          (u) =>
+            (fileIds ? fileIds.includes(u.id) : u.status === "pending") &&
+            u.status !== "done",
+        );
+        return prev; // Don't mutate, just read
+      });
 
       if (targets.length === 0) return [];
 
@@ -209,7 +214,7 @@ export function useFileUpload() {
       // Filter out failed uploads
       return results.filter((id): id is string => id !== null);
     },
-    [uploads, updateUpload],
+    [updateUpload],
   );
 
   const clearDone = useCallback(() => {

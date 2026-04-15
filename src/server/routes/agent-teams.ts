@@ -1,10 +1,13 @@
 // =============================================================================
 // DeepAnalyze - Agent Teams API Routes
-// REST API for managing agent teams (CRUD + templates)
+// REST API for managing agent teams (CRUD + templates + workflow execution)
 // =============================================================================
 
+import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
-import { getTeamManager } from "../../services/agent/agent-system.js";
+import { getTeamManager, getRunner, getToolRegistry } from "../../services/agent/agent-system.js";
+import { WorkflowEngine } from "../../services/agent/workflow-engine.js";
+import type { WorkflowAgent, WorkflowEvent } from "../../services/agent/workflow-engine.js";
 import type { CreateTeamData, UpdateTeamData } from "../../store/agent-teams.js";
 
 export function createAgentTeamRoutes(): Hono {
@@ -83,6 +86,99 @@ export function createAgentTeamRoutes(): Hono {
     const ok = manager.deleteTeam(c.req.param("id"));
     if (!ok) return c.json({ error: "Team not found" }, 404);
     return c.json({ success: true });
+  });
+
+  // -----------------------------------------------------------------------
+  // Workflow Execution
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /:id/execute
+   * Start an asynchronous workflow execution for a team.
+   * Returns immediately with the workflow ID and initial status.
+   */
+  router.post("/:id/execute", async (c) => {
+    const teamId = c.req.param("id");
+
+    let goal: string;
+    let kbId: string | undefined;
+    try {
+      const body = await c.req.json<{ goal?: string; kbId?: string }>();
+      goal = body.goal ?? "";
+      kbId = body.kbId;
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    if (!goal.trim()) {
+      return c.json({ error: "goal is required" }, 400);
+    }
+
+    const manager = await getTeamManager();
+    const team = manager.getTeam(teamId);
+    if (!team) {
+      return c.json({ error: "Team not found" }, 404);
+    }
+
+    if (!team.members || team.members.length === 0) {
+      return c.json({ error: "Team has no members" }, 400);
+    }
+
+    const runner = await getRunner();
+    const toolRegistry = await getToolRegistry();
+
+    const workflowId = randomUUID();
+
+    const workflowAgents: WorkflowAgent[] = team.members.map((m) => ({
+      id: m.id,
+      role: m.role,
+      systemPrompt: m.systemPrompt,
+      task: m.task,
+      perspective: m.perspective,
+      dependsOn: m.dependsOn,
+      condition: m.condition as WorkflowAgent["condition"],
+      tools: m.tools,
+    }));
+
+    const onEvent = (event: WorkflowEvent): void => {
+      globalThis.__workflowEvents?.emit("workflow", event);
+    };
+
+    const effectiveGoal = kbId
+      ? `${goal}\n\nKnowledge base context: focus on knowledge base ID "${kbId}".`
+      : goal;
+
+    const engine = new WorkflowEngine(
+      {
+        workflowId,
+        teamName: team.name,
+        mode: team.mode,
+        goal: effectiveGoal,
+        agents: workflowAgents,
+        crossReview: team.crossReview,
+      },
+      runner,
+      toolRegistry,
+      onEvent,
+    );
+
+    // Execute asynchronously — do NOT await
+    engine.execute().catch((err) => {
+      console.error(`[WorkflowEngine] Workflow ${workflowId} failed:`, err);
+      globalThis.__workflowEvents?.emit("workflow", {
+        type: "workflow_complete",
+        workflowId,
+        status: "failed",
+        totalDuration: 0,
+      });
+    });
+
+    return c.json({
+      workflowId,
+      teamId,
+      mode: team.mode,
+      status: "running",
+    }, 202);
   });
 
   return router;

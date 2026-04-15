@@ -15,6 +15,8 @@ import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 import type { PluginManager } from "../plugins/plugin-manager.js";
 import type { Retriever } from "../../wiki/retriever.js";
 import type { AgentTeamManager } from "./agent-team-manager.js";
+import type { AgentRunner } from "./agent-runner.js";
+import type { ToolRegistry } from "./tool-registry.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
@@ -30,6 +32,12 @@ let retrieverInstance: Retriever | null = null;
 
 /** Singleton agent team manager instance. */
 let teamManagerInstance: AgentTeamManager | null = null;
+
+/** Singleton agent runner instance. */
+let runnerInstance: AgentRunner | null = null;
+
+/** Singleton tool registry instance. */
+let toolRegistryInstance: ToolRegistry | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -87,6 +95,8 @@ export function resetOrchestrator(): void {
   pluginManagerInstance = null;
   retrieverInstance = null;
   teamManagerInstance = null;
+  runnerInstance = null;
+  toolRegistryInstance = null;
   initPromise = null;
 }
 
@@ -166,6 +176,20 @@ export async function getTeamManager(): Promise<AgentTeamManager> {
   return teamManagerInstance!;
 }
 
+export async function getRunner(): Promise<AgentRunner> {
+  if (!runnerInstance) {
+    await getOrchestrator();
+  }
+  return runnerInstance!;
+}
+
+export async function getToolRegistry(): Promise<ToolRegistry> {
+  if (!toolRegistryInstance) {
+    await getOrchestrator();
+  }
+  return toolRegistryInstance!;
+}
+
 // ---------------------------------------------------------------------------
 // Internal initialization
 // ---------------------------------------------------------------------------
@@ -213,11 +237,13 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
     modelRouter,
     dataDir: DEEPANALYZE_CONFIG.dataDir,
   });
+  toolRegistryInstance = toolRegistry;
   console.log("[AgentSystem] ToolRegistry configured");
 
   // Step 5: Agent runner with built-in agents
   const runner = new AgentRunner(modelRouter, toolRegistry);
   runner.registerAgents(BUILT_IN_AGENTS);
+  runnerInstance = runner;
   console.log("[AgentSystem] AgentRunner initialized with built-in agents");
 
   // Step 6: Knowledge Compounder (for write-back of agent results and auto-dream)

@@ -89,9 +89,8 @@ export const LevelSwitcher: React.FC<LevelSwitcherProps> = ({
         availableLevels.includes(saved) &&
         saved !== currentLevel
       ) {
-        // Notify parent about saved preference (but only if the level is available)
-        // We do NOT auto-fetch here — parent decides whether to act on it
-        // The parent can use this by reading localStorage directly
+        // Auto-switch to the saved preferred level
+        fetchLevelContent(saved);
       }
     } catch {
       // Ignore

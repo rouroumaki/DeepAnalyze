@@ -137,13 +137,13 @@ export const useUIStore = create<UIState>((set, get) => {
     },
 
     // Cross-module navigation
-    navigateToDoc: (kbId, _docId) => {
+    navigateToDoc: (kbId, docId) => {
       set({ currentKbId: kbId, activeView: 'knowledge' });
-      window.location.hash = `#/knowledge/${kbId}`;
+      window.location.hash = `#/knowledge/${kbId}?docId=${encodeURIComponent(docId)}`;
     },
-    navigateToWikiPage: (kbId, _pageId) => {
+    navigateToWikiPage: (kbId, pageId) => {
       set({ currentKbId: kbId, activeView: 'knowledge' });
-      window.location.hash = `#/knowledge/${kbId}`;
+      window.location.hash = `#/knowledge/${kbId}?pageId=${encodeURIComponent(pageId)}`;
     },
 
     // Toasts

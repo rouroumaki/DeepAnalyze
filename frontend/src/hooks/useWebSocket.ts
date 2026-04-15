@@ -16,7 +16,7 @@ export type WsServerMessage =
   | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
   | { type: "doc_ready"; kbId: string; docId: string; filename: string }
   | { type: "doc_error"; kbId: string; docId: string; error: string }
-  | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number }
+  | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number; goal?: string }
   | { type: "workflow_agent_start"; workflowId: string; agentId: string; role: string; task: string }
   | { type: "workflow_agent_tool_call"; workflowId: string; agentId: string; tool: string; args: Record<string, unknown> }
   | { type: "workflow_agent_tool_result"; workflowId: string; agentId: string; tool: string; result: string }
@@ -113,7 +113,7 @@ function handleWorkflowWsEvent(msg: WsServerMessage): void {
         workflowId: msg.workflowId,
         agentId: msg.agentId,
         duration: msg.duration,
-        ...(msg.status === "error" ? { error: msg.status } : {}),
+        ...(msg.status === "error" || msg.status === "failed" ? { error: msg.status } : {}),
       });
       break;
     case "workflow_complete":

@@ -11,14 +11,13 @@ import { PgAnchorRepo } from './anchor';
 import { PgWikiPageRepo } from './wiki-page';
 import { PgDocumentRepo } from './document';
 import { PgEmbeddingRepo } from './embedding';
+import { createSqliteRepos } from './sqlite-repos';
 
 export function createRepos(): RepoSet {
   if (process.env.PG_HOST) {
-    // Lazy initialization - creates pool on first call.
-    // Use createReposAsync() for PG mode instead.
     throw new Error('Use createReposAsync() for PG mode');
   }
-  throw new Error('SQLite repos not yet implemented');
+  return createSqliteRepos();
 }
 
 export async function createReposAsync(): Promise<RepoSet> {
@@ -33,7 +32,7 @@ export async function createReposAsync(): Promise<RepoSet> {
       embedding: new PgEmbeddingRepo(pool),
     };
   }
-  throw new Error('SQLite repos not yet implemented');
+  return createSqliteRepos();
 }
 
 export type {

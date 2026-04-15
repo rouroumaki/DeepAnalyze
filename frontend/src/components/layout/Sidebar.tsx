@@ -31,6 +31,7 @@ export function Sidebar() {
   const currentKbId = useUIStore((s) => s.currentKbId);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const activeView = useUIStore((s) => s.activeView);
+  const setActiveView = useUIStore((s) => s.setActiveView);
 
   // Chat store for session management
   const sessions = useChatStore((s) => s.sessions);
@@ -309,12 +310,15 @@ export function Sidebar() {
               // Knowledge needs a kbId; if none available, go to chat
               if (item.id === 'knowledge') {
                 if (currentKbId) {
+                  setActiveView('knowledge');
                   window.location.hash = `#/knowledge/${currentKbId}`;
                 } else {
                   // No KB selected yet — redirect to chat where user can create one
+                  setActiveView('chat');
                   window.location.hash = '#/chat';
                 }
               } else {
+                setActiveView(item.id);
                 window.location.hash = `#/${item.id}`;
               }
             }}

@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 
 type KeyCombo = {
   key: string;
@@ -18,29 +18,32 @@ type KeyHandler = (e: KeyboardEvent) => void;
  *   useKeyboard({ key: "Escape" }, () => closePanel());
  */
 export function useKeyboard(combo: KeyCombo, handler: KeyHandler) {
+  // Keep handler ref current without re-registering the listener
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+
+  // Store combo as individual primitives so the effect is stable
+  const { key, ctrl = false, shift = false, alt = false } = combo;
+
   const memoHandler = useCallback(
     (e: KeyboardEvent) => {
-      const ctrlRequired = combo.ctrl ?? false;
-      const shiftRequired = combo.shift ?? false;
-      const altRequired = combo.alt ?? false;
-
-      const ctrlMatch = ctrlRequired
+      const ctrlMatch = ctrl
         ? e.ctrlKey || e.metaKey
         : !e.ctrlKey && !e.metaKey;
-      const shiftMatch = shiftRequired ? e.shiftKey : !e.shiftKey;
-      const altMatch = altRequired ? e.altKey : !e.altKey;
+      const shiftMatch = shift ? e.shiftKey : !e.shiftKey;
+      const altMatch = alt ? e.altKey : !e.altKey;
 
       if (
-        e.key.toLowerCase() === combo.key.toLowerCase() &&
+        e.key.toLowerCase() === key.toLowerCase() &&
         ctrlMatch &&
         shiftMatch &&
         altMatch
       ) {
         e.preventDefault();
-        handler(e);
+        handlerRef.current(e);
       }
     },
-    [combo.key, combo.ctrl, combo.shift, combo.alt, handler],
+    [key, ctrl, shift, alt],
   );
 
   useEffect(() => {

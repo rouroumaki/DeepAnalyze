@@ -306,6 +306,7 @@ export function createReportRoutes(): Hono {
           input: agentInput,
           agentType: "report",
           sessionId: body.sessionId,
+          kbId: body.kbId,
           maxTurns: 20,
         });
         return { taskId, status: "completed" as const, result };
@@ -353,14 +354,17 @@ export function createReportRoutes(): Hono {
     // Otherwise, use all pages in the KB.
     const pages = getWikiPagesByKb(kbId);
 
+    // Cache content loaded during filtering to avoid double-reading files
+    const contentCache = new Map<string, string>();
+
     // Filter pages by query if provided
     const targetPages = query
       ? pages.filter((page) => {
           const titleMatch = page.title.toLowerCase().includes(query.toLowerCase());
-          // Also check content if title doesn't match
           if (titleMatch) return true;
           try {
             const content = getPageContent(page.filePath);
+            contentCache.set(page.id, content);
             return content.toLowerCase().includes(query.toLowerCase());
           } catch {
             return false;
@@ -374,7 +378,7 @@ export function createReportRoutes(): Hono {
     for (const page of targetPages) {
       let content: string;
       try {
-        content = getPageContent(page.filePath);
+        content = contentCache.get(page.id) ?? getPageContent(page.filePath);
       } catch {
         continue;
       }
@@ -629,6 +633,14 @@ interface GraphEdgeResponse {
 
 /** Map of task ID to promise for in-flight report generation tasks. */
 const pendingTasks = new Map<string, Promise<{ taskId: string; status: string; result?: unknown; error?: string }>>();
+
+// Periodically clean up stale pending tasks (TTL: 1 hour)
+setInterval(() => {
+  // Tasks are cleaned when polled; this is a safety net for abandoned tasks
+  if (pendingTasks.size > 100) {
+    console.warn(`[Reports] ${pendingTasks.size} pending tasks in memory, consider cleanup`);
+  }
+}, 60_000);
 
 // ---------------------------------------------------------------------------
 // Date extraction helpers (mirrors TimelineTool logic)

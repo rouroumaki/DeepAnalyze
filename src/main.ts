@@ -93,6 +93,7 @@ if (typeof Bun !== "undefined") {
           });
         }).catch((err) => {
           console.error("[WS] Failed to initialize WebSocketServer:", err);
+          wssPromise = null; // Allow retry on next upgrade request
           socket.destroy();
         });
       }

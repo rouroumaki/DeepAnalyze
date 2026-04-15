@@ -32,6 +32,8 @@ export type WsServerMessage =
 type WsClientMessage =
   | { type: "subscribe"; kbIds: string[] }
   | { type: "unsubscribe"; kbIds: string[] }
+  | { type: "subscribe_workflow"; workflowIds: string[] }
+  | { type: "unsubscribe_workflow"; workflowIds: string[] }
   | { type: "ping" };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,14 @@ interface UseWebSocketReturn {
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Module-level singleton: prevents duplicate connections across React
+// StrictMode double-mounting and across hook instances.
+// ---------------------------------------------------------------------------
+
+let activeSocket: WebSocket | null = null;
+let activeRefCount = 0;
 
 // ---------------------------------------------------------------------------
 // Workflow event dispatcher
@@ -178,8 +188,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   // ----- connect -----
 
   const connect = useCallback(() => {
-    // Prevent duplicate connections
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    // Prevent duplicate connections — reuse the module-level singleton if active
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      wsRef.current = activeSocket;
+      return;
+    }
 
     // Clean up any existing socket
     if (wsRef.current) {
@@ -196,6 +209,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
     const ws = new WebSocket(wsUrl.current!);
     wsRef.current = ws;
+    activeSocket = ws;
 
     ws.onopen = () => {
       if (!mountedRef.current) return;
@@ -274,18 +288,22 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   useEffect(() => {
     mountedRef.current = true;
+    activeRefCount++;
     connect();
     return () => {
       mountedRef.current = false;
+      activeRefCount--;
       clearHeartbeat();
       clearReconnectTimer();
-      if (wsRef.current) {
+      // Only close the socket when the last consumer unmounts
+      if (activeRefCount <= 0 && wsRef.current) {
         wsRef.current.onopen = null;
         wsRef.current.onclose = null;
         wsRef.current.onerror = null;
         wsRef.current.onmessage = null;
         wsRef.current.close();
         wsRef.current = null;
+        activeSocket = null;
       }
     };
   }, [connect, clearHeartbeat, clearReconnectTimer]);

@@ -3,11 +3,11 @@
 // Knowledge base browser with search, document management, and wiki browsing
 // =============================================================================
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api, uploadDocumentWithRetry, fetchDocumentStatus } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useConfirm } from "../../hooks/useConfirm";
-import { useFileUpload, selectFolder } from "../../hooks/useFileUpload";
+import { selectFolder, openFileDialog } from "../../hooks/useFileUpload";
 import { useDocProcessing } from "../../hooks/useDocProcessing";
 import type { KnowledgeBase, DocumentInfo } from "../../types/index";
 import { WikiBrowser } from "./WikiBrowser";
@@ -112,7 +112,6 @@ const STATUS_CONFIG: Record<
 export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const { success, error: toastError } = useToast();
   const confirm = useConfirm();
-  const fileUpload = useFileUpload();
   const { processingDocs, wsConnected } = useDocProcessing(kbId || null);
 
   // --- Data state ---
@@ -255,10 +254,13 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   };
 
   // --- WebSocket disconnect polling fallback ---
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
+
   useEffect(() => {
-    if (!wsConnected && uploads.length > 0) {
+    if (!wsConnected && uploadsRef.current.length > 0) {
       const interval = setInterval(async () => {
-        for (const upload of uploads) {
+        for (const upload of uploadsRef.current) {
           if (
             upload.stage !== "Ready" &&
             upload.stage !== "Error" &&
@@ -281,7 +283,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       }, 3000);
       return () => clearInterval(interval);
     }
-  }, [wsConnected, uploads, kbId]);
+  }, [wsConnected, kbId]);
 
   // --- Batch operations ---
   const toggleSelect = (docId: string) =>
@@ -775,7 +777,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 <button
                   onClick={async () => {
                     if (!kbId) { toastError("请先选择知识库"); return; }
-                    const files = await fileUpload.selectFiles(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
+                    const files = await openFileDialog(".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.pptx,.html,.htm", true);
                     if (files && files.length > 0) {
                       handleFiles(files);
                     }

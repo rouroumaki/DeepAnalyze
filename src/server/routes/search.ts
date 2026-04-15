@@ -53,16 +53,18 @@ export function createSearchRoutes(
     try {
       const retriever = await getRetriever();
 
+      const requestedLevels = levelsParam
+        ? levelsParam.split(",").map((l) => l.trim())
+        : ["L0", "L1", "L2"];
+
       const result = await retriever.searchByLevels(query, kbId, {
         topK,
         includeEntities,
         docId,
+        levels: requestedLevels,
       });
 
       // Filter by requested levels if specified
-      const requestedLevels = levelsParam
-        ? levelsParam.split(",").map((l) => l.trim())
-        : ["L0", "L1", "L2"];
 
       const filtered: Record<string, unknown> = {};
       if (requestedLevels.includes("L0")) filtered.L0 = result.L0;
@@ -79,9 +81,9 @@ export function createSearchRoutes(
         kbId,
         results: filtered,
         totalFound:
-          (result.L0?.length ?? 0) +
-          (result.L1?.length ?? 0) +
-          (result.L2?.length ?? 0),
+          (requestedLevels.includes("L0") ? (result.L0?.length ?? 0) : 0) +
+          (requestedLevels.includes("L1") ? (result.L1?.length ?? 0) : 0) +
+          (requestedLevels.includes("L2") ? (result.L2?.length ?? 0) : 0),
       });
     } catch (err) {
       console.error("[Search] Multi-level search failed:", err);

@@ -112,11 +112,11 @@ export function resetOrchestrator(): void {
  * yet, this will trigger the full initialization pipeline.
  */
 export async function getCompounder(): Promise<KnowledgeCompounder> {
-  // Ensure the orchestrator (and thus the compounder) is initialized
   if (!compounderInstance) {
     await getOrchestrator();
   }
-  return compounderInstance!;
+  if (!compounderInstance) throw new Error("Compounder not initialized after orchestrator init");
+  return compounderInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +131,11 @@ export async function getCompounder(): Promise<KnowledgeCompounder> {
  * yet, this will trigger the full initialization pipeline.
  */
 export async function getRetriever(): Promise<Retriever> {
-  // Ensure the orchestrator (and thus the retriever) is initialized
   if (!retrieverInstance) {
     await getOrchestrator();
   }
-  return retrieverInstance!;
+  if (!retrieverInstance) throw new Error("Retriever not initialized after orchestrator init");
+  return retrieverInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,11 +150,11 @@ export async function getRetriever(): Promise<Retriever> {
  * yet, this will trigger the full initialization pipeline.
  */
 export async function getPluginManager(): Promise<PluginManager> {
-  // Ensure the orchestrator (and thus the plugin manager) is initialized
   if (!pluginManagerInstance) {
     await getOrchestrator();
   }
-  return pluginManagerInstance!;
+  if (!pluginManagerInstance) throw new Error("PluginManager not initialized after orchestrator init");
+  return pluginManagerInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,25 +169,27 @@ export async function getPluginManager(): Promise<PluginManager> {
  * yet, this will trigger the full initialization pipeline.
  */
 export async function getTeamManager(): Promise<AgentTeamManager> {
-  // Ensure the orchestrator (and thus the team manager) is initialized
   if (!teamManagerInstance) {
     await getOrchestrator();
   }
-  return teamManagerInstance!;
+  if (!teamManagerInstance) throw new Error("TeamManager not initialized after orchestrator init");
+  return teamManagerInstance;
 }
 
 export async function getRunner(): Promise<AgentRunner> {
   if (!runnerInstance) {
     await getOrchestrator();
   }
-  return runnerInstance!;
+  if (!runnerInstance) throw new Error("Runner not initialized after orchestrator init");
+  return runnerInstance;
 }
 
 export async function getToolRegistry(): Promise<ToolRegistry> {
   if (!toolRegistryInstance) {
     await getOrchestrator();
   }
-  return toolRegistryInstance!;
+  if (!toolRegistryInstance) throw new Error("ToolRegistry not initialized after orchestrator init");
+  return toolRegistryInstance;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import { createWikiPage, getWikiPage, getWikiPageByDoc, getWikiPagesByKb, getPag
 import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { DEEPANALYZE_CONFIG } from "../../core/config.js";
 import { getProcessingQueue } from "../../services/processing-queue.js";
 
@@ -625,7 +626,7 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
   // Save to a temp file so createDocument can copy it
   const tempPath = join(
     tmpdir(),
-    `deepanalyze-${Date.now()}-${file.name}`,
+    `deepanalyze-${randomUUID()}-${file.name}`,
   );
 
   try {
@@ -818,9 +819,16 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
 
 knowledgeRoutes.post("/kbs/:kbId/trigger-processing", async (c) => {
   const kbId = c.req.param("kbId");
-  const queue = getProcessingQueue();
   const { DB } = await import("../../store/database.js");
   const db = DB.getInstance().raw;
+
+  // Verify KB exists
+  const kbRow = db.prepare("SELECT id FROM knowledge_bases WHERE id = ?").get(kbId);
+  if (!kbRow) {
+    return c.json({ error: "Knowledge base not found" }, 404);
+  }
+
+  const queue = getProcessingQueue();
 
   const docs = db
     .prepare("SELECT id, filename, file_path, file_type FROM documents WHERE kb_id = ? AND status = 'uploaded'")
@@ -979,9 +987,10 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
 
     if (!page) {
       // Try to find by file_path containing the page path
+      const escapedPath = decodeURIComponent(pagePath).replace(/%/g, "\\%").replace(/_/g, "\\_");
       const row = db.prepare(
         `SELECT id FROM wiki_pages WHERE kb_id = ? AND file_path LIKE ? LIMIT 1`,
-      ).get(kbId, `%${decodeURIComponent(pagePath)}%`) as Record<string, unknown> | undefined;
+      ).get(kbId, `%${escapedPath}%`) as Record<string, unknown> | undefined;
 
       if (row) {
         page = getWikiPage(row.id as string);

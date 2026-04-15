@@ -170,6 +170,7 @@ export function createAgentTeamRoutes(): Hono {
         workflowId,
         status: "failed",
         totalDuration: 0,
+        resultCount: 0,
       });
     });
 

@@ -8,7 +8,7 @@ import type { Document } from "../types/index.js";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { copyFileSync, statSync, readFileSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, dirname } from "node:path";
 
 // ---------------------------------------------------------------------------
 // File type detection
@@ -167,28 +167,37 @@ export function deleteDocument(id: string): boolean {
   const doc = getDocument(id);
   if (!doc) return false;
 
-  // Delete wiki links referencing this document's pages
-  db.prepare(
-    `DELETE FROM wiki_links WHERE source_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)
-     OR target_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)`,
-  ).run(id, id);
-
-  // Delete wiki pages for this document
+  // Collect wiki page file paths for disk cleanup
   const wikiRows = db
     .prepare("SELECT file_path FROM wiki_pages WHERE doc_id = ?")
     .all(id) as Array<{ file_path: string }>;
+
+  // Wrap DB operations in a transaction for consistency
+  const deleteTx = db.transaction(() => {
+    // Delete wiki links referencing this document's pages
+    db.prepare(
+      `DELETE FROM wiki_links WHERE source_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)
+       OR target_page_id IN (SELECT id FROM wiki_pages WHERE doc_id = ?)`,
+    ).run(id, id);
+
+    // Delete wiki pages for this document
+    db.prepare("DELETE FROM wiki_pages WHERE doc_id = ?").run(id);
+
+    // Delete the document DB row
+    db.prepare("DELETE FROM documents WHERE id = ?").run(id);
+  });
+
+  deleteTx();
+
+  // Clean up files from disk (after successful DB transaction)
   for (const row of wikiRows) {
     try { unlinkSync(row.file_path); } catch { /* file may not exist */ }
   }
-  db.prepare("DELETE FROM wiki_pages WHERE doc_id = ?").run(id);
 
-  // Delete the original file directory
   try {
-    const dir = join(doc.filePath, "..");
+    const dir = dirname(doc.filePath);
     rmSync(dir, { recursive: true, force: true });
   } catch { /* directory may not exist */ }
 
-  // Delete the document DB row
-  db.prepare("DELETE FROM documents WHERE id = ?").run(id);
   return true;
 }

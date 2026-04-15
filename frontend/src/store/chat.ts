@@ -53,7 +53,8 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
-  const savedSession = localStorage.getItem('deepanalyze-session') || null;
+  let savedSession: string | null = null;
+  try { savedSession = localStorage.getItem('deepanalyze-session'); } catch { /* SSR */ }
 
   return {
   sessions: [],
@@ -139,7 +140,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, scope?: import("../types/index.js").AnalysisScope) => {
     const { currentSessionId } = get();
     if (!currentSessionId) return;
 
@@ -229,6 +230,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             }
           },
         },
+        scope,
       );
 
       await promise;
@@ -248,8 +250,13 @@ export const useChatStore = create<ChatState>((set, get) => {
         }));
         state.finishStreaming(partialContent, partialToolCalls);
       }
+      // Always clear isSending — polling will set it again when response arrives
+      set({ isSending: false });
 
       // Poll for the final messages from the server (the agent may still be running)
+      // Track by position: look for an assistant message whose index is greater than
+      // the last user message index at the time of sending.
+      const userMsgCount = get().messages.filter((m) => m.role === "user").length;
       const pollForResult = async (attempts = 0) => {
         if (attempts > 60) { // Give up after ~60 seconds of polling
           set({ isSending: false });
@@ -257,11 +264,23 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
         try {
           const messages = await api.getMessages(currentSessionId);
-          // Check if there's an assistant message after our user message
-          const hasAssistantResponse = messages.some(
-            (m) => m.role === "assistant" &&
-              messages.findIndex((msg) => msg === m) > messages.findIndex((msg) => msg.role === "user" && msg.content === content),
-          );
+          // Find the N-th user message (matching the count at send time) and check
+          // if any assistant message follows it.
+          // userMsgCount includes the optimistic message we just added, so it equals
+          // the number of user messages the server should now have.
+          let userMsgIndex = -1;
+          let userCount = 0;
+          for (let i = 0; i < messages.length; i++) {
+            if (messages[i].role === "user") {
+              userCount++;
+              if (userCount === userMsgCount) {
+                userMsgIndex = i;
+                break;
+              }
+            }
+          }
+          const hasAssistantResponse = userMsgIndex >= 0 &&
+            messages.some((m, i) => m.role === "assistant" && i > userMsgIndex);
           if (hasAssistantResponse) {
             set({ messages, isSending: false });
             // Also reload agent tasks

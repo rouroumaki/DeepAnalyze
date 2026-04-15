@@ -565,6 +565,7 @@ export class Retriever {
       topK?: number;
       includeEntities?: boolean;
       docId?: string;
+      levels?: string[];
     },
   ): Promise<{
     L0: LeveledSearchResult[];
@@ -572,7 +573,7 @@ export class Retriever {
     L2: LeveledSearchResult[];
     entities: EntitySearchResult[];
   }> {
-    const { topK = 10, includeEntities = false, docId } = options ?? {};
+    const { topK = 10, includeEntities = false, docId, levels } = options ?? {};
 
     const keywords = query.split(/\s+/).filter((w) => w.length > 0);
 
@@ -583,11 +584,17 @@ export class Retriever {
       L2: ["fulltext"],
     };
 
-    // Run all three level searches in parallel
+    const requestedLevels = levels ?? ["L0", "L1", "L2"];
+
+    // Only search requested levels
+    const searchL0 = requestedLevels.includes("L0");
+    const searchL1 = requestedLevels.includes("L1");
+    const searchL2 = requestedLevels.includes("L2");
+
     const [l0Results, l1Results, l2Results, entityResults] = await Promise.all([
-      this.searchLevel(query, kbId, levelMap.L0, "L0", keywords, topK, docId),
-      this.searchLevel(query, kbId, levelMap.L1, "L1", keywords, topK, docId),
-      this.searchLevel(query, kbId, levelMap.L2, "L2", keywords, topK, docId),
+      searchL0 ? this.searchLevel(query, kbId, levelMap.L0, "L0", keywords, topK, docId) : Promise.resolve([]),
+      searchL1 ? this.searchLevel(query, kbId, levelMap.L1, "L1", keywords, topK, docId) : Promise.resolve([]),
+      searchL2 ? this.searchLevel(query, kbId, levelMap.L2, "L2", keywords, topK, docId) : Promise.resolve([]),
       includeEntities ? this.searchEntities(query, kbId, topK) : Promise.resolve([]),
     ]);
 

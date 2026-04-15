@@ -122,6 +122,29 @@ export async function uploadToKb(
 }
 
 // ---------------------------------------------------------------------------
+// Standalone file selection (no state management)
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a native file picker dialog and returns the selected files,
+ * or null if the user cancels. Unlike the hook's selectFiles, this does
+ * NOT add files to any upload state.
+ */
+export function openFileDialog(
+  accept?: string,
+  multiple = true,
+): Promise<FileList | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = multiple;
+    if (accept) input.accept = accept;
+    input.onchange = () => resolve(input.files);
+    input.click();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Folder selection utility
 // ---------------------------------------------------------------------------
 

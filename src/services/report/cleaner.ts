@@ -285,7 +285,7 @@ function stage4_finalCleanup(content: string): string {
       if (shift > 0) {
         // Remove excess # from headings (e.g., ### -> ## if min was 3)
         cleaned = cleaned.replace(/^(#{1,6})\s/gm, (full, hashes: string) => {
-          const newLen = Math.max(1, hashes.length - shift);
+          const newLen = Math.max(2, hashes.length - shift);
           return "#".repeat(newLen) + " ";
         });
       } else {

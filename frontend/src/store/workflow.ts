@@ -223,26 +223,31 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   handleWorkflowComplete: (event) => {
-    // We keep the workflow in the map so the UI can display the final state.
-    // It will be cleaned up via clearWorkflow or when a new workflow starts.
-    // Optionally, we could mark all remaining "running" agents as completed.
-    const state = get();
-    const wf = state.activeWorkflows.get(event.workflowId);
-    if (!wf) return;
+    // Mark all remaining "running" agents as completed, then auto-cleanup
+    // after a delay so the UI can display the final state briefly.
+    set((state) => {
+      const wf = state.activeWorkflows.get(event.workflowId);
+      if (!wf) return state;
 
-    const updatedAgents = new Map(wf.agents);
-    for (const [agentId, agent] of updatedAgents) {
-      if (agent.status === "running" || agent.status === "waiting" || agent.status === "queued") {
-        updatedAgents.set(agentId, { ...agent, status: "completed", duration: event.duration });
+      const updatedAgents = new Map(wf.agents);
+      for (const [agentId, agent] of updatedAgents) {
+        if (agent.status === "running" || agent.status === "waiting" || agent.status === "queued") {
+          updatedAgents.set(agentId, { ...agent, status: "completed", duration: event.duration });
+        }
       }
-    }
 
-    set((state) => ({
-      activeWorkflows: updateWorkflow(state.activeWorkflows, event.workflowId, (wf) => ({
-        ...wf,
-        agents: updatedAgents,
-      })),
-    }));
+      return {
+        activeWorkflows: updateWorkflow(state.activeWorkflows, event.workflowId, (wf) => ({
+          ...wf,
+          agents: updatedAgents,
+        })),
+      };
+    });
+
+    // Auto-cleanup after 30 seconds to prevent memory leak
+    setTimeout(() => {
+      get().clearWorkflow(event.workflowId);
+    }, 30_000);
   },
 
   clearWorkflow: (workflowId) => {

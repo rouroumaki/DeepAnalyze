@@ -39,9 +39,11 @@ import type {
 const BASE_URL = "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const hasBody = options?.body != null;
+  const headers: Record<string, string> = hasBody ? { "Content-Type": "application/json" } : {};
   const resp = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers: { ...headers, ...(options?.headers as Record<string, string> | undefined) },
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

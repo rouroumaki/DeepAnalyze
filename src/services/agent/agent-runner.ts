@@ -349,7 +349,7 @@ export class AgentRunner {
     const kbId = options.kbId;
     if (finalOutput && finalOutput.trim().length >= 100 && kbId) {
       try {
-        const { eventBus } = require("../event-bus.js");
+        const { eventBus } = await import("../event-bus.js");
         eventBus.emit({
           type: "agent_task_complete",
           sessionId: options.sessionId ?? "",
@@ -359,8 +359,8 @@ export class AgentRunner {
         });
 
         // Trigger compound with source tracing
-        const { KnowledgeCompounder } = require("../../wiki/knowledge-compound.js");
-        const { DEEPANALYZE_CONFIG } = require("../../core/config.js");
+        const { KnowledgeCompounder } = await import("../../wiki/knowledge-compound.js");
+        const { DEEPANALYZE_CONFIG } = await import("../../core/config.js");
         const compounder = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
         compounder.compoundWithTracing(
           kbId,

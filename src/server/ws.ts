@@ -44,6 +44,8 @@ export type WsServerMessage =
 type WsClientMessage =
   | { type: "subscribe"; kbIds: string[] }
   | { type: "unsubscribe"; kbIds: string[] }
+  | { type: "subscribe_workflow"; workflowIds: string[] }
+  | { type: "unsubscribe_workflow"; workflowIds: string[] }
   | { type: "ping" };
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,8 @@ type WsClientMessage =
 interface ClientState {
   /** Set of KB IDs this client is subscribed to. */
   subscriptions: Set<string>;
+  /** Set of workflow IDs this client is subscribed to. */
+  workflowSubscriptions: Set<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,11 +84,19 @@ const workflowHandlers = new Map<WebSocket, (event: any) => void>();
  * Initializes empty subscription state for the client.
  */
 export function handleOpen(ws: WebSocket): void {
-  clients.set(ws, { subscriptions: new Set() });
+  clients.set(ws, { subscriptions: new Set(), workflowSubscriptions: new Set() });
   console.log(`[WS] Client connected. Total clients: ${clients.size}`);
 
-  // Subscribe to workflow events and forward them to this client
+  // Subscribe to workflow events and forward only matching events to this client
   const workflowHandler = (event: any) => {
+    const state = clients.get(ws);
+    if (!state) return;
+    // Only forward if client is subscribed to this workflow or has no specific subscriptions
+    // (empty workflowSubscriptions means receive all — backward compatible)
+    const wfId = event.workflowId as string | undefined;
+    if (wfId && state.workflowSubscriptions.size > 0 && !state.workflowSubscriptions.has(wfId)) {
+      return;
+    }
     try { ws.send(JSON.stringify(event)); } catch { /* ignore */ }
   };
   globalThis.__workflowEvents?.on("workflow", workflowHandler);
@@ -132,6 +144,27 @@ export function handleMessage(ws: WebSocket, raw: string | Buffer): void {
         state.subscriptions.delete(kbId);
       }
       console.log(`[WS] Client unsubscribed from ${msg.kbIds.length} KB(s). Subscriptions: ${state.subscriptions.size}`);
+      break;
+    }
+
+    case "subscribe_workflow": {
+      if (!Array.isArray(msg.workflowIds) || msg.workflowIds.length === 0) {
+        return;
+      }
+      for (const wfId of msg.workflowIds) {
+        state.workflowSubscriptions.add(wfId);
+      }
+      console.log(`[WS] Client subscribed to ${msg.workflowIds.length} workflow(s)`);
+      break;
+    }
+
+    case "unsubscribe_workflow": {
+      if (!Array.isArray(msg.workflowIds)) {
+        return;
+      }
+      for (const wfId of msg.workflowIds) {
+        state.workflowSubscriptions.delete(wfId);
+      }
       break;
     }
 
@@ -186,6 +219,12 @@ export function broadcastToKb(kbId: string, message: WsServerMessage): void {
         recipientCount++;
       } catch (err) {
         console.error("[WS] Failed to send to client, removing", err);
+        // Clean up workflow handler too
+        const workflowHandler = workflowHandlers.get(ws);
+        if (workflowHandler) {
+          globalThis.__workflowEvents?.off("workflow", workflowHandler);
+          workflowHandlers.delete(ws);
+        }
         clients.delete(ws);
       }
     }

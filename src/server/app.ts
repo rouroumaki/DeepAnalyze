@@ -53,22 +53,80 @@ export function createApp(): Hono {
   app.route("/api/knowledge", knowledgeRoutes);
   app.route("/api/settings", createSettingsRoutes());
 
-  // Preview & Anchor API (lazily initialized)
+  // -----------------------------------------------------------------------
+  // Preview & Anchor routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
   let previewRoutes: Hono | null = null;
+
   app.use("/api/preview/*", async (c, next) => {
     if (!previewRoutes) {
       previewRoutes = createPreviewRoutes();
     }
-    return previewRoutes.fetch(c.req.raw, c.env);
+    await next();
   });
 
-  // Search Test API
+  app.all("/api/preview/*", async (c) => {
+    if (!previewRoutes) {
+      return c.json({ error: "Preview system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/preview", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return previewRoutes.fetch(newRequest);
+  });
+
+  // -----------------------------------------------------------------------
+  // Search Test routes — lazily initialized via middleware
+  // -----------------------------------------------------------------------
+
   let searchTestRoutes: Hono | null = null;
+
   app.use("/api/search-test/*", async (c, next) => {
     if (!searchTestRoutes) {
       searchTestRoutes = createSearchTestRoutes();
     }
-    return searchTestRoutes.fetch(c.req.raw, c.env);
+    await next();
+  });
+
+  app.all("/api/search-test/*", async (c) => {
+    if (!searchTestRoutes) {
+      return c.json({ error: "Search test system not ready" }, 503);
+    }
+
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/search-test", "") || "/";
+
+    const url = new URL(c.req.url);
+    url.pathname = subPath;
+
+    let body: string | undefined;
+    if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
+      body = await c.req.raw.clone().text();
+    }
+
+    const newRequest = new Request(url.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body,
+    });
+
+    return searchTestRoutes.fetch(newRequest);
   });
 
   // -----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // =============================================================================
 // DeepAnalyze - Wiki Expander
 // Layer-by-layer expand tool for drilling down from abstract to full content.
-// Supports expanding from L0 (abstract) -> L1 (overview) -> L2 (fulltext) -> raw.
+// Supports expanding from Abstract → Structure → Raw (DoclingDocument JSON).
 // =============================================================================
 
 import { DB } from "../store/database.js";
@@ -11,6 +11,8 @@ import {
   getPageContent,
 } from "../store/wiki-pages.js";
 import type { WikiPage } from "../types/index.js";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +25,7 @@ export interface ExpandResult {
   /** The document ID this page belongs to. */
   docId: string | null;
   /** The current expansion level. */
-  level: "L0" | "L1" | "L2" | "raw";
+  level: "abstract" | "structure" | "fulltext" | "raw";
   /** The content at this level. */
   content: string;
   /** Title of the page. */
@@ -32,6 +34,22 @@ export interface ExpandResult {
   childPages?: ExpandResult[];
   /** Estimated token count. */
   tokenCount: number;
+}
+
+/** Result of expanding to the raw layer for a specific anchor. */
+export interface RawExpandResult {
+  /** The anchor ID. */
+  anchorId: string;
+  /** The document ID. */
+  docId: string;
+  /** The raw DoclingDocument JSON node at the anchor. */
+  targetNode: unknown;
+  /** Surrounding context nodes (siblings before and after). */
+  context: { before: unknown[]; after: unknown[] };
+  /** The full raw JSON (for deep inspection). */
+  fullRaw: Record<string, unknown> | null;
+  /** JSON Pointer path to the target node. */
+  jsonPointer: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +303,161 @@ export class Expander {
   }
 
   // -----------------------------------------------------------------------
-  // Private helpers
+  // Raw layer access (anchor-based)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Expand to the Raw layer for a specific anchor element.
+   *
+   * Flow:
+   *  1. Look up anchor by ID from AnchorRepo (PG) or local cache
+   *  2. Read the raw DoclingDocument JSON from disk
+   *  3. Use JSON Pointer to locate the target element
+   *  4. Return the element with surrounding context
+   */
+  async expandToRaw(anchorId: string): Promise<RawExpandResult> {
+    // Look up anchor via PG Repository
+    const anchor = await this.getAnchorById(anchorId);
+    if (!anchor) {
+      throw new Error(`Anchor not found: ${anchorId}`);
+    }
+
+    const docId = anchor.doc_id;
+    const jsonPointer = anchor.raw_json_path ?? `#/body/children/0`;
+
+    // Load the raw DoclingDocument JSON
+    const raw = this.loadRawJson(docId);
+    if (!raw) {
+      throw new Error(`Raw JSON not found for document ${docId}`);
+    }
+
+    // Resolve the JSON Pointer to get the target node
+    const targetNode = this.resolveJsonPointer(raw, jsonPointer);
+    if (targetNode === undefined) {
+      throw new Error(`JSON Pointer ${jsonPointer} not found in raw JSON`);
+    }
+
+    // Get context (surrounding siblings)
+    const children = (raw as Record<string, unknown>).body
+      ? ((raw as Record<string, unknown>).body as Record<string, unknown>).children as unknown[]
+      : [];
+    const targetIndex = this.extractIndexFromPointer(jsonPointer);
+    const contextBefore = children.slice(Math.max(0, targetIndex - 2), targetIndex);
+    const contextAfter = children.slice(targetIndex + 1, targetIndex + 3);
+
+    return {
+      anchorId,
+      docId,
+      targetNode,
+      context: { before: contextBefore, after: contextAfter },
+      fullRaw: raw,
+      jsonPointer,
+    };
+  }
+
+  /**
+   * Resolve a JSON Pointer (e.g., "#/body/children/3") to a value in a JSON object.
+   */
+  resolveJsonPointer(obj: Record<string, unknown>, pointer: string): unknown {
+    // Strip leading "#/" or "/"
+    let path = pointer;
+    if (path.startsWith("#/")) {
+      path = path.slice(2);
+    } else if (path.startsWith("/")) {
+      path = path.slice(1);
+    }
+
+    if (!path) return obj;
+
+    const tokens = path.split("/");
+    let current: unknown = obj;
+
+    for (const token of tokens) {
+      if (current === null || current === undefined) return undefined;
+
+      if (Array.isArray(current)) {
+        const index = parseInt(token, 10);
+        if (isNaN(index)) return undefined;
+        current = current[index];
+      } else if (typeof current === "object") {
+        current = (current as Record<string, unknown>)[token];
+      } else {
+        return undefined;
+      }
+    }
+
+    return current;
+  }
+
+  // -----------------------------------------------------------------------
+  // Private helpers (Raw layer)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Get an anchor by ID via PG Repository or fallback.
+   */
+  private async getAnchorById(
+    anchorId: string,
+  ): Promise<{ doc_id: string; raw_json_path?: string } | null> {
+    if (process.env.PG_HOST) {
+      try {
+        const { createReposAsync } = await import("../store/repos/index.js");
+        const repos = await createReposAsync();
+        const anchor = await repos.anchor.getById(anchorId);
+        return anchor ?? null;
+      } catch {
+        // Fall through
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Load the raw DoclingDocument JSON from disk.
+   */
+  private loadRawJson(docId: string): Record<string, unknown> | null {
+    // Try to find the docling.json file
+    const possiblePaths = [
+      join(this.dataDir, "wiki", "*", "documents", docId, "raw", "docling.json"),
+    ];
+
+    // Try to find the wiki directory
+    const wikiDir = join(this.dataDir, "wiki");
+
+    try {
+      // Try direct path construction: find the KB directory
+      const kbDirs = readdirSync(wikiDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+
+      for (const kbDir of kbDirs) {
+        const rawPath = join(wikiDir, kbDir, "documents", docId, "raw", "docling.json");
+        try {
+          const content = readFileSync(rawPath, "utf-8");
+          return JSON.parse(content);
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      // Wiki directory not found
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract the array index from a JSON Pointer like "#/body/children/3".
+   */
+  private extractIndexFromPointer(pointer: string): number {
+    const parts = pointer.split("/");
+    const lastPart = parts[parts.length - 1];
+    const index = parseInt(lastPart, 10);
+    return isNaN(index) ? 0 : index;
+  }
+
+  // -----------------------------------------------------------------------
+  // Private helpers (level mapping)
   // -----------------------------------------------------------------------
 
   /**

@@ -446,9 +446,80 @@ export class Retriever {
    * 3. Optionally runs link traversal from a starting page
    * 4. Merges all results using RRF
    * 5. Applies filters and returns top results
+   *
+   * Default pageTypes is now ["structure"] for the three-layer architecture.
    */
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
-    const { kbIds, topK = 10, linkedFrom, pageTypes, minScore } = options;
+    const {
+      kbIds,
+      topK = 10,
+      linkedFrom,
+      pageTypes = ["structure"],
+      minScore,
+    } = options;
+
+    // Try PG Repository layer for vector search if available
+    const usePgVector = !!process.env.PG_HOST;
+
+    // Run all search strategies in parallel using Promise.allSettled
+    const searchPromises: Promise<SearchResult[]>[] = [];
+
+    if (usePgVector) {
+      searchPromises.push(this.pgVectorSearch(query, kbIds, topK));
+    } else {
+      searchPromises.push(this.vectorSearch(query, kbIds, topK));
+    }
+
+    if (usePgVector) {
+      searchPromises.push(this.pgFtsSearch(query, kbIds, topK));
+    } else {
+      searchPromises.push(this.bm25Search(query, kbIds, topK));
+    }
+
+    if (linkedFrom) {
+      searchPromises.push(this.linkedSearch(linkedFrom, 2));
+    }
+
+    const settled = await Promise.allSettled(searchPromises);
+
+    const resultSets: SearchResult[][] = [];
+
+    for (const result of settled) {
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        resultSets.push(result.value);
+      } else if (result.status === "rejected") {
+        console.warn(
+          `[Retriever] Search strategy failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        );
+      }
+    }
+
+    // If only one result set, return it directly (no need for RRF)
+    let finalResults: SearchResult[];
+    if (resultSets.length === 0) {
+      finalResults = [];
+    } else if (resultSets.length === 1) {
+      finalResults = resultSets[0];
+    } else {
+      // Merge with RRF
+      finalResults = this.rrfMerge(resultSets);
+    }
+
+    // Apply page type filter
+    if (pageTypes && pageTypes.length > 0) {
+      finalResults = finalResults.filter((r) =>
+        pageTypes.includes(r.pageType),
+      );
+    }
+
+    // Apply minimum score filter
+    if (minScore !== undefined) {
+      finalResults = finalResults.filter((r) => r.score >= minScore);
+    }
+
+    // Limit to topK
+    return finalResults.slice(0, topK);
+  }
 
     // Run all three search strategies in parallel using Promise.allSettled
     // so one failure doesn't block the others.
@@ -756,5 +827,169 @@ export class Retriever {
     // Sort by position
     highlights.sort((a, b) => a.position - b.position);
     return highlights;
+  }
+
+  // -----------------------------------------------------------------------
+  // PG Repository layer search methods
+  // -----------------------------------------------------------------------
+
+  /**
+   * Vector search using PG VectorSearchRepo (pgvector HNSW index).
+   * Replaces the brute-force JS cosine similarity computation.
+   */
+  private async pgVectorSearch(
+    query: string,
+    kbIds: string[],
+    topK: number,
+  ): Promise<SearchResult[]> {
+    if (kbIds.length === 0) return [];
+
+    try {
+      const { createReposAsync } = await import("../store/repos/index.js");
+      const repos = await createReposAsync();
+
+      const queryResult = await this.embeddingManager.embed(query);
+      const results = await repos.vectorSearch.searchByVector(
+        queryResult.embedding,
+        kbIds,
+        {
+          topK,
+          pageTypes: ["structure"],
+          modelName: process.env.EMBEDDING_MODEL ?? "bge-m3",
+        },
+      );
+
+      return results.map((r) => ({
+        pageId: r.page_id,
+        kbId: r.kb_id,
+        docId: r.doc_id,
+        pageType: r.page_type,
+        title: r.title,
+        score: r.similarity,
+        snippet: this.extractSnippet(r.text_chunk ?? "", query),
+        source: "vector" as const,
+      }));
+    } catch (err) {
+      console.warn(
+        `[Retriever] PG vector search failed, falling back to SQLite:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return this.vectorSearch(query, kbIds, topK);
+    }
+  }
+
+  /**
+   * Full-text search using PG FTSSearchRepo (zhparser + GIN index).
+   * Replaces SQLite FTS5.
+   */
+  private async pgFtsSearch(
+    query: string,
+    kbIds: string[],
+    topK: number,
+  ): Promise<SearchResult[]> {
+    if (kbIds.length === 0) return [];
+
+    try {
+      const { createReposAsync } = await import("../store/repos/index.js");
+      const repos = await createReposAsync();
+
+      const results = await repos.ftsSearch.searchByText(query, kbIds, { topK });
+
+      return results.map((r) => {
+        let snippet = "";
+        try {
+          const content = getPageContent(r.file_path);
+          snippet = this.extractSnippet(content, query);
+        } catch {
+          snippet = "";
+        }
+
+        // Normalize PG ts_rank score to 0-1 range
+        const normalizedScore = Math.max(0, Math.min(1, 1 / (1 + Math.exp(-r.rank))));
+
+        return {
+          pageId: r.id,
+          kbId: r.kb_id,
+          docId: r.doc_id,
+          pageType: r.page_type,
+          title: r.title,
+          score: normalizedScore,
+          snippet,
+          source: "bm25" as const,
+        };
+      });
+    } catch (err) {
+      console.warn(
+        `[Retriever] PG FTS search failed, falling back to SQLite:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return this.bm25Search(query, kbIds, topK);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Two-stage strategy search: Abstract → Structure
+  // -----------------------------------------------------------------------
+
+  /**
+   * Two-stage search strategy:
+   *  Stage 1: Search Abstract pages to identify relevant documents
+   *  Stage 2: Search Structure pages within those documents for precise results
+   *
+   * This provides better relevance by first narrowing to relevant documents,
+   * then finding the most specific section matches.
+   */
+  async searchByStrategy(
+    query: string,
+    kbIds: string[],
+    options?: {
+      topK?: number;
+      strategy?: "abstract_then_structure" | "structure_only" | "all_layers";
+    },
+  ): Promise<SearchResult[]> {
+    const { topK = 10, strategy = "abstract_then_structure" } = options ?? {};
+
+    if (strategy === "structure_only") {
+      return this.search(query, { kbIds, topK, pageTypes: ["structure"] });
+    }
+
+    if (strategy === "all_layers") {
+      return this.search(query, { kbIds, topK, pageTypes: ["abstract", "structure", "fulltext"] });
+    }
+
+    // Two-stage: Abstract → Structure
+    // Stage 1: Find relevant documents via abstract pages
+    const abstractResults = await this.search(query, {
+      kbIds,
+      topK: Math.min(topK, 5),
+      pageTypes: ["abstract"],
+    });
+
+    if (abstractResults.length === 0) {
+      // Fallback: search structure directly
+      return this.search(query, { kbIds, topK, pageTypes: ["structure"] });
+    }
+
+    // Extract relevant docIds from abstract results
+    const relevantDocIds = new Set(
+      abstractResults
+        .filter((r) => r.docId)
+        .map((r) => r.docId!),
+    );
+
+    // Stage 2: Search structure pages within relevant documents
+    const structureResults = await this.search(query, {
+      kbIds,
+      topK,
+      pageTypes: ["structure"],
+    });
+
+    // Prioritize results from relevant documents
+    const prioritized = [
+      ...structureResults.filter((r) => r.docId && relevantDocIds.has(r.docId)),
+      ...structureResults.filter((r) => !r.docId || !relevantDocIds.has(r.docId)),
+    ];
+
+    return prioritized.slice(0, topK);
   }
 }

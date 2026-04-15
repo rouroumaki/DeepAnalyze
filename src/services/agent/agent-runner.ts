@@ -491,14 +491,15 @@ export class AgentRunner {
     this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result });
     this.recordProgress(onEvent, taskId, turn, "tool_result", `Tool ${toolName} completed`, toolName, undefined, result);
 
-    // Collect accessed page IDs for source tracing
-    if (accessedPages) {
-      this.collectAccessedPages(toolName, result, accessedPages);
-    }
-
-    // Inject display names (originalName, kbName) into tool results
+    // Inject display names (originalName, kbName) into tool results FIRST
+    // so that collectAccessedPages can pick up the injected names
     if (["kb_search", "wiki_browse", "expand"].includes(toolName)) {
       result = await this.injectDisplayNames(toolName, result);
+    }
+
+    // Collect accessed page IDs for source tracing (after display name injection)
+    if (accessedPages) {
+      this.collectAccessedPages(toolName, result, accessedPages);
     }
 
     let resultContent: string;
@@ -563,6 +564,7 @@ export class AgentRunner {
             title: page.title,
             docId: typeof page.docId === "string" ? page.docId : undefined,
             originalName: typeof page.originalName === "string" ? page.originalName : undefined,
+            kbName: typeof page.kbName === "string" ? page.kbName : undefined,
             sectionTitle: typeof page.sectionTitle === "string" ? page.sectionTitle : undefined,
             pageNumber: typeof page.pageNumber === "number" ? page.pageNumber : undefined,
             anchorId: typeof page.anchorId === "string" ? page.anchorId : undefined,
@@ -584,6 +586,7 @@ export class AgentRunner {
             title: expandResult.title,
             docId: typeof expandResult.docId === "string" ? expandResult.docId : undefined,
             originalName: typeof expandResult.originalName === "string" ? expandResult.originalName : undefined,
+            kbName: typeof expandResult.kbName === "string" ? expandResult.kbName : undefined,
             sectionTitle: typeof expandResult.sectionTitle === "string" ? expandResult.sectionTitle : undefined,
             pageNumber: typeof expandResult.pageNumber === "number" ? expandResult.pageNumber : undefined,
             anchorId: typeof expandResult.anchorId === "string" ? expandResult.anchorId : undefined,

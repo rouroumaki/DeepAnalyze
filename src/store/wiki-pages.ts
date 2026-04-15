@@ -47,6 +47,10 @@ function resolvePageFilePath(
     }
     case "report":
       return join(wikiDir, kbId, "reports", `${id}.md`);
+    case "structure": {
+      const safeName = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 100);
+      return join(wikiDir, kbId, "documents", docId!, "structure", `${safeName}.md`);
+    }
     default:
       throw new Error(`Unknown page type: ${pageType}`);
   }
@@ -238,4 +242,23 @@ export function deleteWikiPage(id: string): void {
  */
 export function getPageContent(filePath: string): string {
   return readFileSync(filePath, "utf-8");
+}
+
+/**
+ * Get all structure pages for a specific document, ordered by title.
+ * Uses the PG Repository layer if available, otherwise falls back to SQLite.
+ */
+export async function getStructurePagesByDoc(docId: string): Promise<any[]> {
+  if (process.env.PG_HOST) {
+    const { createReposAsync } = await import('./repos/index.js');
+    const repos = await createReposAsync();
+    const page = await repos.wikiPage.getByDocAndType(docId, 'structure');
+    return page ? [page] : [];
+  }
+  // SQLite fallback
+  const db = DB.getInstance().raw;
+  const rows = db.prepare(
+    "SELECT * FROM wiki_pages WHERE doc_id = ? AND page_type = 'structure' ORDER BY title"
+  ).all(docId);
+  return rows;
 }

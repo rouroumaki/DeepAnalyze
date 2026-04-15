@@ -3,6 +3,12 @@ export interface ParsedContent {
   metadata: Record<string, unknown>;
   success: boolean;
   error?: string;
+  /** Full DoclingDocument JSON from Docling parsing. */
+  raw?: Record<string, unknown>;
+  /** DocTags text representation from Docling. */
+  doctags?: string;
+  /** Document modality type. */
+  modality?: 'document' | 'image' | 'audio' | 'video' | 'excel';
 }
 
 export interface DocumentProcessor {

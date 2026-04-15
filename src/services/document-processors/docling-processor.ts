@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
 
 export class DoclingProcessor implements DocumentProcessor {
@@ -12,15 +13,31 @@ export class DoclingProcessor implements DocumentProcessor {
   }
 
   async parse(filePath: string): Promise<ParsedContent> {
-    // Import the existing parse function from knowledge.ts
-    const { parseDocumentFile } = await import("../../server/routes/knowledge.js");
-    const text = await parseDocumentFile(filePath, this.detectType(filePath));
-    return { text, metadata: { sourceType: "docling" }, success: true };
-  }
+    // Directly use DoclingClient to get raw/doctags alongside content
+    const { SubprocessManager } = await import("../../subprocess/manager.js");
+    const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
 
-  private detectType(filePath: string): string {
-    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-    const map: Record<string, string> = { pdf: "pdf", docx: "docx", doc: "doc", pptx: "pptx", ppt: "ppt", xlsx: "xlsx", xls: "xls", png: "image", jpg: "image", jpeg: "image" };
-    return map[ext] ?? "unknown";
+    const dataDir = process.env.DATA_DIR ?? "data";
+    const projectRoot = resolve(dataDir, "..");
+
+    const mgr = new SubprocessManager();
+    try {
+      await startDocling(projectRoot, mgr);
+      const result = await parseWithDocling(mgr, filePath, {
+        ocr: true,
+        extract_tables: true,
+      });
+
+      return {
+        text: result.content,
+        metadata: { sourceType: "docling" },
+        success: true,
+        raw: result.raw,
+        doctags: result.doctags,
+        modality: "document",
+      };
+    } finally {
+      try { await mgr.stop("docling"); } catch { /* ignore */ }
+    }
   }
 }

@@ -20,15 +20,28 @@ export class ExcelProcessor implements DocumentProcessor {
   async parse(filePath: string): Promise<ParsedContent> {
     // 1. Use docling to extract raw table content
     let rawContent: string;
+    let doclingRaw: Record<string, unknown> | undefined;
+    let doclingDoctags: string | undefined;
     try {
       const { parseDocumentFile } = await import("../../server/routes/knowledge.js");
-      rawContent = await parseDocumentFile(filePath, "xlsx");
+      const result = await parseDocumentFile(filePath, "xlsx");
+
+      // Check if Docling returned rich result with raw/doctags
+      if (typeof result === "object" && result !== null && "raw" in result) {
+        const rich = result as Record<string, unknown>;
+        rawContent = String(rich.text ?? rich.content ?? "");
+        doclingRaw = rich.raw as Record<string, unknown> | undefined;
+        doclingDoctags = rich.doctags as string | undefined;
+      } else {
+        rawContent = String(result);
+      }
     } catch (err) {
       return {
         text: "",
         metadata: { sourceType: "excel" },
         success: false,
         error: `Docling extraction failed: ${err instanceof Error ? err.message : String(err)}`,
+        modality: "excel",
       };
     }
 
@@ -70,6 +83,9 @@ ${rawContent.slice(0, 4000)}`,
       text: structuredSummary,
       metadata: { sourceType: "excel", rawContent: rawContent.slice(0, 8000) },
       success: true,
+      raw: doclingRaw,
+      doctags: doclingDoctags,
+      modality: "excel",
     };
   }
 }

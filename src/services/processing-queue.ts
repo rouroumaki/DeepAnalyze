@@ -8,6 +8,7 @@ import { DB } from "../store/database.js";
 import { ProcessorFactory } from "./document-processors/processor-factory.js";
 import { ModelRouter } from "../models/router.js";
 import { WikiCompiler } from "../wiki/compiler.js";
+import type { ParsedContent } from "./document-processors/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -245,10 +246,10 @@ export class ProcessingQueue {
     });
 
     // Parse the document using the same logic as knowledge.ts route
-    const content = await this.parseDocument(job, abortController);
+    const parsedContent = await this.parseDocument(job, abortController);
 
     // Store parsed content for subsequent steps
-    (job as ProcessingJob & { _parsedContent: string })._parsedContent = content;
+    (job as ProcessingJob & { _parsedContent: ParsedContent })._parsedContent = parsedContent;
 
     // Update progress
     this.updateDbStatus(docId, "parsing", "parsing", 1.0);
@@ -266,11 +267,12 @@ export class ProcessingQueue {
   /**
    * Parse a document using the ProcessorFactory.
    * Routes to the correct processor based on file type.
+   * Returns full ParsedContent including raw/doctags when available.
    */
   private async parseDocument(
     job: ProcessingJob,
     abortController: AbortController,
-  ): Promise<string> {
+  ): Promise<ParsedContent> {
     const { filePath, fileType, filename } = job;
 
     const factory = ProcessorFactory.getInstance();
@@ -281,10 +283,12 @@ export class ProcessingQueue {
     }
 
     console.log(
-      `[ProcessingQueue] Parsed ${filename}: ${result.text.length} chars (via ${factory.getProcessor(fileType).getStepLabel()})`,
+      `[ProcessingQueue] Parsed ${filename}: ${result.text.length} chars (via ${factory.getProcessor(fileType).getStepLabel()})` +
+        (result.raw ? `, raw JSON available` : "") +
+        (result.doctags ? `, doctags available` : ""),
     );
 
-    return result.text;
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -296,7 +300,7 @@ export class ProcessingQueue {
     abortController: AbortController,
   ): Promise<void> {
     const { kbId, docId, filename } = job;
-    const content = (job as ProcessingJob & { _parsedContent: string })
+    const parsedContent = (job as ProcessingJob & { _parsedContent: ParsedContent })
       ._parsedContent;
 
     // Update DB status
@@ -311,12 +315,12 @@ export class ProcessingQueue {
       progress: 0.0,
     });
 
-    // Use WikiCompiler for LLM-driven L0/L1/L2 compilation
+    // Use WikiCompiler for three-layer compilation (Raw→Structure→Abstract)
     const router = new ModelRouter();
     await router.initialize();
     const dataDir = process.env.DATA_DIR ?? "data";
     const compiler = new WikiCompiler(router, dataDir);
-    await compiler.compile(kbId, docId, content, {}, { skipStatusUpdates: true });
+    await compiler.compile(kbId, docId, parsedContent, {}, { skipStatusUpdates: true });
 
     // WikiCompiler.compile() calls updateDocumentStatus("ready") internally,
     // but we still need to set our processing_step tracking for the queue.

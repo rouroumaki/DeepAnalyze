@@ -25,6 +25,8 @@ export interface ProviderConfig {
   enabled: boolean;
   /** Context window size in tokens (default: 128000) */
   contextWindow?: number;
+  /** Embedding vector dimension (only meaningful for embedding providers) */
+  dimension?: number;
 }
 
 export interface ProviderDefaults {

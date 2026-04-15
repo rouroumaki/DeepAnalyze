@@ -43,6 +43,7 @@ async function generateEmbeddingsAndIndex(kbId: string, docId: string): Promise<
     const modelRouter = new ModelRouter();
     await modelRouter.initialize();
     const embeddingManager = new EmbeddingManager(modelRouter);
+    await embeddingManager.initialize();
     const indexer = new Indexer(embeddingManager);
 
     // Index L0 (abstract) and L1 (overview) pages

@@ -9,6 +9,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ModelRouter } from "./router.js";
+import { DB } from "../store/database.js";
+import { SettingsStore } from "../store/settings.js";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -213,23 +215,41 @@ export class HashEmbeddingProvider implements EmbeddingProvider {
 // EmbeddingManager - unified entry point
 // ---------------------------------------------------------------------------
 
+/** Module-level singleton for cross-module access (e.g. search-test routes). */
+let managerInstance: EmbeddingManager | null = null;
+
 /**
- * Manages embedding generation. Attempts to use a configured embedding model
- * from the ModelRouter; falls back to the hash-based provider when none is
- * available.
+ * Get the global EmbeddingManager instance.
+ * Throws if setEmbeddingManager() has not been called yet.
+ */
+export function getEmbeddingManager(): EmbeddingManager {
+  if (!managerInstance) {
+    throw new Error("EmbeddingManager not initialized. Call setEmbeddingManager() first.");
+  }
+  return managerInstance;
+}
+
+/** Register the global EmbeddingManager instance after creation. */
+export function setEmbeddingManager(mgr: EmbeddingManager): void {
+  managerInstance = mgr;
+}
+
+/**
+ * Manages embedding generation. Resolution priority:
+ *   1. DB settings table (providers key, embedding default)
+ *   2. YAML config file (config/default.yaml)
+ *   3. Hash-based fallback
  */
 export class EmbeddingManager {
   private provider: EmbeddingProvider;
 
   constructor(router: ModelRouter) {
-    // Try to get an embedding model from the router configuration.
-    // If that fails or no embedding model is configured, use the hash fallback.
     this.provider = this.resolveProvider(router);
   }
 
-  /** Initialize the manager (currently a no-op, reserved for future use). */
+  /** Initialize the manager — registers the global singleton. */
   async initialize(): Promise<void> {
-    // Reserved for future lazy-loading or warm-up logic
+    setEmbeddingManager(this);
   }
 
   /** Generate an embedding for a single piece of text. */
@@ -270,20 +290,57 @@ export class EmbeddingManager {
   // -----------------------------------------------------------------------
 
   private resolveProvider(router: ModelRouter): EmbeddingProvider {
+    // Priority 1: DB settings table
+    const fromDB = this.tryCreateFromDBSettings();
+    if (fromDB) return fromDB;
+
+    // Priority 2: YAML config via ModelRouter
     try {
       const modelName = router.getDefaultModel("embedding");
-
-      // Try to access the provider to verify it exists
       router.getProvider(modelName);
-
-      // The provider exists in the router. We need to read the config
-      // to get the endpoint and other settings for embedding API calls.
       return this.tryCreateFromConfig(modelName);
     } catch {
-      // No embedding model configured or provider not found, use fallback
+      // No embedding model configured or provider not found
     }
 
+    // Priority 3: Hash fallback
     return new HashEmbeddingProvider();
+  }
+
+  /**
+   * Attempt to create a provider from DB settings table.
+   * Returns null if DB is unavailable or no embedding provider is configured.
+   */
+  private tryCreateFromDBSettings(): EmbeddingProvider | null {
+    try {
+      const db = DB.getInstance();
+      if (!db?.raw) return null;
+
+      const store = new SettingsStore();
+      const settings = store.getProviderSettings();
+      const embeddingDefaultId = settings.defaults?.embedding;
+
+      if (!embeddingDefaultId) return null;
+
+      const providerConfig = settings.providers.find(
+        (p) => p.id === embeddingDefaultId && p.enabled,
+      );
+
+      if (!providerConfig) return null;
+
+      const dimension = providerConfig.dimension ?? 1024;
+
+      return new OpenAIEmbeddingProvider({
+        name: providerConfig.id,
+        endpoint: providerConfig.endpoint,
+        apiKey: providerConfig.apiKey || undefined,
+        model: providerConfig.model,
+        dimension,
+      });
+    } catch {
+      // DB not initialized or settings unavailable
+      return null;
+    }
   }
 
   /**

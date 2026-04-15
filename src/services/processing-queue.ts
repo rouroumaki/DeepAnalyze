@@ -362,10 +362,11 @@ export class ProcessingQueue {
     // Index the document's wiki pages into FTS5 and embeddings
     try {
       const { Indexer } = await import("../wiki/indexer.js");
-      const { EmbeddingManager } = await import("../models/embedding.js");
+      const { EmbeddingManager, setEmbeddingManager } = await import("../models/embedding.js");
       const router = new ModelRouter();
       await router.initialize();
       const embeddingManager = new EmbeddingManager(router);
+      await embeddingManager.initialize();
       const indexer = new Indexer(embeddingManager);
       await indexer.indexDocument(kbId, docId);
       console.log(

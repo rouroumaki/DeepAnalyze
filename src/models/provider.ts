@@ -115,6 +115,9 @@ export const ModelConfigSchema = z.object({
 
   /** Whether the model supports tool/function calling. */
   supportsToolUse: z.boolean().default(false),
+
+  /** Dimension of embedding vectors (only for embedding models). */
+  dimension: z.number().positive().optional(),
 });
 
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;

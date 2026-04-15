@@ -302,7 +302,7 @@ export class EmbeddingManager {
       }
 
       // Determine dimension from the model config or use a reasonable default
-      const dimension = modelConfig.dimension ?? 768;
+      const dimension = modelConfig.dimension ?? 1024;
 
       return new OpenAIEmbeddingProvider({
         name: modelName,

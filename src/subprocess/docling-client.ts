@@ -20,6 +20,9 @@ export interface ParseResult {
   tables: Array<{ data: string; page: number | null }>;
   images: Array<{ caption: string | null; page: number | null }>;
   metadata: Record<string, unknown>;
+  raw?: Record<string, unknown>;
+  doctags?: string;
+  doctagsAvailable?: boolean;
 }
 
 // ---------------------------------------------------------------------------

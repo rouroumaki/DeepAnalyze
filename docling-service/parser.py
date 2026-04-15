@@ -88,4 +88,7 @@ async def parse_document(file_path: str, options: dict | None = None) -> dict[st
         "tables": tables,
         "images": images,
         "metadata": metadata,
+        "raw": result.document.export_to_dict(),
+        "doctags": result.document.export_to_doctags(),
+        "doctagsAvailable": True,
     }

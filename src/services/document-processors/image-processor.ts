@@ -7,6 +7,8 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
+import type { ImageRawData } from "./modality-types.js";
+import { DocTagsFormatters } from "./modality-types.js";
 
 export class ImageProcessor implements DocumentProcessor {
   private static readonly HANDLED_TYPES = new Set([
@@ -91,10 +93,19 @@ export class ImageProcessor implements DocumentProcessor {
 
     const combinedText = `## 图像内容描述\n${description}\n\n## OCR提取文字\n${ocrText || "[无OCR文字]"}`;
 
+    const imageRaw: ImageRawData = {
+      description,
+      ocrText: ocrText || undefined,
+      format: ext.toUpperCase(),
+    };
+
     return {
       text: combinedText,
       metadata: { sourceType: "image", hasOcrText: ocrText.length > 0 },
       success: true,
+      raw: imageRaw,
+      doctags: DocTagsFormatters.image(imageRaw),
+      modality: "image",
     };
   }
 }

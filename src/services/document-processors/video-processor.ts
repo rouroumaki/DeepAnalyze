@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
+import type { VideoRawData, VideoKeyframe, AudioRawData } from "./modality-types.js";
+import { DocTagsFormatters } from "./modality-types.js";
 
 export class VideoProcessor implements DocumentProcessor {
   private static readonly HANDLED_TYPES = new Set([
@@ -53,10 +55,13 @@ export class VideoProcessor implements DocumentProcessor {
         // VLM not available
       }
 
+      // Build keyframe descriptions and VideoKeyframe array
+      const keyframes: VideoKeyframe[] = [];
+
       for (const frame of frames) {
+        let frameDescription = "";
         try {
           if (vlmAvailable && router && vlmModel) {
-            // Read frame as base64 and send to VLM using multimodal format
             const base64 = readFileSync(frame.path).toString("base64");
             const result = await router.chat(
               [
@@ -70,13 +75,21 @@ export class VideoProcessor implements DocumentProcessor {
               ],
               { model: vlmModel },
             );
-            descriptions.push(`### ${frame.timestamp}\n${result.content}`);
+            frameDescription = result.content;
+            descriptions.push(`### ${frame.timestamp}\n${frameDescription}`);
           } else {
-            descriptions.push(`### ${frame.timestamp}\n[关键帧描述待VLM集成]`);
+            frameDescription = `[关键帧描述待VLM集成]`;
+            descriptions.push(`### ${frame.timestamp}\n${frameDescription}`);
           }
         } catch {
-          descriptions.push(`### ${frame.timestamp}\n[帧分析失败]`);
+          frameDescription = `[帧分析失败]`;
+          descriptions.push(`### ${frame.timestamp}\n${frameDescription}`);
         }
+
+        // Parse timestamp back to seconds
+        const tsParts = frame.timestamp.split(':');
+        const timeSeconds = parseInt(tsParts[0] ?? '0') * 60 + parseInt(tsParts[1] ?? '0');
+        keyframes.push({ time: timeSeconds, description: frameDescription });
       }
 
       timeline =
@@ -90,15 +103,76 @@ export class VideoProcessor implements DocumentProcessor {
       if (frames.length > 0 && frames[0].tmpDir) {
         try { rmSync(frames[0].tmpDir, { recursive: true }); } catch {}
       }
-    } catch (err) {
-      timeline = `[视频分析失败: ${err instanceof Error ? err.message : String(err)}]`;
-    }
 
-    return {
-      text: timeline,
-      metadata: { sourceType: "video", duration, format },
-      success: true,
-    };
+      // Build VideoRawData
+      const videoRaw: VideoRawData = {
+        duration,
+        resolution: this.getResolution(filePath),
+        fps: this.getFps(filePath),
+        keyframes,
+        transcript: {
+          duration,
+          speakers: [{ id: 'S', label: '旁白' }],
+          turns: [], // Audio transcript populated by separate audio track processing
+        },
+      };
+
+      // Build doctags from keyframes
+      const doctags = keyframes
+        .map((kf) => DocTagsFormatters.videoScene(kf, []))
+        .join('\n');
+
+      return {
+        text: timeline,
+        metadata: { sourceType: "video", duration, format },
+        success: true,
+        raw: videoRaw,
+        doctags,
+        modality: "video",
+      };
+    } catch (err) {
+      return {
+        text: `[视频分析失败: ${err instanceof Error ? err.message : String(err)}]`,
+        metadata: { sourceType: "video", duration, format },
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        modality: "video",
+      };
+    }
+  }
+
+  /**
+   * Get video resolution string (e.g., "1920x1080").
+   */
+  private getResolution(filePath: string): string | undefined {
+    try {
+      const result = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${filePath}"`,
+        { encoding: "utf-8", timeout: 10000 },
+      );
+      return result.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Get video frame rate.
+   */
+  private getFps(filePath: string): number | undefined {
+    try {
+      const result = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+        { encoding: "utf-8", timeout: 10000 },
+      );
+      const parts = result.trim().split('/');
+      if (parts.length === 2) {
+        return parseFloat(parts[0]) / parseFloat(parts[1]);
+      }
+      return parseFloat(result.trim()) || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

@@ -8,6 +8,8 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
+import type { AudioRawData } from "./modality-types.js";
+import { DocTagsFormatters, formatTime } from "./modality-types.js";
 
 export class AudioProcessor implements DocumentProcessor {
   private static readonly HANDLED_TYPES = new Set([
@@ -46,11 +48,90 @@ export class AudioProcessor implements DocumentProcessor {
         `[音频转写失败: ${err instanceof Error ? err.message : String(err)}]`;
     }
 
+    // Build AudioRawData from transcription
+    // When ASR provides plain text without speaker info, create a single-turn fallback
+    const audioRaw: AudioRawData = {
+      duration,
+      speakers: [{ id: 'S', label: '说话者' }],
+      turns: this.splitTranscriptionToTurns(transcription, duration),
+    };
+
+    const doctags = audioRaw.turns
+      .map((turn) => DocTagsFormatters.audioTurn(turn))
+      .join('\n');
+
     return {
       text: transcription,
       metadata: { sourceType: "audio", duration, format, fileName },
       success: true,
+      raw: audioRaw,
+      doctags,
+      modality: "audio",
     };
+  }
+
+  /**
+   * Split plain transcription text into time-windowed turns.
+   * Used when ASR doesn't provide speaker diarization.
+   */
+  private splitTranscriptionToTurns(transcription: string, duration: number): Array<{
+    speaker: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+  }> {
+    if (!transcription || transcription.startsWith('[')) {
+      return [{
+        speaker: 'S',
+        startTime: 0,
+        endTime: duration || 0,
+        text: transcription,
+      }];
+    }
+
+    // Split into ~30 second windows
+    const windowSize = 30;
+    const sentences = transcription.split(/[。！？\n]/).filter((s) => s.trim());
+    const turns: Array<{ speaker: string; startTime: number; endTime: number; text: string }> = [];
+    let currentText: string[] = [];
+    let windowStart = 0;
+    let charCount = 0;
+
+    // Rough estimate: 4 chars per second for Chinese speech
+    const charsPerSecond = 4;
+
+    for (const sentence of sentences) {
+      currentText.push(sentence.trim());
+      charCount += sentence.length;
+      const estimatedTime = charCount / charsPerSecond;
+
+      if (estimatedTime - windowStart >= windowSize || sentence === sentences[sentences.length - 1]) {
+        turns.push({
+          speaker: 'S',
+          startTime: windowStart,
+          endTime: Math.min(estimatedTime, duration || estimatedTime),
+          text: currentText.join('。'),
+        });
+        windowStart = estimatedTime;
+        currentText = [];
+      }
+    }
+
+    if (currentText.length > 0) {
+      turns.push({
+        speaker: 'S',
+        startTime: windowStart,
+        endTime: duration || windowStart + windowSize,
+        text: currentText.join('。'),
+      });
+    }
+
+    return turns.length > 0 ? turns : [{
+      speaker: 'S',
+      startTime: 0,
+      endTime: duration || 0,
+      text: transcription,
+    }];
   }
 
   /**

@@ -114,13 +114,133 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - 详细分析（按主题分段）
 - 数据支撑（引用关键数据和事实）
 - 信息关联图（如有必要）
-- 结论与建议`,
+- 结论与建议
+
+## 三层验证
+完成初步分析后：
+1. 对关键发现使用 expand 验证原始数据
+2. 引用格式：[来源: {原始文件名} → {章节标题} (第X页)]
+3. 列出所有引用的锚点ID`,
     tools: ["kb_search", "wiki_browse", "expand", "report_generate", "graph_build", "think", "finish"],
     variables: [
       { name: "topic", description: "分析主题或问题", required: true },
     ],
     maxTurns: 20,
     config: { category: "analysis" },
+  },
+  {
+    name: "三层递进检索",
+    pluginId: null,
+    description: "使用 Abstract→Structure→Raw 三层递进策略进行深度检索。",
+    systemPrompt: `你是一个专业的文档检索分析师。请按照以下三层递进策略完成任务：
+
+检索主题：{{topic}}
+
+## 第一层：文档路由
+1. 使用 kb_search 搜索 Abstract 层，确定哪些文档与问题相关
+2. 记录相关文档的标题和摘要
+
+## 第二层：精准检索
+1. 在 Structure 层用多个关键词搜索（至少3个不同角度）
+2. 使用 wiki_browse 浏览相关章节的完整内容
+3. 使用 grep 对关键术语进行精确搜索
+4. 合并结果，去重并记录锚点ID
+
+## 第三层：验证与补充
+1. 对关键信息使用 expand 验证原始内容
+2. 检查是否遗漏了重要表格、数据
+3. 确认所有引用的准确性
+
+## 输出要求
+- 列出所有发现，标注来源文件名 + 章节 + 页码
+- 标注信息置信度（高/中/低）
+- 如有矛盾信息，明确指出`,
+    tools: ["kb_search", "wiki_browse", "expand", "grep", "think", "finish"],
+    variables: [
+      { name: "topic", description: "要检索的主题或问题", required: true },
+    ],
+    maxTurns: 25,
+    config: { category: "research" },
+  },
+  {
+    name: "表格专项分析",
+    pluginId: null,
+    description: "定位并深度分析文档中的表格数据。",
+    systemPrompt: `你是一个专业的数据分析专家。请按照以下步骤完成表格分析任务：
+
+分析任务：{{task}}
+目标文件：{{targetFile}}
+
+## 步骤 1：定位表格
+- 使用 kb_search 搜索包含表格关键词的 Structure 页面
+- 优先搜索 Excel 文件（modality=excel）
+
+## 步骤 2：浏览 Structure 层
+- 使用 wiki_browse 查看相关 Structure 页面的 Markdown 表格内容
+- 识别表格的行列结构和数据范围
+
+## 步骤 3：读取 Raw 层
+- 使用 expand 获取表格的完整单元格数据
+- 获取合并单元格、公式等结构化信息
+
+## 步骤 4：执行分析
+- 根据任务要求进行数据统计、对比、趋势分析
+- 所有数据引用标注单元格范围：如 [Sheet1!A1:C10]
+
+## 输出要求
+- 分析结论
+- 关键数据点（标注来源表格和单元格范围）
+- 如有计算过程，列出计算步骤`,
+    tools: ["kb_search", "wiki_browse", "expand", "bash", "think", "finish"],
+    variables: [
+      { name: "task", description: "分析任务描述", required: true },
+      { name: "targetFile", description: "目标文件名（可选，缩小搜索范围）", required: false, defaultValue: "" },
+    ],
+    maxTurns: 20,
+    config: { category: "analysis" },
+  },
+  {
+    name: "多模态综合检索",
+    pluginId: null,
+    description: "跨模态搜索文档、图片、音频、视频内容。",
+    systemPrompt: `你是一个多模态信息检索专家。请跨模态搜索相关信息：
+
+检索主题：{{topic}}
+
+## 检索策略
+不同模态采用不同的深入策略：
+
+### 文档/Excel
+- kb_search 语义搜索 + grep 精确搜索
+- Structure 层查看章节/表格内容
+
+### 图片
+- 搜索图片描述文本（modality=image）
+- 查看视觉描述和 OCR 提取的文本
+
+### 音频
+- 搜索音频转写文本（modality=audio）
+- 查看发言者分段和对话内容
+
+### 视频
+- 搜索视频场景描述（modality=video）
+- 查看关键帧描述和对话转写
+
+## 交叉验证
+- 跨模态信息相互印证
+- 同一主题在不同模态中的表述可能不同
+- 标注每条信息的模态来源
+
+## 输出要求
+- 按主题组织发现，标注每条来源的模态
+- 列出跨模态交叉验证的结果
+- 标注信息完整度（哪些模态有覆盖、哪些没有）`,
+    tools: ["kb_search", "wiki_browse", "expand", "grep", "think", "finish"],
+    variables: [
+      { name: "topic", description: "要跨模态检索的主题", required: true },
+    ],
+    maxTurns: 30,
+    config: { category: "research" },
   },
   {
     name: "实体提取",

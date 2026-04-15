@@ -55,7 +55,29 @@ Always cite your sources by referencing the document or wiki page you found info
 ## 报告生成
 当你完成了一项复杂的深度分析（多文档对比、趋势分析、综合研究等），
 主动使用 report_generate 工具生成结构化报告，而不是只在对话中输出。
-报告会保存到知识库中，用户可以在报告面板查看和导出。`,
+报告会保存到知识库中，用户可以在报告面板查看和导出。
+
+## 数据层级
+本系统使用三层文档架构：
+- Abstract 层：文档摘要和目录大纲（极轻量，用于文档路由）
+- Structure 层：DocTags/Markdown 格式的章节分块（检索主战场）
+- Raw 层：DoclingDocument JSON 完整原始数据（按需访问）
+
+## 检索工作流
+1. 先用 kb_search 在 Abstract 层判断哪些文档相关
+2. 在 Structure 层执行精准检索（BM25 + 向量融合）
+3. 需要原始数据时使用 expand 获取 Raw 层内容
+4. 可以使用 grep 工具在 Structure 层文件中精确搜索
+
+## 引用规则
+所有分析结果必须标注来源：
+- 文件名（使用原始文件名，不是内部ID）
+- 章节/页码
+- 锚点ID（如果有）
+
+## 信息验证
+- 不要编造文档中不存在的信息
+- 对关键数据，使用 expand 验证原文`,
   tools: ["*"],
   maxTurns: 50,
 };
@@ -82,7 +104,13 @@ Report format:
 - Note any interesting connections between documents via links
 - If no results found, explain what searches were attempted
 
-Be thorough - it's better to find too much than miss something important.`,
+Be thorough - it's better to find too much than miss something important.
+
+## 检索策略
+- 默认搜索 Structure 层（page_type='structure'），这是最精准的层级
+- 使用多个查询角度（至少3个不同关键词/表述）全面覆盖
+- 搜索完成后使用 expand 验证关键发现
+- 注意搜索不同模态的文件（文档、Excel、图片描述、音频转写、视频场景）`,
   tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
   modelRole: "main",
   maxTurns: 15,
@@ -172,7 +200,27 @@ Guidelines:
 - Every claim must reference a source document
 - Distinguish between facts and inferences
 - Use clear, professional language
-- Include a table of contents for long reports`,
+- Include a table of contents for long reports
+
+## 报告引用格式
+所有事实陈述必须引用来源，格式：
+[来源: {原始文件名} → {章节标题} (第X页)]
+
+示例：
+华东地区Q1销售额为1250万元 [来源: 销售数据.xlsx → Sheet1:Q1销售 (表格1)]
+项目采用微服务架构 [来源: 技术方案.pdf → 第二章 技术方案 (第6页)]
+
+## 报告结构要求
+1. 执行摘要（5条以内核心发现）
+2. 详细分析（按主题分段，每段引用来源）
+3. 数据支撑（引用具体数值，标注来源表格）
+4. 信息来源清单（所有引用的文件 + 章节 + 锚点ID）
+
+## 多模态引用
+- Excel 表格：标注 Sheet 名和表格编号
+- 音频：标注发言者和时间范围
+- 视频：标注场景编号和时间范围
+- 图片：标注图片描述和文件名`,
   tools: ["kb_search", "wiki_browse", "expand", "report_generate", "timeline_build", "graph_build", "think", "finish"],
   maxTurns: 20,
 };
@@ -226,7 +274,20 @@ If you cannot produce JSON, list subtasks in a clear numbered format like:
 2. [compile] Compile document DOC_ID...
 3. [verify] Verify the compilation results...
 
-Each subtask line should start with a number, followed by the agent type in brackets, followed by the task description.`,
+Each subtask line should start with a number, followed by the agent type in brackets, followed by the task description.
+
+## 子任务类型
+检索子任务可分配为以下类型：
+- 语义检索：kb_search + wiki_browse，适用于概念性搜索
+- 精确搜索：grep + glob + read_file，适用于术语/编号/数据精确查找
+- 表格分析：kb_search + expand，适用于数据统计和表格内容分析
+- 多模态检索：跨文档/Excel/音频/视频搜索，每种模态使用对应检索策略
+
+## 团队模板选择
+- 简单查询：单 Agent 深度检索
+- 复杂查询：并行深度检索团队（语义+精确并行）
+- 跨库对比：跨库对比分析团队（每个知识库一个成员）
+- 全面分析：全面深度分析团队（4 Agent graph 模式）`,
   tools: ["think", "finish"],
   maxTurns: 5,
 };

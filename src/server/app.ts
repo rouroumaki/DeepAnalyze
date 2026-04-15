@@ -59,7 +59,7 @@ export function createApp(): Hono {
     if (!previewRoutes) {
       previewRoutes = createPreviewRoutes();
     }
-    await previewRoutes.fetch(c.req.raw, c.env);
+    return previewRoutes.fetch(c.req.raw, c.env);
   });
 
   // Search Test API
@@ -68,7 +68,7 @@ export function createApp(): Hono {
     if (!searchTestRoutes) {
       searchTestRoutes = createSearchTestRoutes();
     }
-    await searchTestRoutes.fetch(c.req.raw, c.env);
+    return searchTestRoutes.fetch(c.req.raw, c.env);
   });
 
   // -----------------------------------------------------------------------

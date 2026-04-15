@@ -68,12 +68,12 @@ const FILE_TYPE_ICONS: Record<string, React.ReactNode> = {
 
 const MODALITY_META: Record<string, (doc: DocumentInfo) => React.ReactNode> = {
   document: (doc) => {
-    const pages = doc.metadata?.pageCount;
+    const pages = doc.metadata?.pageCount as number | undefined;
     return pages ? <span>{pages} pages</span> : null;
   },
   excel: (doc) => {
-    const sheets = doc.metadata?.sheetCount;
-    const tables = doc.metadata?.tableCount;
+    const sheets = doc.metadata?.sheetCount as number | undefined;
+    const tables = doc.metadata?.tableCount as number | undefined;
     return (
       <span>
         {sheets ? `${sheets} Sheets` : ""}
@@ -84,7 +84,7 @@ const MODALITY_META: Record<string, (doc: DocumentInfo) => React.ReactNode> = {
   },
   audio: (doc) => {
     const dur = doc.metadata?.duration as number | undefined;
-    const speakers = doc.metadata?.speakerCount;
+    const speakers = doc.metadata?.speakerCount as number | undefined;
     return (
       <span>
         {dur ? formatDuration(dur) : ""}
@@ -105,8 +105,8 @@ const MODALITY_META: Record<string, (doc: DocumentInfo) => React.ReactNode> = {
     );
   },
   image: (doc) => {
-    const w = doc.metadata?.width;
-    const h = doc.metadata?.height;
+    const w = doc.metadata?.width as number | undefined;
+    const h = doc.metadata?.height as number | undefined;
     return w && h ? <span>{w}x{h}</span> : null;
   },
 };
@@ -224,7 +224,12 @@ export function DocumentManager({ kbId, onSelectDoc }: DocumentManagerProps) {
               <span>{formatFileSize(doc.fileSize)}</span>
               <span>·</span>
               <span>{doc.fileType.toUpperCase()}</span>
-              {doc.metadata?.modality && MODALITY_META[doc.metadata.modality as string]?.(doc)}
+              {(() => {
+                const modality = doc.metadata?.modality as string | undefined;
+                if (!modality) return null;
+                const fn = MODALITY_META[modality];
+                return fn ? fn(doc) : null;
+              })()}
             </div>
 
             {/* Processing progress */}

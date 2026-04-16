@@ -1,0 +1,46 @@
+# =============================================================================
+# DeepAnalyze Development Infrastructure
+# Starts PostgreSQL + Ollama — the backend runs locally via `npm run dev`.
+#
+# Usage:
+#   npm run services:up     # Start infrastructure
+#   npm run dev             # Start backend (in another terminal)
+#   npm run services:down   # Stop infrastructure
+#
+# Or start everything at once:
+#   npm run dev:full        # Start infra + backend in one terminal
+# =============================================================================
+
+version: "3.8"
+
+services:
+  postgres:
+    build:
+      context: ./config
+      dockerfile: pg-zhparser.Dockerfile
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${PG_DATABASE:-deepanalyze}
+      - POSTGRES_USER=${PG_USER:-deepanalyze}
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-deepanalyze_dev}
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-deepanalyze} -d ${PG_DATABASE:-deepanalyze}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data-dev:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  pgdata-dev:
+  ollama-data-dev:

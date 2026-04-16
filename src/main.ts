@@ -16,7 +16,29 @@ import {
 // ---------------------------------------------------------------------------
 const db = DB.getInstance();
 db.migrate();
-console.log("[DB] Database initialized and migrations applied");
+console.log("[DB] SQLite database initialized and migrations applied");
+
+// ---------------------------------------------------------------------------
+// PostgreSQL initialization (when PG_HOST is configured)
+// ---------------------------------------------------------------------------
+if (process.env.PG_HOST) {
+  console.log("[PG] PG_HOST detected, initializing PostgreSQL...");
+  (async () => {
+    try {
+      const { getPool, migratePG } = await import("./store/pg.ts");
+      const m001 = await import("./store/pg-migrations/001_init.ts");
+      const m002 = await import("./store/pg-migrations/002_anchors_structure.ts");
+      await getPool();
+      await migratePG([m001.migration, m002.migration]);
+      console.log("[PG] PostgreSQL ready with pgvector + zhparser");
+    } catch (err) {
+      console.error(
+        "[PG] Initialization failed (falling back to SQLite):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  })();
+}
 
 // ---------------------------------------------------------------------------
 // Application
@@ -32,9 +54,13 @@ const app = createApp();
 const port = parseInt(process.env.PORT || "21000");
 
 // Graceful shutdown handler
-function shutdown() {
+async function shutdown() {
   console.log("\n[Server] Shutting down...");
   DB.getInstance().close();
+  try {
+    const { closePool } = await import("./store/pg.ts");
+    await closePool();
+  } catch { /* PG not initialized */ }
   process.exit(0);
 }
 

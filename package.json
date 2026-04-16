@@ -8,7 +8,16 @@
     "build": "echo 'Bun can run TS directly. Use npm start instead.'",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "test": "bun test"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "services:up": "docker compose -f docker-compose.dev.yml up -d",
+    "services:down": "docker compose -f docker-compose.dev.yml down",
+    "services:logs": "docker compose -f docker-compose.dev.yml logs -f",
+    "dev:full": "docker compose -f docker-compose.dev.yml up -d && PG_HOST=localhost tsx watch src/main.ts",
+    "dev:full:stop": "docker compose -f docker-compose.dev.yml down",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.1",

@@ -5,9 +5,8 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
-    "dev:full": "bash scripts/dev.sh",
-    "dev:full:stop": "bash scripts/dev.sh stop",
-    "dev:full:status": "bash scripts/dev.sh status",
+    "dev:full": "python3 start.py",
+    "dev:full:stop": "python3 start.py --no-docker --skip-frontend",
     "build": "echo 'Bun can run TS directly. Use npm start instead.'",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",

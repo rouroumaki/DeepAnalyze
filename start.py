@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""DeepAnalyze 一键启动脚本 — 检查环境、构建前端、启动后端
+"""DeepAnalyze 一键启动脚本 — 检查环境、启动容器、构建前端、启动后端
 
 用法:
-    python start.py                    # 默认端口 21000
+    python start.py                    # 一键启动（自动启动 PostgreSQL + Ollama + 后端）
     python start.py --port 8080        # 自定义端口
     python start.py --dev              # 开发模式（前端热重载 + 后端热重载）
-    python start.py --reload           # 后端热重载
     python start.py --skip-frontend    # 跳过前端构建
+    python start.py --no-docker        # 不启动 Docker，仅使用 SQLite
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ PID_FILE = DATA_DIR / ".deepanalyze.pid"
 # 默认配置
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 21000
-TOTAL_STEPS = 7
+TOTAL_STEPS = 9
 
 # 需要创建的目录
 REQUIRED_DIRS = [
@@ -96,12 +96,103 @@ def check_environment() -> None:
 
 
 # ============================================================================
+# Phase 2: 检查 Docker 环境
+# ============================================================================
+
+
+def check_docker() -> bool:
+    """Check if Docker is available and running. Returns True if usable."""
+    _step(2, "检查 Docker 环境")
+
+    if sys.platform == "win32":
+        docker_cmd = "docker.exe"
+    else:
+        docker_cmd = "docker"
+
+    docker_path = shutil.which(docker_cmd)
+    if not docker_path:
+        _warn("Docker 未安装，将使用 SQLite（功能有限）")
+        _info("  安装 Docker 可启用向量检索和全文搜索")
+        return False
+
+    result = subprocess.run(
+        [docker_cmd, "info"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        _warn("Docker 未运行，将使用 SQLite（功能有限）")
+        _info("  启动 Docker Desktop 可启用向量检索和全文搜索")
+        return False
+
+    _ok("Docker 就绪")
+    return True
+
+
+# ============================================================================
+# Phase 3: 启动 Docker 容器（PostgreSQL + Ollama）
+# ============================================================================
+
+
+def start_containers() -> bool:
+    """Start PostgreSQL + Ollama containers. Returns True if PG is available."""
+    _step(3, "启动数据库和模型服务")
+
+    compose_file = PROJECT_ROOT / "docker-compose.dev.yml"
+    if not compose_file.exists():
+        _warn("docker-compose.dev.yml 不存在，跳过")
+        return False
+
+    docker_cmd = "docker.exe" if sys.platform == "win32" else "docker"
+    compose_cmd = [docker_cmd, "compose", "-f", str(compose_file)]
+
+    # Start containers
+    _info("  启动 PostgreSQL + Ollama 容器...")
+    result = subprocess.run(
+        compose_cmd + ["up", "-d", "--build"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        _warn("容器启动失败，将使用 SQLite")
+        _info(f"  {result.stderr.strip()[:200]}")
+        return False
+
+    # Wait for PostgreSQL to be healthy
+    _info("  等待 PostgreSQL 就绪...")
+    retries = 0
+    max_retries = 40
+    while retries < max_retries:
+        result = subprocess.run(
+            compose_cmd + ["exec", "-T", "postgres",
+                           "pg_isready", "-U", "deepanalyze", "-d", "deepanalyze"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            break
+        time.sleep(1)
+        retries += 1
+
+    if retries >= max_retries:
+        _warn("PostgreSQL 启动超时，将使用 SQLite")
+        return False
+
+    # Check Ollama
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3)
+        _ok("PostgreSQL + Ollama 就绪")
+    except Exception:
+        _ok("PostgreSQL 就绪 (Ollama 首次启动需下载模型，请稍候)")
+
+    return True
+
+
+# ============================================================================
 # Phase 2: 检查前端构建
 # ============================================================================
 
 
 def check_frontend(skip: bool = False, dev: bool = False) -> None:
-    _step(2, "检查前端构建")
+    _step(4, "检查前端构建")
 
     if skip:
         _ok("SKIP")
@@ -193,7 +284,7 @@ def _get_newest_mtime(directory: Path) -> float:
 
 
 def setup_directories() -> None:
-    _step(3, "创建目录结构")
+    _step(5, "创建目录结构")
 
     created = 0
     for d in REQUIRED_DIRS:
@@ -231,7 +322,7 @@ defaults:
 
 
 def cleanup_orphan() -> None:
-    _step(4, "清理残留进程")
+    _step(6, "清理残留进程")
 
     if not PID_FILE.exists():
         _ok("无残留进程")
@@ -390,7 +481,7 @@ def _kill_child_processes(parent_pid: int) -> None:
 
 
 def check_port(host: str, port: int) -> None:
-    _step(5, f"检查端口 {port}")
+    _step(7, f"检查端口 {port}")
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -429,7 +520,7 @@ def check_port(host: str, port: int) -> None:
 
 
 def validate_database() -> None:
-    _step(6, "验证数据库")
+    _step(8, "验证数据库")
 
     db_path = DATA_DIR / "deepanalyze.db"
 
@@ -457,8 +548,8 @@ def validate_database() -> None:
 # ============================================================================
 
 
-def start_server(host: str, port: int, dev: bool = False) -> None:
-    _step(7, "启动服务")
+def start_server(host: str, port: int, dev: bool = False, pg_available: bool = False) -> None:
+    _step(9, "启动服务")
 
     vite_proc = None
     npx_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
@@ -467,10 +558,18 @@ def start_server(host: str, port: int, dev: bool = False) -> None:
 
     # 启动后端
     _info("  启动后端服务...")
+    backend_env = {**os.environ, "PORT": str(port)}
+    if pg_available:
+        backend_env["PG_HOST"] = "localhost"
+        backend_env["PG_PORT"] = os.environ.get("PG_PORT", "5432")
+        backend_env["PG_DATABASE"] = os.environ.get("PG_DATABASE", "deepanalyze")
+        backend_env["PG_USER"] = os.environ.get("PG_USER", "deepanalyze")
+        backend_env["PG_PASSWORD"] = os.environ.get("PG_PASSWORD", "deepanalyze_dev")
+
     backend_proc = subprocess.Popen(
         [npx_cmd, "tsx", "src/main.ts"],
         cwd=str(PROJECT_ROOT),
-        env={**os.environ, "PORT": str(port)},
+        env=backend_env,
     )
 
     # 写入 PID 文件
@@ -501,13 +600,17 @@ def start_server(host: str, port: int, dev: bool = False) -> None:
     print(f"  DeepAnalyze - 深度分析系统{' (开发模式)' if dev else ''}")
     print(f"  后端地址: http://{host}:{port}")
     print(f"  API 文档: http://{host}:{port}/api/health")
+    if pg_available:
+        print(f"  数据库:   PostgreSQL (向量检索 + 全文搜索)")
+    else:
+        print(f"  数据库:   SQLite")
     if dev:
         print(f"  前端开发: http://127.0.0.1:3000")
     else:
         print(f"  前端页面: http://{host}:{port}")
     print("=" * 55)
     print()
-    print("  提示: 按 Ctrl+C 停止服务")
+    print("  提示: 按 Ctrl+C 停止所有服务")
     print()
 
     def _cleanup(signum=None, frame=None):
@@ -524,8 +627,17 @@ def start_server(host: str, port: int, dev: bool = False) -> None:
             backend_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             backend_proc.kill()
+        # Stop Docker containers
+        if pg_available:
+            _info("停止数据库和模型容器...")
+            docker_cmd = "docker.exe" if sys.platform == "win32" else "docker"
+            compose_file = PROJECT_ROOT / "docker-compose.dev.yml"
+            subprocess.run(
+                [docker_cmd, "compose", "-f", str(compose_file), "down"],
+                capture_output=True, check=False,
+            )
         PID_FILE.unlink(missing_ok=True)
-        _ok("服务已停止")
+        _ok("所有服务已停止")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _cleanup)
@@ -559,17 +671,25 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"监听端口 (默认: {DEFAULT_PORT})")
     parser.add_argument("--dev", action="store_true", help="开发模式（前端热重载）")
     parser.add_argument("--skip-frontend", action="store_true", help="跳过前端构建")
+    parser.add_argument("--no-docker", action="store_true", help="不启动 Docker 容器（仅 SQLite）")
     args = parser.parse_args()
 
     print_banner()
 
     check_environment()
+
+    pg_available = False
+    if not args.no_docker:
+        docker_ok = check_docker()
+        if docker_ok:
+            pg_available = start_containers()
+
     check_frontend(skip=args.skip_frontend, dev=args.dev)
     setup_directories()
     cleanup_orphan()
     check_port(args.host, args.port)
     validate_database()
-    start_server(args.host, args.port, dev=args.dev)
+    start_server(args.host, args.port, dev=args.dev, pg_available=pg_available)
 
 
 if __name__ == "__main__":

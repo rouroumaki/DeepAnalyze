@@ -521,67 +521,6 @@ export class Retriever {
     return finalResults.slice(0, topK);
   }
 
-    // Run all three search strategies in parallel using Promise.allSettled
-    // so one failure doesn't block the others.
-    const [vectorSettled, bm25Settled, linkedSettled] = await Promise.allSettled([
-      this.vectorSearch(query, kbIds, topK),
-      this.bm25Search(query, kbIds, topK),
-      linkedFrom ? this.linkedSearch(linkedFrom, 2) : Promise.resolve([]),
-    ]);
-
-    const resultSets: SearchResult[][] = [];
-
-    if (vectorSettled.status === "fulfilled" && vectorSettled.value.length > 0) {
-      resultSets.push(vectorSettled.value);
-    } else if (vectorSettled.status === "rejected") {
-      console.warn(
-        `[Retriever] Vector search failed: ${vectorSettled.reason instanceof Error ? vectorSettled.reason.message : String(vectorSettled.reason)}`,
-      );
-    }
-
-    if (bm25Settled.status === "fulfilled" && bm25Settled.value.length > 0) {
-      resultSets.push(bm25Settled.value);
-    } else if (bm25Settled.status === "rejected") {
-      console.warn(
-        `[Retriever] BM25 search failed: ${bm25Settled.reason instanceof Error ? bm25Settled.reason.message : String(bm25Settled.reason)}`,
-      );
-    }
-
-    if (linkedSettled.status === "fulfilled" && linkedSettled.value.length > 0) {
-      resultSets.push(linkedSettled.value);
-    } else if (linkedSettled.status === "rejected") {
-      console.warn(
-        `[Retriever] Linked search failed: ${linkedSettled.reason instanceof Error ? linkedSettled.reason.message : String(linkedSettled.reason)}`,
-      );
-    }
-
-    // If only one result set, return it directly (no need for RRF)
-    let finalResults: SearchResult[];
-    if (resultSets.length === 0) {
-      finalResults = [];
-    } else if (resultSets.length === 1) {
-      finalResults = resultSets[0];
-    } else {
-      // Merge with RRF
-      finalResults = this.rrfMerge(resultSets);
-    }
-
-    // Apply page type filter
-    if (pageTypes && pageTypes.length > 0) {
-      finalResults = finalResults.filter((r) =>
-        pageTypes.includes(r.pageType),
-      );
-    }
-
-    // Apply minimum score filter
-    if (minScore !== undefined) {
-      finalResults = finalResults.filter((r) => r.score >= minScore);
-    }
-
-    // Limit to topK
-    return finalResults.slice(0, topK);
-  }
-
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------

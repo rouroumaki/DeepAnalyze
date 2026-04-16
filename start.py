@@ -145,21 +145,32 @@ def start_containers() -> bool:
     docker_cmd = "docker.exe" if sys.platform == "win32" else "docker"
     compose_cmd = [docker_cmd, "compose", "-f", str(compose_file)]
 
-    # Start containers
-    _info("  启动 PostgreSQL + Ollama 容器...")
-    result = subprocess.run(
+    # Start containers — stream build/pull output to console in real-time
+    _info("  启动 PostgreSQL + Ollama 容器（首次需下载约 500MB，请耐心等待）...")
+    _info("  ------ Docker 输出 ------")
+    proc = subprocess.Popen(
         compose_cmd + ["up", "-d", "--build"],
-        capture_output=True, text=True, check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
-    if result.returncode != 0:
-        _warn("容器启动失败，将使用 SQLite")
-        _info(f"  {result.stderr.strip()[:200]}")
+    # Stream output line-by-line
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            print(f"    {line}", flush=True)
+    proc.wait()
+    _info("  ------ Docker 输出结束 ------")
+
+    if proc.returncode != 0:
+        _warn(f"容器启动失败 (exit code {proc.returncode})，将使用 SQLite")
+        _info("  可手动排查: docker compose -f docker-compose.dev.yml up --build")
         return False
 
     # Wait for PostgreSQL to be healthy
     _info("  等待 PostgreSQL 就绪...")
     retries = 0
-    max_retries = 40
+    max_retries = 60
     while retries < max_retries:
         result = subprocess.run(
             compose_cmd + ["exec", "-T", "postgres",
@@ -168,12 +179,16 @@ def start_containers() -> bool:
         )
         if result.returncode == 0:
             break
+        if retries % 5 == 0:
+            _info(f"  等待中... ({retries}/{max_retries}s)")
         time.sleep(1)
         retries += 1
 
     if retries >= max_retries:
         _warn("PostgreSQL 启动超时，将使用 SQLite")
         return False
+
+    _info(f"  PostgreSQL 就绪 (等待了 {retries}s)")
 
     # Check Ollama
     try:

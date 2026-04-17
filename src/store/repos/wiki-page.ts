@@ -4,6 +4,7 @@
 // CRUD operations for wiki pages with JSONB metadata support.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import type { WikiPageRepo, WikiPage, WikiPageCreate } from './interfaces';
 
@@ -11,11 +12,13 @@ export class PgWikiPageRepo implements WikiPageRepo {
   constructor(private pool: pg.Pool) {}
 
   async create(data: WikiPageCreate): Promise<WikiPage> {
+    const id = randomUUID();
     const { rows } = await this.pool.query(
-      `INSERT INTO wiki_pages (kb_id, doc_id, page_type, title, file_path, content, content_hash, token_count, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO wiki_pages (id, kb_id, doc_id, page_type, title, file_path, content, content_hash, token_count, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
+        id,
         data.kb_id,
         data.doc_id ?? null,
         data.page_type,
@@ -89,6 +92,14 @@ export class PgWikiPageRepo implements WikiPageRepo {
 
   async deleteByDocId(docId: string): Promise<void> {
     await this.pool.query('DELETE FROM wiki_pages WHERE doc_id = $1', [docId]);
+  }
+
+  async findByTitle(kbId: string, title: string, pageType: string): Promise<WikiPage | undefined> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM wiki_pages WHERE kb_id = $1 AND title = $2 AND page_type = $3 LIMIT 1',
+      [kbId, title, pageType],
+    );
+    return rows[0] ? this.mapRow(rows[0]) : undefined;
   }
 
   private mapRow(row: any): WikiPage {

@@ -4,6 +4,7 @@
 // CRUD operations for document records with processing status tracking.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import type { DocumentRepo, Document } from './interfaces';
 
@@ -27,11 +28,13 @@ export class PgDocumentRepo implements DocumentRepo {
   }
 
   async create(doc: Omit<Document, 'id' | 'created_at'>): Promise<Document> {
+    const id = randomUUID();
     const { rows } = await this.pool.query(
-      `INSERT INTO documents (kb_id, filename, file_path, file_hash, file_size, file_type, status, metadata, processing_step, processing_progress, processing_error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO documents (id, kb_id, filename, file_path, file_hash, file_size, file_type, status, metadata, processing_step, processing_progress, processing_error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
+        id,
         doc.kb_id,
         doc.filename,
         doc.file_path,
@@ -68,6 +71,13 @@ export class PgDocumentRepo implements DocumentRepo {
 
   async deleteByKbId(kbId: string): Promise<void> {
     await this.pool.query('DELETE FROM documents WHERE kb_id = $1', [kbId]);
+  }
+
+  async updateStatusWithProcessing(id: string, status: string, step: string, progress: number, error?: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE documents SET status = $1, processing_step = $2, processing_progress = $3, processing_error = $4 WHERE id = $5',
+      [status, step, progress, error ?? null, id],
+    );
   }
 
   private mapRow(row: any): Document {

@@ -45,6 +45,15 @@ export class PgEmbeddingRepo implements EmbeddingRepo {
     await this.pool.query('DELETE FROM embeddings WHERE page_id = $1', [pageId]);
   }
 
+  async markAllStale(): Promise<void> {
+    await this.pool.query('UPDATE embeddings SET stale = true');
+  }
+
+  async getStaleCount(): Promise<number> {
+    const { rows } = await this.pool.query('SELECT COUNT(*)::int as cnt FROM embeddings WHERE stale = true');
+    return rows[0].cnt;
+  }
+
   private mapRow(row: any): EmbeddingRow {
     // Parse the vector column from PG string format "[v1,v2,...]" back to Float32Array
     let vector: Float32Array;

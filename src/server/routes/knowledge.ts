@@ -4,27 +4,46 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import {
-  createKnowledgeBase,
-  getKnowledgeBase,
-  listKnowledgeBases,
-  updateKnowledgeBase,
-  deleteKnowledgeBase,
-} from "../../store/knowledge-bases.js";
-import {
-  createDocument,
-  listDocuments,
-  getDocument,
-  updateDocumentStatus,
-  deleteDocument,
-} from "../../store/documents.js";
-import { createWikiPage, getWikiPage, getWikiPageByDoc, getWikiPagesByKb, getPageContent } from "../../store/wiki-pages.js";
+import { getRepos } from "../../store/repos/index.js";
+import type { WikiPage, WikiPageCreate } from "../../store/repos/index.js";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync, createReadStream } from "node:fs";
+import { copyFileSync } from "node:fs";
+import { createHash, statSync } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { DEEPANALYZE_CONFIG } from "../../core/config.js";
 import { getProcessingQueue } from "../../services/processing-queue.js";
+
+// ---------------------------------------------------------------------------
+// Helper: Detect file type from extension
+// ---------------------------------------------------------------------------
+
+function detectFileType(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  const typeMap: Record<string, string> = {
+    pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    doc: "application/msword",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ppt: "application/vnd.ms-powerpoint",
+    txt: "text/plain",
+    md: "text/markdown",
+    csv: "text/csv",
+    json: "application/json",
+    html: "text/html",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    mp4: "video/mp4",
+  };
+  return typeMap[ext] ?? "application/octet-stream";
+}
 
 // ---------------------------------------------------------------------------
 // Background helpers for post-processing
@@ -47,11 +66,12 @@ async function generateEmbeddingsAndIndex(kbId: string, docId: string): Promise<
     const indexer = new Indexer(embeddingManager);
 
     // Index L0 (abstract) and L1 (overview) pages
+    const repos = await getRepos();
     for (const pageType of ["abstract", "overview"]) {
-      const page = getWikiPageByDoc(docId, pageType);
+      const page = await repos.wikiPage.getByDocAndType(docId, pageType);
       if (!page) continue;
 
-      const content = getPageContent(page.filePath);
+      const content = page.content;
       if (!content || content.trim().length === 0) continue;
 
       await indexer.indexPage(page, content);
@@ -72,13 +92,14 @@ async function extractEntitiesAndLinks(kbId: string, docId: string, filename: st
   try {
     const { ModelRouter } = await import("../../models/router.js");
     const { EntityExtractor } = await import("../../wiki/entity-extractor.js");
-    const { Linker } = await import("../../wiki/linker.js");
+
+    const repos = await getRepos();
 
     // Read the overview content for entity extraction
-    const overviewPage = getWikiPageByDoc(docId, "overview");
+    const overviewPage = await repos.wikiPage.getByDocAndType(docId, "overview");
     if (!overviewPage) return;
 
-    const overviewContent = getPageContent(overviewPage.filePath);
+    const overviewContent = overviewPage.content;
     if (!overviewContent || overviewContent.trim().length < 50) return;
 
     // Extract entities using LLM
@@ -89,25 +110,25 @@ async function extractEntitiesAndLinks(kbId: string, docId: string, filename: st
 
     if (entities.length === 0) return;
 
-    const wikiDir = join(DEEPANALYZE_CONFIG.dataDir, "wiki");
-    const linker = new Linker();
-
     // Create entity pages and links (limit to 20 entities per document)
     for (const entity of entities.slice(0, 20)) {
       const entityTitle = `${entity.type}: ${entity.name}`;
       const entityContent = `# ${entity.name}\n\nType: ${entity.type}\n\nMentions:\n${entity.mentions.map((m) => `- ${m}`).join("\n")}\n\nSource: ${filename}`;
 
-      const entityPage = createWikiPage(
-        kbId,
-        null,
-        "entity",
-        entityTitle,
-        entityContent,
-        wikiDir,
-      );
+      const wikiDir = join(DEEPANALYZE_CONFIG.dataDir, "wiki");
+      const filePath = join(wikiDir, kbId, `${entityTitle.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_")}.md`);
+
+      const entityPage = await repos.wikiPage.create({
+        kb_id: kbId,
+        doc_id: undefined,
+        page_type: "entity",
+        title: entityTitle,
+        content: entityContent,
+        file_path: filePath,
+      });
 
       // Create forward link from overview to entity
-      linker.createLink(
+      await repos.wikiLink.create(
         overviewPage.id,
         entityPage.id,
         "entity_ref",
@@ -116,7 +137,7 @@ async function extractEntitiesAndLinks(kbId: string, docId: string, filename: st
       );
 
       // Create backward link from entity to overview
-      linker.createLink(
+      await repos.wikiLink.create(
         entityPage.id,
         overviewPage.id,
         "backward",
@@ -141,53 +162,20 @@ async function extractEntitiesAndLinks(kbId: string, docId: string, filename: st
 /**
  * Parse a document file into plain text content.
  *
- * Handles text files (read directly) and binary files (parsed via Docling).
+ * Routes through ProcessorFactory which picks the best processor for each
+ * file type (native JS processors for Excel, docling for PDF/DOCX, etc.).
  * This function is shared between the route handler and the ProcessingQueue.
  */
 export async function parseDocumentFile(filePath: string, fileType: string): Promise<string> {
-  const textTypes = ["txt", "markdown", "md", "csv", "json", "html", "xml", "rtf"];
-  const doclingTypes = ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "png", "jpg", "jpeg", "tiff", "bmp"];
+  const { ProcessorFactory } = await import("../../services/document-processors/processor-factory.js");
+  const factory = ProcessorFactory.getInstance();
+  const parsed = await factory.parse(filePath, fileType);
 
-  let content: string;
-
-  if (textTypes.includes(fileType)) {
-    // Text files: read directly
-    try {
-      content = readFileSync(filePath, "utf-8");
-    } catch (err) {
-      throw new Error(
-        `Failed to read document: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  } else if (doclingTypes.includes(fileType)) {
-    // Non-text files: use Docling subprocess for parsing
-    try {
-      const { SubprocessManager } = await import("../../subprocess/manager.js");
-      const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
-      const projectRoot = resolve(DEEPANALYZE_CONFIG.dataDir, "..");
-
-      const mgr = new SubprocessManager();
-      await startDocling(projectRoot, mgr);
-      console.log(`[Knowledge] Docling parsing: ${filePath}`);
-
-      const result = await parseWithDocling(mgr, filePath, {
-        ocr: true,
-        extract_tables: true,
-      });
-      await mgr.stop("docling");
-
-      content = result.content;
-      console.log(`[Knowledge] Docling parsed ${filePath}: ${content.length} chars`);
-    } catch (err) {
-      throw new Error(
-        `Docling parsing failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  } else {
-    throw new Error(`Unsupported file type: '${fileType}'`);
+  if (!parsed.success) {
+    throw new Error(parsed.error ?? `Parse failed for ${filePath}`);
   }
 
-  return content;
+  return parsed.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,8 +218,9 @@ knowledgeRoutes.get("/", (c) => {
 // GET /kbs - List all knowledge bases
 // =====================================================================
 
-knowledgeRoutes.get("/kbs", (c) => {
-  const knowledgeBases = listKnowledgeBases();
+knowledgeRoutes.get("/kbs", async (c) => {
+  const repos = await getRepos();
+  const knowledgeBases = await repos.knowledgeBase.list();
   return c.json({ knowledgeBases });
 });
 
@@ -252,7 +241,8 @@ knowledgeRoutes.post("/kbs", async (c) => {
   }
 
   const ownerId = body.ownerId ?? "default-user";
-  const kb = createKnowledgeBase(
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.create(
     body.name,
     ownerId,
     body.description,
@@ -281,9 +271,10 @@ knowledgeRoutes.post("/kbs", async (c) => {
 // GET /kbs/:kbId - Get a single knowledge base
 // =====================================================================
 
-knowledgeRoutes.get("/kbs/:kbId", (c) => {
+knowledgeRoutes.get("/kbs/:kbId", async (c) => {
   const kbId = c.req.param("kbId");
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
 
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
@@ -304,7 +295,8 @@ knowledgeRoutes.put("/kbs/:kbId", async (c) => {
     visibility?: "private" | "team" | "public";
   }>();
 
-  const kb = updateKnowledgeBase(kbId, body);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.update(kbId, body);
 
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
@@ -317,7 +309,7 @@ knowledgeRoutes.put("/kbs/:kbId", async (c) => {
 // DELETE /kbs/:kbId - Delete a knowledge base
 // =====================================================================
 
-knowledgeRoutes.delete("/kbs/:kbId", (c) => {
+knowledgeRoutes.delete("/kbs/:kbId", async (c) => {
   const kbId = c.req.param("kbId");
 
   // Try to remove the data directories for this KB
@@ -336,7 +328,8 @@ knowledgeRoutes.delete("/kbs/:kbId", (c) => {
     // Directory may not exist, ignore
   }
 
-  const deleted = deleteKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const deleted = await repos.knowledgeBase.delete(kbId);
 
   if (!deleted) {
     return c.json({ error: "Knowledge base not found" }, 404);
@@ -349,15 +342,16 @@ knowledgeRoutes.delete("/kbs/:kbId", (c) => {
 // GET /kbs/:kbId/documents - List documents in a KB
 // =====================================================================
 
-knowledgeRoutes.get("/kbs/:kbId/documents", (c) => {
+knowledgeRoutes.get("/kbs/:kbId/documents", async (c) => {
   const kbId = c.req.param("kbId");
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
 
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
-  const documents = listDocuments(kbId);
+  const documents = await repos.document.getByKbId(kbId);
   return c.json({ documents });
 });
 
@@ -369,43 +363,47 @@ knowledgeRoutes.get("/kbs/:kbId/entities", async (c) => {
   const kbId = c.req.param("kbId");
 
   try {
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
 
     // Get all entity pages for this KB
-    const entities = db.prepare(`
-      SELECT
-        wp.title as name,
-        wp.metadata,
-        COUNT(DISTINCT wl.source_page_id) as mention_count,
-        COUNT(DISTINCT wp2.doc_id) as doc_count
-      FROM wiki_pages wp
-      LEFT JOIN wiki_links wl ON wl.target_page_id = wp.id AND wl.link_type = 'entity_ref'
-      LEFT JOIN wiki_pages wp2 ON wp2.id = wl.source_page_id
-      WHERE wp.kb_id = ? AND wp.page_type = 'entity'
-      GROUP BY wp.id
-      ORDER BY mention_count DESC
-    `).all(kbId) as Array<{ name: string; metadata: string | null; mention_count: number; doc_count: number }>;
+    const entityPages = await repos.wikiPage.getByKbAndType(kbId, "entity");
 
-    return c.json(entities.map((e) => {
-      let entityType = "实体";
-      if (e.metadata) {
-        try {
-          const parsed = JSON.parse(e.metadata);
-          if (parsed?.type) entityType = parsed.type;
-        } catch {
-          // metadata not valid JSON, use default
+    // For each entity, count mentions via wiki_links
+    const entities = [];
+    for (const page of entityPages) {
+      const outgoing = await repos.wikiLink.getIncoming(page.id);
+      const mentionCount = outgoing.filter((l) => l.linkType === "entity_ref").length;
+
+      // Count distinct source docs
+      const docIds = new Set<string>();
+      for (const link of outgoing) {
+        if (link.linkType === "entity_ref") {
+          const sourcePage = await repos.wikiPage.getById(link.sourcePageId);
+          if (sourcePage?.doc_id) docIds.add(sourcePage.doc_id);
         }
       }
+
+      let entityType = "实体";
+      if (page.metadata && typeof page.metadata === "object") {
+        const meta = page.metadata as Record<string, unknown>;
+        if (meta.type) entityType = meta.type as string;
+      }
+
       // Strip type prefix from title (e.g. "Person: John Doe" -> "John Doe")
-      const cleanName = e.name.includes(": ") ? e.name.split(": ").slice(1).join(": ") : e.name;
-      return {
+      const cleanName = page.title.includes(": ") ? page.title.split(": ").slice(1).join(": ") : page.title;
+
+      entities.push({
         name: cleanName,
         type: entityType,
-        mentions: e.mention_count,
-        docCount: e.doc_count,
-      };
-    }));
+        mentions: mentionCount,
+        docCount: docIds.size,
+      });
+    }
+
+    // Sort by mention count descending
+    entities.sort((a, b) => b.mentions - a.mentions);
+
+    return c.json(entities);
   } catch (err) {
     return c.json({
       error: "Failed to fetch entities",
@@ -438,12 +436,11 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId", async (c) => {
   const pageTypeParam = c.req.query("pageType"); // "abstract", "overview", "fulltext"
 
   try {
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
 
     // Look up the original page
-    const page = getWikiPage(pageId);
-    if (!page || page.kbId !== kbId) {
+    const page = await repos.wikiPage.getById(pageId);
+    if (!page || page.kb_id !== kbId) {
       return c.json({ error: "Page not found" }, 404);
     }
 
@@ -452,44 +449,46 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId", async (c) => {
     let targetPage = page;
     const requestedPageType = pageTypeParam ?? (levelParam ? LEVEL_TO_PAGE_TYPE[levelParam] : undefined);
 
-    if (requestedPageType && requestedPageType !== page.pageType && page.docId) {
-      const sibling = getWikiPageByDoc(page.docId, requestedPageType);
+    if (requestedPageType && requestedPageType !== page.page_type && page.doc_id) {
+      const sibling = await repos.wikiPage.getByDocAndType(page.doc_id, requestedPageType);
       if (sibling) {
         targetPage = sibling;
       }
     }
 
-    const content = getPageContent(targetPage.filePath);
-
     // Find all available levels for this document
     const availableLevels: Array<"L0" | "L1" | "L2"> = [];
-    if (targetPage.docId) {
-      const siblingRows = db.prepare(
-        `SELECT DISTINCT page_type FROM wiki_pages WHERE doc_id = ? AND page_type IN ('abstract', 'overview', 'fulltext')`,
-      ).all(targetPage.docId) as Array<{ page_type: string }>;
+    if (targetPage.doc_id) {
+      const docPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "abstract");
+      const overviewPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "overview");
+      const fulltextPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "fulltext");
 
-      for (const row of siblingRows) {
-        const lvl = PAGE_TYPE_TO_LEVEL[row.page_type];
+      const pageTypes = new Set<string>();
+      for (const p of [...docPages, ...overviewPages, ...fulltextPages]) {
+        pageTypes.add(p.page_type);
+      }
+      for (const pt of pageTypes) {
+        const lvl = PAGE_TYPE_TO_LEVEL[pt];
         if (lvl) availableLevels.push(lvl);
       }
     } else {
       // Single page without document association - just report its own level
-      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.pageType];
+      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.page_type];
       if (lvl) availableLevels.push(lvl);
     }
 
     return c.json({
       id: targetPage.id,
-      kbId: targetPage.kbId,
-      docId: targetPage.docId,
-      pageType: targetPage.pageType,
-      level: PAGE_TYPE_TO_LEVEL[targetPage.pageType] ?? "L1",
+      kbId: targetPage.kb_id,
+      docId: targetPage.doc_id,
+      pageType: targetPage.page_type,
+      level: PAGE_TYPE_TO_LEVEL[targetPage.page_type] ?? "L1",
       title: targetPage.title,
-      content,
-      tokenCount: targetPage.tokenCount,
+      content: targetPage.content,
+      tokenCount: targetPage.token_count,
       availableLevels,
-      createdAt: targetPage.createdAt,
-      updatedAt: targetPage.updatedAt,
+      createdAt: targetPage.created_at,
+      updatedAt: targetPage.updated_at,
     });
   } catch (err) {
     return c.json({
@@ -512,20 +511,22 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId/preview", async (c) => {
   const snippetLen = parseInt(c.req.query("snippetLen") || "300", 10);
 
   try {
-    const page = getWikiPage(pageId);
-    if (!page || page.kbId !== kbId) {
+    const repos = await getRepos();
+
+    const page = await repos.wikiPage.getById(pageId);
+    if (!page || page.kb_id !== kbId) {
       return c.json({ error: "Page not found" }, 404);
     }
 
     // If a specific level is requested, try to load that sibling page
     let targetPage = page;
     const requestedType = LEVEL_TO_PAGE_TYPE[level];
-    if (requestedType && requestedType !== page.pageType && page.docId) {
-      const sibling = getWikiPageByDoc(page.docId, requestedType);
+    if (requestedType && requestedType !== page.page_type && page.doc_id) {
+      const sibling = await repos.wikiPage.getByDocAndType(page.doc_id, requestedType);
       if (sibling) targetPage = sibling;
     }
 
-    const fullContent = getPageContent(targetPage.filePath);
+    const fullContent = targetPage.content;
     const keywords = q.split(/\s+/).map((w) => w.trim()).filter(Boolean);
 
     // Find the best snippet position based on keyword density
@@ -566,28 +567,30 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId/preview", async (c) => {
     }
 
     // Compute available levels
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
     const availableLevels: Array<"L0" | "L1" | "L2"> = [];
 
-    if (targetPage.docId) {
-      const siblingRows = db.prepare(
-        `SELECT DISTINCT page_type FROM wiki_pages WHERE doc_id = ? AND page_type IN ('abstract', 'overview', 'fulltext')`,
-      ).all(targetPage.docId) as Array<{ page_type: string }>;
+    if (targetPage.doc_id) {
+      const docPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "abstract");
+      const overviewPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "overview");
+      const fulltextPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "fulltext");
 
-      for (const row of siblingRows) {
-        const lvl = PAGE_TYPE_TO_LEVEL[row.page_type];
+      const pageTypes = new Set<string>();
+      for (const p of [...docPages, ...overviewPages, ...fulltextPages]) {
+        pageTypes.add(p.page_type);
+      }
+      for (const pt of pageTypes) {
+        const lvl = PAGE_TYPE_TO_LEVEL[pt];
         if (lvl) availableLevels.push(lvl);
       }
     } else {
-      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.pageType];
+      const lvl = PAGE_TYPE_TO_LEVEL[targetPage.page_type];
       if (lvl) availableLevels.push(lvl);
     }
 
     return c.json({
       title: targetPage.title,
-      level: PAGE_TYPE_TO_LEVEL[targetPage.pageType] ?? level,
-      tokenCount: targetPage.tokenCount,
+      level: PAGE_TYPE_TO_LEVEL[targetPage.page_type] ?? level,
+      tokenCount: targetPage.token_count,
       snippet,
       availableLevels,
     });
@@ -607,7 +610,8 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
   const kbId = c.req.param("kbId");
 
   // Verify KB exists
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
@@ -624,7 +628,7 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  // Save to a temp file so createDocument can copy it
+  // Save to a temp file so we can copy it to the data dir
   const tempPath = join(
     tmpdir(),
     `deepanalyze-${randomUUID()}-${file.name}`,
@@ -633,18 +637,47 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
   try {
     writeFileSync(tempPath, buffer);
 
-    // Create document record (copies from temp to the data dir)
+    // Create document record: copy file to original dir, compute hash, insert into DB
     const originalDir = join(DEEPANALYZE_CONFIG.dataDir, "original");
-    const doc = createDocument(kbId, file.name, tempPath, originalDir);
+    const docId = randomUUID();
+
+    // Copy source file to original/{kbId}/{docId}/{filename}
+    const destDir = join(originalDir, kbId, docId);
+    mkdirSync(destDir, { recursive: true });
+    const destPath = join(destDir, file.name);
+    copyFileSync(tempPath, destPath);
+
+    // Compute MD5 hash of the original file
+    const fileBuffer = readFileSync(destPath);
+    const fileHash = createHash("md5").update(fileBuffer).digest("hex");
+
+    // Get file size
+    const stat = statSync(destPath);
+    const fileSize = stat.size;
+
+    // Detect file type from extension
+    const fileType = detectFileType(file.name);
+
+    const doc = await repos.document.create({
+      kb_id: kbId,
+      filename: file.name,
+      file_path: destPath,
+      file_hash: fileHash,
+      file_size: fileSize,
+      file_type: fileType,
+      status: "uploaded",
+      metadata: {},
+      processing_step: null,
+      processing_progress: 0,
+      processing_error: null,
+    });
 
     // Auto-enqueue for processing (respects auto_process setting)
     const queue = getProcessingQueue();
     let autoProcess = true;
     try {
-      const { DB } = await import("../../store/database.js");
-      const db = DB.getInstance().raw;
-      const row = db.prepare("SELECT value FROM settings WHERE key = 'auto_process'").get() as { value: string } | undefined;
-      autoProcess = row?.value !== "false";
+      const autoProcessVal = await repos.settings.get("auto_process");
+      autoProcess = autoProcessVal !== "false";
     } catch {
       // Settings table may not exist yet — default to auto-process
     }
@@ -654,12 +687,23 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
         kbId,
         docId: doc.id,
         filename: doc.filename,
-        filePath: doc.filePath,
-        fileType: doc.fileType,
+        filePath: doc.file_path,
+        fileType: doc.file_type,
       });
     }
 
-    return c.json(doc, 201);
+    // Map to API response (camelCase)
+    return c.json({
+      id: doc.id,
+      kbId: doc.kb_id,
+      filename: doc.filename,
+      filePath: doc.file_path,
+      fileHash: doc.file_hash,
+      fileSize: doc.file_size,
+      fileType: doc.file_type,
+      status: doc.status,
+      createdAt: doc.created_at,
+    }, 201);
   } finally {
     // Clean up temp file
     try {
@@ -679,14 +723,15 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
   const docId = c.req.param("docId");
 
   // Verify KB exists
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
   // Verify document exists and belongs to this KB
-  const doc = getDocument(docId);
-  if (!doc || doc.kbId !== kbId) {
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
     return c.json({ error: "Document not found" }, 404);
   }
 
@@ -705,8 +750,8 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     kbId,
     docId: doc.id,
     filename: doc.filename,
-    filePath: doc.filePath,
-    fileType: doc.fileType,
+    filePath: doc.file_path,
+    fileType: doc.file_type,
   });
 
   return c.json({
@@ -720,40 +765,35 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
 // DELETE /kbs/:kbId/documents/:docId - Delete a document
 // =====================================================================
 
-knowledgeRoutes.delete("/kbs/:kbId/documents/:docId", (c) => {
+knowledgeRoutes.delete("/kbs/:kbId/documents/:docId", async (c) => {
   const kbId = c.req.param("kbId");
   const docId = c.req.param("docId");
 
+  const repos = await getRepos();
+
   // Verify document exists and belongs to this KB
-  const doc = getDocument(docId);
-  if (!doc || doc.kbId !== kbId) {
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const deleted = deleteDocument(docId);
-  if (!deleted) {
-    return c.json({ error: "Failed to delete document" }, 500);
-  }
+  await repos.document.deleteById(docId);
 
   return c.json({ id: docId, deleted: true });
 });
 
 // =====================================================================
-// GET /knowledge/:kbId/documents/:docId/status — 文档处理状态轮询端点
+// GET /knowledge/:kbId/documents/:docId/status - Document processing status
 // =====================================================================
 
 knowledgeRoutes.get("/kbs/:kbId/documents/:docId/status", async (c) => {
   const kbId = c.req.param("kbId");
   const docId = c.req.param("docId");
 
-  const { DB } = await import("../../store/database.js");
-  const db = DB.getInstance().raw;
+  const repos = await getRepos();
+  const doc = await repos.document.getById(docId);
 
-  const doc = db
-    .prepare("SELECT id, filename, status FROM documents WHERE id = ? AND kb_id = ?")
-    .get(docId, kbId) as { id: string; filename: string; status: string } | undefined;
-
-  if (!doc) {
+  if (!doc || doc.kb_id !== kbId) {
     return c.json({ error: "Document not found" }, 404);
   }
 
@@ -786,13 +826,14 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
   const kbId = c.req.param("kbId");
 
   // Verify KB exists
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
   const queue = getProcessingQueue();
-  const documents = listDocuments(kbId);
+  const documents = await repos.document.getByKbId(kbId);
   let enqueued = 0;
 
   for (const doc of documents) {
@@ -805,8 +846,8 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
       kbId,
       docId: doc.id,
       filename: doc.filename,
-      filePath: doc.filePath,
-      fileType: doc.fileType,
+      filePath: doc.file_path,
+      fileType: doc.file_type,
     });
     enqueued++;
   }
@@ -820,23 +861,21 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
 
 knowledgeRoutes.post("/kbs/:kbId/trigger-processing", async (c) => {
   const kbId = c.req.param("kbId");
-  const { DB } = await import("../../store/database.js");
-  const db = DB.getInstance().raw;
+  const repos = await getRepos();
 
   // Verify KB exists
-  const kbRow = db.prepare("SELECT id FROM knowledge_bases WHERE id = ?").get(kbId);
-  if (!kbRow) {
+  const kb = await repos.knowledgeBase.get(kbId);
+  if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
   const queue = getProcessingQueue();
 
-  const docs = db
-    .prepare("SELECT id, filename, file_path, file_type FROM documents WHERE kb_id = ? AND status = 'uploaded'")
-    .all(kbId) as Array<{ id: string; filename: string; file_path: string; file_type: string }>;
+  const documents = await repos.document.getByKbId(kbId);
+  const uploadedDocs = documents.filter((d) => d.status === "uploaded");
 
   let enqueued = 0;
-  for (const doc of docs) {
+  for (const doc of uploadedDocs) {
     queue.enqueue({
       kbId,
       docId: doc.id,
@@ -871,40 +910,34 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
     : null;
 
   // Verify KB exists
-  const kb = getKnowledgeBase(kbId);
+  const repos = await getRepos();
+  const kb = await repos.knowledgeBase.get(kbId);
   if (!kb) {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
   try {
     // Simple search: use wiki_pages table to find matching content
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
-    // Escape SQL LIKE wildcards in user query
-    const escaped = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
-    const likePattern = `%${escaped}%`;
-
     // Search by title and page content
-    const titleRows = db.prepare(
-      `SELECT id, kb_id, doc_id, page_type, title, file_path
-       FROM wiki_pages
-       WHERE kb_id = ? AND (title LIKE ? OR page_type IN ('abstract', 'overview'))
-       LIMIT ?`,
-    ).all(kbId, likePattern, topK) as Record<string, unknown>[];
+    const allPages = await repos.wikiPage.getByKbAndType(kbId);
+    const escaped = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const likePattern = escaped.toLowerCase();
+
+    const titleRows = allPages.filter(
+      (p) =>
+        p.title.toLowerCase().includes(likePattern) ||
+        p.page_type === "abstract" ||
+        p.page_type === "overview",
+    ).slice(0, topK);
 
     // Also scan content of all pages in this KB (limit to avoid excessive I/O)
-    const allPages = db.prepare(
-      `SELECT id, kb_id, doc_id, page_type, title, file_path
-       FROM wiki_pages WHERE kb_id = ?`,
-    ).all(kbId) as Record<string, unknown>[];
+    const existingIds = new Set(titleRows.map((r) => r.id));
+    const contentMatches: Array<(WikiPage & { _score: number; _snippet: string })> = [];
 
-    const existingIds = new Set(titleRows.map((r) => r.id as string));
-    const contentMatches: Array<Record<string, unknown> & { _score: number; _snippet: string }> = [];
-
-    for (const row of allPages) {
-      if (existingIds.has(row.id as string)) continue;
+    for (const page of allPages) {
+      if (existingIds.has(page.id)) continue;
       try {
-        const content = getPageContent(row.file_path as string);
+        const content = page.content;
         const idx = content.toLowerCase().indexOf(query.toLowerCase());
         if (idx >= 0) {
           const start = Math.max(0, idx - 50);
@@ -912,7 +945,7 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
           let snippet = content.substring(start, end);
           if (start > 0) snippet = "..." + snippet;
           if (end < content.length) snippet = snippet + "...";
-          contentMatches.push({ ...row, _score: 0.5, _snippet: snippet });
+          contentMatches.push({ ...page, _score: 0.5, _snippet: snippet });
         }
       } catch {
         // skip unreadable pages
@@ -922,26 +955,25 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
 
     // Merge title matches and content matches
     const results = [
-      ...titleRows.map((row) => {
+      ...titleRows.map((page) => {
         let snippet = "";
         try {
-          const content = getPageContent(row.file_path as string);
-          snippet = content.substring(0, 200);
+          snippet = page.content.substring(0, 200);
         } catch { /* ignore */ }
         return {
-          docId: (row.doc_id as string) || "",
-          level: row.page_type as string,
+          docId: page.doc_id || "",
+          level: page.page_type,
           content: snippet,
           score: 0.8,
-          metadata: { pageId: row.id as string, title: row.title as string },
+          metadata: { pageId: page.id, title: page.title },
         };
       }),
-      ...contentMatches.map((row) => ({
-        docId: (row.doc_id as string) || "",
-        level: row.page_type as string,
-        content: row._snippet,
-        score: row._score,
-        metadata: { pageId: row.id as string, title: row.title as string },
+      ...contentMatches.map((page) => ({
+        docId: page.doc_id || "",
+        level: page.page_type,
+        content: page._snippet,
+        score: page._score,
+        metadata: { pageId: page.id, title: page.title },
       })),
     ].slice(0, topK);
 
@@ -973,38 +1005,32 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
     ? fullPath.substring(wikiPrefix.length)
     : "";
 
+  const repos = await getRepos();
+
   if (!pagePath) {
     // List all pages in the KB
-    const pages = getWikiPagesByKb(kbId);
+    const pages = await repos.wikiPage.getByKbAndType(kbId);
     return c.json({ pages });
   }
 
   try {
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
-
     // Try to find page by ID first
-    let page = getWikiPage(decodeURIComponent(pagePath));
+    let page = await repos.wikiPage.getById(decodeURIComponent(pagePath));
 
     if (!page) {
-      // Try to find by file_path containing the page path
-      const escapedPath = decodeURIComponent(pagePath).replace(/%/g, "\\%").replace(/_/g, "\\_");
-      const row = db.prepare(
-        `SELECT id FROM wiki_pages WHERE kb_id = ? AND file_path LIKE ? LIMIT 1`,
-      ).get(kbId, `%${escapedPath}%`) as Record<string, unknown> | undefined;
-
-      if (row) {
-        page = getWikiPage(row.id as string);
-      }
+      // Try to find by title containing the page path
+      const decodedPath = decodeURIComponent(pagePath);
+      const allPages = await repos.wikiPage.getByKbAndType(kbId);
+      page = allPages.find((p) => p.title.includes(decodedPath));
     }
 
     if (!page) {
       return c.json({ error: "Page not found" }, 404);
     }
 
-    const content = getPageContent(page.filePath);
+    const content = page.content;
 
-    // Query links for this page using the Linker
+    // Query links for this page
     let links: Array<{
       sourcePageId: string;
       targetPageId: string;
@@ -1012,10 +1038,8 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
       entityName?: string;
     }> = [];
     try {
-      const { Linker } = await import("../../wiki/linker.js");
-      const linker = new Linker();
-      const outgoing = linker.getOutgoingLinks(page.id);
-      const incoming = linker.getIncomingLinks(page.id);
+      const outgoing = await repos.wikiLink.getOutgoing(page.id);
+      const incoming = await repos.wikiLink.getIncoming(page.id);
       links = [
         ...outgoing.map((l) => ({
           sourcePageId: l.sourcePageId,
@@ -1036,15 +1060,15 @@ knowledgeRoutes.get("/:kbId/wiki/*", async (c) => {
 
     return c.json({
       id: page.id,
-      kbId: page.kbId,
-      docId: page.docId,
-      pageType: page.pageType,
+      kbId: page.kb_id,
+      docId: page.doc_id,
+      pageType: page.page_type,
       title: page.title,
       content,
-      tokenCount: page.tokenCount,
+      tokenCount: page.token_count,
       links,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
     });
   } catch (err) {
     return c.json({
@@ -1127,12 +1151,13 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
 knowledgeRoutes.get("/kbs/:kbId/documents/:docId/download", async (c) => {
   const { kbId, docId } = c.req.param();
 
-  const doc = getDocument(docId);
-  if (!doc || doc.kbId !== kbId) {
+  const repos = await getRepos();
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const filePath = doc.filePath;
+  const filePath = doc.file_path;
   const originalName = doc.filename;
 
   try {
@@ -1157,8 +1182,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
   const { kbId, docId, format } = c.req.param();
 
   try {
-    const { createReposAsync } = await import("../../store/repos/index.js");
-    const repos = await createReposAsync();
+    const repos = await getRepos();
 
     switch (format) {
       case "raw-json": {
@@ -1239,7 +1263,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
 });
 
 // =============================================================================
-// POST /kbs/:kbId/reindex — Reindex all documents in a knowledge base
+// POST /kbs/:kbId/reindex - Reindex all documents in a knowledge base
 // Triggered when embedding model dimension changes to rebuild stale embeddings.
 // =============================================================================
 
@@ -1247,12 +1271,13 @@ knowledgeRoutes.post("/kbs/:kbId/reindex", async (c) => {
   const kbId = c.req.param("kbId");
 
   try {
-    const kb = getKnowledgeBase(kbId);
+    const repos = await getRepos();
+    const kb = await repos.knowledgeBase.get(kbId);
     if (!kb) {
       return c.json({ error: "Knowledge base not found" }, 404);
     }
 
-    const docs = listDocuments(kbId);
+    const docs = await repos.document.getByKbId(kbId);
     const queue = getProcessingQueue();
     let enqueued = 0;
 
@@ -1262,8 +1287,8 @@ knowledgeRoutes.post("/kbs/:kbId/reindex", async (c) => {
           kbId,
           docId: doc.id,
           filename: doc.filename,
-          filePath: doc.filePath,
-          fileType: doc.fileType,
+          filePath: doc.file_path,
+          fileType: doc.file_type,
         });
         enqueued++;
       }

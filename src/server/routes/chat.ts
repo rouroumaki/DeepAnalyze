@@ -3,8 +3,7 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import * as messageStore from "../../store/messages.js";
-import * as sessionStore from "../../store/sessions.js";
+import { getRepos } from "../../store/repos/index.js";
 
 export const chatRoutes = new Hono();
 
@@ -17,12 +16,13 @@ chatRoutes.post("/send", async (c) => {
   }
 
   // Verify session exists
-  const session = sessionStore.getSession(body.sessionId);
+  const repos = await getRepos();
+  const session = await repos.session.get(body.sessionId);
   if (!session) {
     return c.json({ error: "Session not found" }, 404);
   }
 
-  const message = messageStore.createMessage(body.sessionId, "user", body.content);
+  const message = await repos.message.create(body.sessionId, "user", body.content);
 
   return c.json({ messageId: message.id, status: "created" }, 201);
 });

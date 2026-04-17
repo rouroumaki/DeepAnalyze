@@ -3,28 +3,30 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import * as sessionStore from "../../store/sessions.js";
-import * as messageStore from "../../store/messages.js";
+import { getRepos } from "../../store/repos/index.js";
 
 export const sessionRoutes = new Hono();
 
 // GET / - List all sessions
-sessionRoutes.get("/", (c) => {
-  const sessions = sessionStore.listSessions();
+sessionRoutes.get("/", async (c) => {
+  const repos = await getRepos();
+  const sessions = await repos.session.list();
   return c.json(sessions);
 });
 
 // POST / - Create a new session
 sessionRoutes.post("/", async (c) => {
   const body = await c.req.json<{ title?: string; kbScope?: Record<string, unknown> }>();
-  const session = sessionStore.createSession(body.title, body.kbScope);
+  const repos = await getRepos();
+  const session = await repos.session.create(body.title, body.kbScope);
   return c.json(session, 201);
 });
 
 // GET /:id - Get session by id
-sessionRoutes.get("/:id", (c) => {
+sessionRoutes.get("/:id", async (c) => {
   const id = c.req.param("id");
-  const session = sessionStore.getSession(id);
+  const repos = await getRepos();
+  const session = await repos.session.get(id);
   if (!session) {
     return c.json({ error: "Session not found" }, 404);
   }
@@ -32,20 +34,22 @@ sessionRoutes.get("/:id", (c) => {
 });
 
 // GET /:id/messages - Get messages for a session
-sessionRoutes.get("/:id/messages", (c) => {
+sessionRoutes.get("/:id/messages", async (c) => {
   const id = c.req.param("id");
-  const session = sessionStore.getSession(id);
+  const repos = await getRepos();
+  const session = await repos.session.get(id);
   if (!session) {
     return c.json({ error: "Session not found" }, 404);
   }
-  const messages = messageStore.getMessages(id);
+  const messages = await repos.message.list(id);
   return c.json(messages);
 });
 
 // DELETE /:id - Delete a session
-sessionRoutes.delete("/:id", (c) => {
+sessionRoutes.delete("/:id", async (c) => {
   const id = c.req.param("id");
-  const deleted = sessionStore.deleteSession(id);
+  const repos = await getRepos();
+  const deleted = await repos.session.delete(id);
   if (!deleted) {
     return c.json({ error: "Session not found" }, 404);
   }

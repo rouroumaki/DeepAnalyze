@@ -13,11 +13,7 @@ import { Expander } from "../../wiki/expander.js";
 import type { EmbeddingManager } from "../../models/embedding.js";
 import type { Indexer } from "../../wiki/indexer.js";
 import type { ModelRouter } from "../../models/router.js";
-import {
-  getWikiPage,
-  getWikiPagesByKb,
-  getPageContent,
-} from "../../store/wiki-pages.js";
+import { getRepos } from "../../store/repos/index.js";
 import { createReportTool } from "../../tools/ReportTool/index.js";
 import { createTimelineTool } from "../../tools/TimelineTool/index.js";
 import { createGraphTool } from "../../tools/GraphTool/index.js";
@@ -56,7 +52,7 @@ export interface ToolSetupDeps {
  * - timeline_build (chronological event extraction from wiki pages)
  * - graph_build (entity relationship graph from wiki pages and links)
  */
-export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry {
+export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise<ToolRegistry> {
   const registry = new ToolRegistry();
 
   // -----------------------------------------------------------------------
@@ -111,12 +107,9 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
       if (kbIds.length === 0) {
         // When no KB IDs are specified, search across all knowledge bases.
         // Retrieve all KB IDs from the database.
-        const { DB } = await import("../../store/database.js");
-        const db = DB.getInstance().raw;
-        const rows = db
-          .prepare("SELECT id FROM knowledge_bases")
-          .all() as Array<{ id: string }>;
-        const allKbIds = rows.map((r) => r.id);
+        const repos = await getRepos();
+        const allKbs = await repos.knowledgeBase.list();
+        const allKbIds = allKbs.map((kb) => kb.id);
 
         if (allKbIds.length === 0) {
           return {
@@ -188,26 +181,22 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
       // Mode 1: View a specific page by ID
       if (input.pageId) {
         const pageId = input.pageId as string;
-        const page = getWikiPage(pageId);
+        const repos = await getRepos();
+        const page = await repos.wikiPage.getById(pageId);
 
         if (!page) {
           return { error: `Page not found: ${pageId}` };
         }
 
-        let content: string;
-        try {
-          content = getPageContent(page.filePath);
-        } catch {
-          content = "[Content could not be read]";
-        }
+        const content = page.content || "[Content could not be read]";
 
         const result: Record<string, unknown> = {
           id: page.id,
-          kbId: page.kbId,
-          docId: page.docId,
-          pageType: page.pageType,
+          kbId: page.kb_id,
+          docId: page.doc_id,
+          pageType: page.page_type,
           title: page.title,
-          tokenCount: page.tokenCount,
+          tokenCount: page.token_count,
           content,
         };
 
@@ -215,10 +204,10 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
         if (input.followLinks) {
           const depth = Math.min((input.depth as number) || 1, 3);
 
-          const outgoingLinks = deps.linker.getOutgoingLinks(pageId);
-          const incomingLinks = deps.linker.getIncomingLinks(pageId);
+          const outgoingLinks = await deps.linker.getOutgoingLinks(pageId);
+          const incomingLinks = await deps.linker.getIncomingLinks(pageId);
 
-          const linkedPages = deps.linker.getLinkedPages(pageId, depth);
+          const linkedPages = await deps.linker.getLinkedPages(pageId, depth);
 
           result.outgoingLinks = outgoingLinks.map((link) => ({
             targetPageId: link.targetPageId,
@@ -248,17 +237,18 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
       if (input.kbId) {
         const kbId = input.kbId as string;
         const pageType = input.pageType as string | undefined;
-        const pages = getWikiPagesByKb(kbId, pageType);
+        const repos = await getRepos();
+        const pages = await repos.wikiPage.getByKbAndType(kbId, pageType);
 
         return {
           kbId,
           total: pages.length,
           pages: pages.map((p) => ({
             id: p.id,
-            docId: p.docId,
-            pageType: p.pageType,
+            docId: p.doc_id,
+            pageType: p.page_type,
             title: p.title,
-            tokenCount: p.tokenCount,
+            tokenCount: p.token_count,
           })),
         };
       }
@@ -697,11 +687,8 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
     },
     async execute(input: Record<string, unknown>) {
       const query = input.query as string;
-      const maxResults = (input.maxResults as number) || 10;
 
       try {
-        // Use the model router's web search if available, otherwise provide a helpful message
-        const encoded = encodeURIComponent(query);
         return {
           query,
           message: "Web search is available but requires a search API endpoint to be configured. " +
@@ -710,6 +697,185 @@ export function createConfiguredToolRegistry(deps: ToolSetupDeps): ToolRegistry 
         };
       } catch (err) {
         return { error: `Web search failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // Multimedia generation tools (TTS, image, video, music)
+  // -----------------------------------------------------------------------
+
+  const { CapabilityDispatcher } = await import("../../models/capability-dispatcher.js");
+  const dispatcher = new CapabilityDispatcher();
+
+  registry.register({
+    name: "tts_generate",
+    description:
+      "Generate speech audio from text. Converts text input to natural-sounding speech. " +
+      "Returns the audio file path and metadata. Supports Chinese and English.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "Text to convert to speech",
+        },
+        voice: {
+          type: "string",
+          description: "Voice name (default: male-qn-qingse)",
+        },
+        speed: {
+          type: "number",
+          description: "Speech speed (default: 1.0)",
+        },
+      },
+      required: ["text"],
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const result = await dispatcher.textToSpeech(input.text as string, {
+          voice: input.voice as string | undefined,
+          speed: input.speed as number | undefined,
+        });
+
+        // Save audio to data directory
+        const { writeFileSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const filename = `tts-${Date.now()}.mp3`;
+        const filePath = join(deps.dataDir, "generated", filename);
+        writeFileSync(filePath, Buffer.from(result.audio));
+
+        return {
+          success: true,
+          filePath: `generated/${filename}`,
+          contentType: result.contentType,
+          sizeBytes: result.audio.byteLength,
+        };
+      } catch (err) {
+        return { error: `TTS generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  registry.register({
+    name: "image_generate",
+    description:
+      "Generate an image from a text description. Creates a visual based on the prompt. " +
+      "Returns the image file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Image generation prompt describing the desired image",
+        },
+        width: {
+          type: "number",
+          description: "Image width in pixels",
+        },
+        height: {
+          type: "number",
+          description: "Image height in pixels",
+        },
+      },
+      required: ["prompt"],
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const result = await dispatcher.generateImage(input.prompt as string, {
+          width: input.width as number | undefined,
+          height: input.height as number | undefined,
+        });
+
+        const { writeFileSync, mkdirSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const dir = join(deps.dataDir, "generated");
+        mkdirSync(dir, { recursive: true });
+        const filename = `image-${Date.now()}.png`;
+        writeFileSync(join(dir, filename), Buffer.from(result.image));
+
+        return {
+          success: true,
+          filePath: `generated/${filename}`,
+          contentType: result.contentType,
+          sizeBytes: result.image.byteLength,
+        };
+      } catch (err) {
+        return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  registry.register({
+    name: "video_generate",
+    description:
+      "Generate a video from a text prompt. Creates an AI video (may take several minutes). " +
+      "Returns the video file URL or path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Video generation prompt describing the desired video content",
+        },
+      },
+      required: ["prompt"],
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const result = await dispatcher.generateVideo(input.prompt as string);
+
+        return {
+          success: true,
+          fileUrl: result.fileUrl,
+          contentType: result.contentType,
+        };
+      } catch (err) {
+        return { error: `Video generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  registry.register({
+    name: "music_generate",
+    description:
+      "Generate music from a text prompt. Creates an audio file based on the description. " +
+      "Returns the audio file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Music generation prompt describing the desired music style/mood",
+        },
+        duration: {
+          type: "number",
+          description: "Desired duration in seconds",
+        },
+      },
+      required: ["prompt"],
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const result = await dispatcher.generateMusic(input.prompt as string, {
+          duration: input.duration as number | undefined,
+        });
+
+        const { writeFileSync, mkdirSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const dir = join(deps.dataDir, "generated");
+        mkdirSync(dir, { recursive: true });
+        const filename = `music-${Date.now()}.mp3`;
+        writeFileSync(join(dir, filename), Buffer.from(result.audio));
+
+        return {
+          success: true,
+          filePath: `generated/${filename}`,
+          contentType: result.contentType,
+          sizeBytes: result.audio.byteLength,
+        };
+      } catch (err) {
+        return { error: `Music generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
   });

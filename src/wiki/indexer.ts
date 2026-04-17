@@ -1,12 +1,12 @@
 // =============================================================================
 // DeepAnalyze - Wiki Indexer
-// Manages the indexing of wiki pages into both the FTS5 full-text search table
+// Manages the indexing of wiki pages into both the full-text search table
 // and the embeddings table for vector similarity search.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
-import { DB } from "../store/database.js";
-import { getWikiPagesByKb, getPageContent } from "../store/wiki-pages.js";
+import { getRepos } from "../store/repos/index.js";
 import type { WikiPage } from "../types/index.js";
 import type { EmbeddingManager } from "../models/embedding.js";
 
@@ -28,52 +28,46 @@ export class Indexer {
   /**
    * Index all pages for a specific document. L0 (abstract) and L1 (overview)
    * pages are indexed into the embeddings table; L2 (fulltext) pages are
-   * indexed into both FTS5 and embeddings.
+   * indexed into both FTS and embeddings.
    */
   async indexDocument(kbId: string, docId: string): Promise<void> {
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
 
     // Get all pages for this document
-    const pages = db
-      .prepare("SELECT * FROM wiki_pages WHERE doc_id = ?")
-      .all(docId) as Record<string, unknown>[];
+    // Fetch all page types and combine
+    const pageTypes = ["abstract", "overview", "fulltext", "structure", "entity", "concept", "report"];
+    const allPages: WikiPage[] = [];
 
-    for (const row of pages) {
-      const page = this.rowToWikiPage(row);
-      const content = getPageContent(page.filePath);
+    for (const pageType of pageTypes) {
+      const pages = await repos.wikiPage.getManyByDocAndType(docId, pageType);
+      for (const page of pages) {
+        allPages.push(this.pgPageToWikiPage(page));
+      }
+    }
+
+    for (const page of allPages) {
+      const content = page.filePath
+        ? await this.getPageContent(page)
+        : "";
       await this.indexPage(page, content);
     }
   }
 
   /**
-   * Index a single page into both FTS5 and embeddings.
+   * Index a single page into both FTS and embeddings.
+   * Accepts either a types/index.js WikiPage or a repos WikiPage (both have id and title).
    */
-  async indexPage(page: WikiPage, content: string): Promise<void> {
-    const db = DB.getInstance().raw;
+  async indexPage(page: { id: string; title: string }, content: string): Promise<void> {
+    const repos = await getRepos();
 
-    // Insert into FTS5 for full-text search (BM25).
-    // Since fts_content uses content='wiki_pages', we insert directly
-    // using the page's rowid to keep the FTS index in sync.
+    // Insert into FTS using PG upsert
     try {
-      // Get the rowid of the wiki_pages record
-      const rowResult = db
-        .prepare("SELECT rowid FROM wiki_pages WHERE id = ?")
-        .get(page.id) as Record<string, unknown> | undefined;
-
-      if (rowResult) {
-        const rowid = rowResult.rowid as number;
-
-        // Delete any existing FTS entry for this rowid, then re-insert
-        db.prepare("DELETE FROM fts_content WHERE rowid = ?").run(rowid);
-        db.prepare(
-          "INSERT INTO fts_content(rowid, title, content) VALUES (?, ?, ?)",
-        ).run(rowid, page.title, content);
-      }
+      await repos.ftsSearch.upsertFTSEntry(page.id, page.title, content);
     } catch (err) {
-      // FTS5 operations may fail if the table is misconfigured.
+      // FTS operations may fail if the table is misconfigured.
       // Log but do not crash -- embedding indexing can still proceed.
       console.warn(
-        `[Indexer] FTS5 indexing failed for page ${page.id}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Indexer] FTS indexing failed for page ${page.id}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
@@ -91,12 +85,13 @@ export class Indexer {
    * Re-index an entire knowledge base: all pages in all documents.
    */
   async indexKb(kbId: string): Promise<void> {
-    const pages = getWikiPagesByKb(kbId);
+    const repos = await getRepos();
+    const pages = await repos.wikiPage.getByKbAndType(kbId);
 
     for (const page of pages) {
       try {
-        const content = getPageContent(page.filePath);
-        await this.indexPage(page, content);
+        const content = page.content || "";
+        await this.indexPage(this.pgPageToWikiPage(page), content);
       } catch (err) {
         console.warn(
           `[Indexer] Failed to index page ${page.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -109,23 +104,16 @@ export class Indexer {
    * Remove all embeddings for a page.
    */
   async removePageIndex(pageId: string): Promise<void> {
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
 
     // Remove embeddings
-    db.prepare("DELETE FROM embeddings WHERE page_id = ?").run(pageId);
+    await repos.embedding.deleteByPageId(pageId);
 
-    // Remove from FTS5
+    // Remove from FTS
     try {
-      const rowResult = db
-        .prepare("SELECT rowid FROM wiki_pages WHERE id = ?")
-        .get(pageId) as Record<string, unknown> | undefined;
-
-      if (rowResult) {
-        const rowid = rowResult.rowid as number;
-        db.prepare("DELETE FROM fts_content WHERE rowid = ?").run(rowid);
-      }
+      await repos.ftsSearch.deleteByPageId(pageId);
     } catch {
-      // Ignore FTS5 errors during removal
+      // Ignore FTS errors during removal
     }
   }
 
@@ -137,39 +125,30 @@ export class Indexer {
     text: string,
     chunkIndex: number = 0,
   ): Promise<Float32Array> {
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
     const modelName = this.embeddingManager.providerName;
 
     // Check for an existing embedding (skip if stale)
-    const existing = db
-      .prepare(
-        "SELECT vector, stale FROM embeddings WHERE page_id = ? AND model_name = ? AND chunk_index = ?",
-      )
-      .get(pageId, modelName, chunkIndex) as
-      | Record<string, unknown>
-      | undefined;
+    const existing = await repos.embedding.getOrNone(pageId, modelName, chunkIndex);
 
-    if (existing && !existing.stale) {
-      const blob = existing.vector as Buffer;
-      return new Float32Array(
-        blob.buffer,
-        blob.byteOffset,
-        blob.byteLength / Float32Array.BYTES_PER_ELEMENT,
-      );
+    if (existing && !(existing as any).stale) {
+      return existing.vector;
     }
 
     // Compute new embedding
     const result = await this.embeddingManager.embed(text);
     const vector = result.embedding;
 
-    // Serialize Float32Array to Buffer for SQLite BLOB storage
-    const buffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-
     const id = randomUUID();
-    db.prepare(
-      `INSERT INTO embeddings (id, page_id, model_name, dimension, vector, text_chunk, chunk_index)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, pageId, modelName, this.embeddingManager.dimension, buffer, text, chunkIndex);
+    await repos.embedding.upsert({
+      id,
+      page_id: pageId,
+      model_name: modelName,
+      dimension: this.embeddingManager.dimension,
+      vector,
+      text_chunk: text,
+      chunk_index: chunkIndex,
+    });
 
     return vector;
   }
@@ -204,19 +183,40 @@ export class Indexer {
   // Private helpers
   // -----------------------------------------------------------------------
 
-  private rowToWikiPage(row: Record<string, unknown>): WikiPage {
+  private pgPageToWikiPage(page: any): WikiPage {
     return {
-      id: row.id as string,
-      kbId: row.kb_id as string,
-      docId: row.doc_id as string | null,
-      pageType: row.page_type as WikiPage["pageType"],
-      title: row.title as string,
-      filePath: row.file_path as string,
-      contentHash: row.content_hash as string,
-      tokenCount: row.token_count as number,
-      metadata: row.metadata as string | null,
-      createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
+      id: page.id,
+      kbId: page.kb_id,
+      docId: page.doc_id,
+      pageType: page.page_type as WikiPage["pageType"],
+      title: page.title,
+      filePath: page.file_path,
+      contentHash: page.content_hash,
+      tokenCount: page.token_count,
+      metadata: page.metadata ? JSON.stringify(page.metadata) : null,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
     };
+  }
+
+  /**
+   * Get page content from the DB content column, falling back to filesystem read.
+   */
+  private async getPageContent(page: WikiPage): Promise<string> {
+    const repos = await getRepos();
+    const pgPage = await repos.wikiPage.getById(page.id);
+    if (pgPage && pgPage.content) {
+      return pgPage.content;
+    }
+    // Fallback: read from filesystem
+    if (page.filePath) {
+      try {
+        const { readFileSync } = await import("node:fs");
+        return readFileSync(page.filePath, "utf-8");
+      } catch {
+        return "";
+      }
+    }
+    return "";
   }
 }

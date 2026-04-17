@@ -9,7 +9,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ModelRouter } from "./router.js";
-import { DB } from "../store/database.js";
 import { SettingsStore } from "../store/settings.js";
 
 // ---------------------------------------------------------------------------
@@ -241,14 +240,20 @@ export function setEmbeddingManager(mgr: EmbeddingManager): void {
  *   3. Hash-based fallback
  */
 export class EmbeddingManager {
-  private provider: EmbeddingProvider;
+  private provider: EmbeddingProvider | null = null;
+  private initPromise: Promise<void> | null = null;
 
-  constructor(router: ModelRouter) {
-    this.provider = this.resolveProvider(router);
+  constructor(private router: ModelRouter) {}
+
+  /** Initialize the manager — resolves provider, registers global singleton, checks dimension changes. */
+  async initialize(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this._initialize();
+    return this.initPromise;
   }
 
-  /** Initialize the manager — registers the global singleton and checks dimension changes. */
-  async initialize(): Promise<void> {
+  private async _initialize(): Promise<void> {
+    this.provider = await this.resolveProvider(this.router);
     setEmbeddingManager(this);
     await this.checkDimensionChange();
   }
@@ -280,8 +285,9 @@ export class EmbeddingManager {
         `Marking all existing embeddings as stale. Trigger reindex to rebuild.`,
       );
 
-      const db = DB.getInstance().raw;
-      db.prepare("UPDATE embeddings SET stale = 1").run();
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      await repos.embedding.markAllStale();
 
       // Update stored dimension
       store.set("embedding_dimension", String(currentDim));
@@ -296,12 +302,14 @@ export class EmbeddingManager {
 
   /** Generate an embedding for a single piece of text. */
   async embed(text: string): Promise<EmbeddingResult> {
+    if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
     const results = await this.provider.embed([text]);
     return results[0];
   }
 
   /** Generate embeddings for a batch of texts. */
   async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
+    if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
     if (texts.length === 0) return [];
 
     // Process in chunks of 64 to avoid overloading the API
@@ -319,11 +327,13 @@ export class EmbeddingManager {
 
   /** Get the dimensionality of the current embedding provider. */
   get dimension(): number {
+    if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
     return this.provider.dimension;
   }
 
   /** Get the name of the current embedding provider. */
   get providerName(): string {
+    if (!this.provider) return "uninitialized";
     return this.provider.name;
   }
 
@@ -331,13 +341,11 @@ export class EmbeddingManager {
    * Check whether there are stale embeddings in the database.
    * Returns the count of stale embedding rows, or 0 if none.
    */
-  getStaleCount(): number {
+  async getStaleCount(): Promise<number> {
     try {
-      const db = DB.getInstance().raw;
-      const row = db
-        .prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE stale = 1")
-        .get() as { cnt: number } | undefined;
-      return row?.cnt ?? 0;
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      return await repos.embedding.getStaleCount();
     } catch {
       return 0;
     }
@@ -347,9 +355,9 @@ export class EmbeddingManager {
   // Private helpers
   // -----------------------------------------------------------------------
 
-  private resolveProvider(router: ModelRouter): EmbeddingProvider {
+  private async resolveProvider(router: ModelRouter): Promise<EmbeddingProvider> {
     // Priority 1: DB settings table
-    const fromDB = this.tryCreateFromDBSettings();
+    const fromDB = await this.tryCreateFromDBSettings();
     if (fromDB) return fromDB;
 
     // Priority 2: YAML config via ModelRouter
@@ -367,15 +375,14 @@ export class EmbeddingManager {
 
   /**
    * Attempt to create a provider from DB settings table.
+   * Uses the unified SettingsReader which reads from PG or SQLite.
    * Returns null if DB is unavailable or no embedding provider is configured.
    */
-  private tryCreateFromDBSettings(): EmbeddingProvider | null {
+  private async tryCreateFromDBSettings(): Promise<EmbeddingProvider | null> {
     try {
-      const db = DB.getInstance();
-      if (!db?.raw) return null;
-
-      const store = new SettingsStore();
-      const settings = store.getProviderSettings();
+      const { getSettingsReader } = await import("../store/settings-reader.js");
+      const reader = getSettingsReader();
+      const settings = await reader.getProviderSettings();
       const embeddingDefaultId = settings.defaults?.embedding;
 
       if (!embeddingDefaultId) return null;

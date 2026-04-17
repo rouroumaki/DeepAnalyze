@@ -7,7 +7,7 @@
 
 import type { AgentTool } from "../../services/agent/types.js";
 import type { Retriever } from "../../wiki/retriever.js";
-import { getWikiPage, getPageContent } from "../../store/wiki-pages.js";
+import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies
@@ -354,9 +354,11 @@ export function createTimelineTool(deps: TimelineToolDeps): AgentTool {
         for (const result of results) {
           let content: string;
           try {
-            const page = getWikiPage(result.pageId);
+            const repos = await getRepos();
+            const page = await repos.wikiPage.getById(result.pageId);
             if (!page) continue;
-            content = getPageContent(page.filePath);
+            content = page.content || "";
+            if (!content) continue;
           } catch {
             // Skip pages whose content cannot be read
             continue;

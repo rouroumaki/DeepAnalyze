@@ -4,7 +4,7 @@
 //   parsing -> compiling -> indexing -> linking
 // =============================================================================
 
-import { DB } from "../store/database.js";
+import { getRepos } from "../store/repos/index.js";
 import { ProcessorFactory } from "./document-processors/processor-factory.js";
 import { ModelRouter } from "../models/router.js";
 import { WikiCompiler } from "../wiki/compiler.js";
@@ -418,7 +418,7 @@ export class ProcessingQueue {
     // Use L0Linker to build cross-document associations based on shared entities
     const { L0Linker } = await import("../wiki/l0-linker.js");
     const l0Linker = new L0Linker();
-    l0Linker.buildL0Associations(kbId);
+    await l0Linker.buildL0Associations(kbId);
 
     console.log(
       `[ProcessingQueue] L0 linking completed for ${filename} (${docId})`,
@@ -445,28 +445,19 @@ export class ProcessingQueue {
    * Update document status in the database.
    * Sets status, processing_step, processing_progress, and optionally processing_error.
    */
-  private updateDbStatus(
+  private async updateDbStatus(
     docId: string,
     status: string,
     step: string | null,
     progress: number,
     error?: string,
-  ): void {
+  ): Promise<void> {
     try {
-      const db = DB.getInstance().raw;
-
+      const repos = await getRepos();
       if (error !== undefined) {
-        db.prepare(
-          `UPDATE documents
-           SET status = ?, processing_step = ?, processing_progress = ?, processing_error = ?
-           WHERE id = ?`,
-        ).run(status, step, progress, error, docId);
+        await repos.document.updateStatusWithProcessing(docId, status, step ?? "", progress, error);
       } else {
-        db.prepare(
-          `UPDATE documents
-           SET status = ?, processing_step = ?, processing_progress = ?, processing_error = NULL
-           WHERE id = ?`,
-        ).run(status, step, progress, docId);
+        await repos.document.updateStatusWithProcessing(docId, status, step ?? "", progress);
       }
     } catch (err) {
       console.error(

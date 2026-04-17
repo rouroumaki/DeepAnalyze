@@ -2,10 +2,10 @@
 // DeepAnalyze - Fusion Retrieval Engine
 // Combines vector similarity search, BM25 full-text search, and link traversal
 // using Reciprocal Rank Fusion (RRF) for unified result ranking.
+// Uses PG Repository layer exclusively for all database operations.
 // =============================================================================
 
-import { DB } from "../store/database.js";
-import { getWikiPage, getPageContent } from "../store/wiki-pages.js";
+import { getRepos } from "../store/repos/index.js";
 import type { WikiPage } from "../types/index.js";
 import type { EmbeddingManager } from "../models/embedding.js";
 import type { Indexer } from "./indexer.js";
@@ -83,13 +83,12 @@ export class Retriever {
   }
 
   // -----------------------------------------------------------------------
-  // Vector similarity search
+  // Vector similarity search (PG pgvector)
   // -----------------------------------------------------------------------
 
   /**
-   * Search using vector embedding similarity.
-   * Embeds the query, loads all relevant embeddings from the DB,
-   * computes cosine similarity, and returns topK results.
+   * Search using vector embedding similarity via PG pgvector HNSW index.
+   * Replaces the brute-force JS cosine similarity computation.
    */
   async vectorSearch(
     query: string,
@@ -98,82 +97,46 @@ export class Retriever {
   ): Promise<SearchResult[]> {
     if (kbIds.length === 0) return [];
 
-    // Embed the query
-    const queryResult = await this.embeddingManager.embed(query);
-    const queryVec = queryResult.embedding;
+    try {
+      const repos = await getRepos();
 
-    const db = DB.getInstance().raw;
-
-    // Build query to get all embeddings for pages in the specified KBs
-    const placeholders = kbIds.map(() => "?").join(", ");
-    const rows = db
-      .prepare(
-        `SELECT e.id, e.page_id, e.model_name, e.vector, e.text_chunk,
-                wp.kb_id, wp.doc_id, wp.page_type, wp.title, wp.file_path
-         FROM embeddings e
-         JOIN wiki_pages wp ON wp.id = e.page_id
-         WHERE wp.kb_id IN (${placeholders})
-         ORDER BY e.page_id, e.chunk_index`,
-      )
-      .all(...kbIds) as Record<string, unknown>[];
-
-    if (rows.length === 0) return [];
-
-    // Compute similarity for each embedding
-    const scored: Array<{
-      pageId: string;
-      kbId: string;
-      docId: string | null;
-      pageType: string;
-      title: string;
-      score: number;
-      textChunk: string;
-    }> = [];
-
-    for (const row of rows) {
-      const blob = row.vector as Buffer;
-      const vec = new Float32Array(
-        blob.buffer,
-        blob.byteOffset,
-        blob.byteLength / Float32Array.BYTES_PER_ELEMENT,
+      const queryResult = await this.embeddingManager.embed(query);
+      const results = await repos.vectorSearch.searchByVector(
+        queryResult.embedding,
+        kbIds,
+        {
+          topK,
+          pageTypes: ["structure"],
+          modelName: process.env.EMBEDDING_MODEL ?? "bge-m3",
+        },
       );
 
-      const similarity = this.indexer.cosineSimilarity(queryVec, vec);
-
-      scored.push({
-        pageId: row.page_id as string,
-        kbId: row.kb_id as string,
-        docId: row.doc_id as string | null,
-        pageType: row.page_type as string,
-        title: row.title as string,
-        score: similarity,
-        textChunk: row.text_chunk as string,
-      });
+      return results.map((r) => ({
+        pageId: r.page_id,
+        kbId: r.kb_id,
+        docId: r.doc_id,
+        pageType: r.page_type,
+        title: r.title,
+        score: r.similarity,
+        snippet: this.extractSnippet(r.text_chunk ?? "", query),
+        source: "vector" as const,
+      }));
+    } catch (err) {
+      console.warn(
+        `[Retriever] PG vector search failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
     }
-
-    // Sort by score descending and take topK
-    scored.sort((a, b) => b.score - a.score);
-    const topResults = scored.slice(0, topK);
-
-    return topResults.map((r) => ({
-      pageId: r.pageId,
-      kbId: r.kbId,
-      docId: r.docId,
-      pageType: r.pageType,
-      title: r.title,
-      score: r.score,
-      snippet: this.extractSnippet(r.textChunk, query),
-      source: "vector" as const,
-    }));
   }
 
   // -----------------------------------------------------------------------
-  // BM25 full-text search (FTS5)
+  // BM25 full-text search (PG zhparser/GIN)
   // -----------------------------------------------------------------------
 
   /**
-   * Search using BM25 ranking via SQLite FTS5.
-   * Falls back to LIKE-based matching when FTS5 is unavailable.
+   * Search using BM25 ranking via PG full-text search with zhparser.
+   * Falls back to LIKE-based matching when FTS is unavailable.
    */
   async bm25Search(
     query: string,
@@ -182,141 +145,86 @@ export class Retriever {
   ): Promise<SearchResult[]> {
     if (kbIds.length === 0) return [];
 
-    const db = DB.getInstance().raw;
-
     try {
-      return await this.fts5Search(db, query, kbIds, topK);
+      return await this.pgFtsSearch(query, kbIds, topK);
     } catch {
-      // FTS5 may not be properly configured or the query syntax may be invalid.
-      // Fall back to simple LIKE-based search.
-      return this.likeSearch(db, query, kbIds, topK);
+      // PG FTS may fail. Fall back to LIKE-based search.
+      return this.likeSearch(query, kbIds, topK);
     }
   }
 
   /**
-   * FTS5-based BM25 search.
+   * PG FTS-based search using zhparser and GIN index.
    */
-  private async fts5Search(
-    db: import("better-sqlite3").Database,
+  private async pgFtsSearch(
     query: string,
     kbIds: string[],
     topK: number,
   ): Promise<SearchResult[]> {
-    // Sanitize query for FTS5 MATCH (remove special operators)
-    const ftsQuery = query
-      .replace(/[*"'():^|]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 0)
-      .join(" OR ");
+    const repos = await getRepos();
 
-    if (!ftsQuery) return [];
+    const results = await repos.ftsSearch.searchByText(query, kbIds, { topK });
 
-    const placeholders = kbIds.map(() => "?").join(", ");
-
-    const rows = db
-      .prepare(
-        `SELECT wp.id, wp.kb_id, wp.doc_id, wp.page_type, wp.title, wp.file_path,
-                fts.rank as bm25_score
-         FROM wiki_pages wp
-         JOIN fts_content fts ON wp.rowid = fts.rowid
-         WHERE fts MATCH ?
-           AND wp.kb_id IN (${placeholders})
-         ORDER BY bm25_score
-         LIMIT ?`,
-      )
-      .all(ftsQuery, ...kbIds, topK) as Record<string, unknown>[];
-
-    return rows.map((row) => {
-      const bm25Score = row.bm25_score as number;
-      // Normalize BM25 score to 0-1 range (BM25 scores are negative in FTS5)
-      const normalizedScore = Math.max(0, Math.min(1, 1 / (1 + Math.exp(bm25Score))));
-
-      let snippet = "";
-      try {
-        const content = getPageContent(row.file_path as string);
-        snippet = this.extractSnippet(content, query);
-      } catch {
-        snippet = "";
-      }
+    return results.map((r) => {
+      // Normalize PG ts_rank score to 0-1 range
+      const normalizedScore = Math.max(0, Math.min(1, 1 / (1 + Math.exp(-r.rank))));
 
       return {
-        pageId: row.id as string,
-        kbId: row.kb_id as string,
-        docId: row.doc_id as string | null,
-        pageType: row.page_type as string,
-        title: row.title as string,
+        pageId: r.id,
+        kbId: r.kb_id,
+        docId: r.doc_id,
+        pageType: r.page_type,
+        title: r.title,
         score: normalizedScore,
-        snippet,
+        snippet: "",
         source: "bm25" as const,
       };
     });
   }
 
   /**
-   * LIKE-based fallback when FTS5 is unavailable.
+   * LIKE-based fallback when FTS is unavailable.
+   * Uses repos.wikiPage.getByKbAndType() with in-memory filtering.
    */
   private async likeSearch(
-    db: import("better-sqlite3").Database,
     query: string,
     kbIds: string[],
     topK: number,
   ): Promise<SearchResult[]> {
-    const placeholders = kbIds.map(() => "?").join(", ");
+    const repos = await getRepos();
     const likePattern = `%${query}%`;
-
-    const rows = db
-      .prepare(
-        `SELECT id, kb_id, doc_id, page_type, title, file_path
-         FROM wiki_pages
-         WHERE kb_id IN (${placeholders})
-           AND (title LIKE ? OR file_path LIKE ?)
-         LIMIT ?`,
-      )
-      .all(...kbIds, likePattern, likePattern, topK) as Record<string, unknown>[];
-
-    // Also try to match page content by reading files and checking
-    const allPages = db
-      .prepare(
-        `SELECT id, kb_id, doc_id, page_type, title, file_path
-         FROM wiki_pages
-         WHERE kb_id IN (${placeholders})`,
-      )
-      .all(...kbIds) as Record<string, unknown>[];
+    const lowerQuery = query.toLowerCase();
 
     const matchedPages: Array<{
-      row: Record<string, unknown>;
+      page: { id: string; kb_id: string; doc_id: string | null; page_type: string; title: string; content: string };
       score: number;
       snippet: string;
     }> = [];
 
-    // First add title matches from the initial query
-    for (const row of rows) {
-      matchedPages.push({
-        row,
-        score: 0.8,
-        snippet: (row.title as string).substring(0, 200),
-      });
-    }
+    for (const kbId of kbIds) {
+      const pages = await repos.wikiPage.getByKbAndType(kbId);
 
-    // Check content for matches (limit to avoid excessive I/O)
-    const existingIds = new Set(rows.map((r) => r.id as string));
-    for (const row of allPages) {
-      if (existingIds.has(row.id as string)) continue;
-
-      try {
-        const content = getPageContent(row.file_path as string);
-        if (content.toLowerCase().includes(query.toLowerCase())) {
+      for (const page of pages) {
+        // Check title match
+        if (page.title.toLowerCase().includes(lowerQuery)) {
           matchedPages.push({
-            row,
+            page,
+            score: 0.8,
+            snippet: page.title.substring(0, 200),
+          });
+          continue;
+        }
+
+        // Check content match
+        const content = page.content || "";
+        if (content.toLowerCase().includes(lowerQuery)) {
+          matchedPages.push({
+            page,
             score: 0.5,
             snippet: this.extractSnippet(content, query),
           });
         }
-      } catch {
-        // Skip pages whose files can't be read
       }
-
-      if (matchedPages.length >= topK * 2) break;
     }
 
     // Sort by score and take topK
@@ -324,11 +232,11 @@ export class Retriever {
     const topResults = matchedPages.slice(0, topK);
 
     return topResults.map((m) => ({
-      pageId: m.row.id as string,
-      kbId: m.row.kb_id as string,
-      docId: m.row.doc_id as string | null,
-      pageType: m.row.page_type as string,
-      title: m.row.title as string,
+      pageId: m.page.id,
+      kbId: m.page.kb_id,
+      docId: m.page.doc_id,
+      pageType: m.page.page_type,
+      title: m.page.title,
       score: m.score,
       snippet: m.snippet,
       source: "bm25" as const,
@@ -347,19 +255,11 @@ export class Retriever {
     startPageId: string,
     depth: number = 2,
   ): Promise<SearchResult[]> {
-    const linkedPages = this.linker.getLinkedPages(startPageId, depth);
+    const linkedPages = await this.linker.getLinkedPages(startPageId, depth);
 
     return linkedPages.map((lp) => {
       // Score decreases with distance (1/distance)
       const score = 1 / lp.distance;
-
-      let snippet = "";
-      try {
-        const content = getPageContent(lp.page.filePath);
-        snippet = content.substring(0, 200);
-      } catch {
-        snippet = "";
-      }
 
       return {
         pageId: lp.page.id,
@@ -368,7 +268,7 @@ export class Retriever {
         pageType: lp.page.pageType,
         title: lp.page.title,
         score,
-        snippet,
+        snippet: "",
         source: "linked" as const,
       };
     });
@@ -441,8 +341,8 @@ export class Retriever {
   /**
    * Main search method combining all retrieval strategies.
    *
-   * 1. Runs vector similarity search
-   * 2. Runs BM25 full-text search
+   * 1. Runs vector similarity search (PG pgvector)
+   * 2. Runs BM25 full-text search (PG zhparser)
    * 3. Optionally runs link traversal from a starting page
    * 4. Merges all results using RRF
    * 5. Applies filters and returns top results
@@ -458,23 +358,11 @@ export class Retriever {
       minScore,
     } = options;
 
-    // Try PG Repository layer for vector search if available
-    const usePgVector = !!process.env.PG_HOST;
-
     // Run all search strategies in parallel using Promise.allSettled
     const searchPromises: Promise<SearchResult[]>[] = [];
 
-    if (usePgVector) {
-      searchPromises.push(this.pgVectorSearch(query, kbIds, topK));
-    } else {
-      searchPromises.push(this.vectorSearch(query, kbIds, topK));
-    }
-
-    if (usePgVector) {
-      searchPromises.push(this.pgFtsSearch(query, kbIds, topK));
-    } else {
-      searchPromises.push(this.bm25Search(query, kbIds, topK));
-    }
+    searchPromises.push(this.vectorSearch(query, kbIds, topK));
+    searchPromises.push(this.bm25Search(query, kbIds, topK));
 
     if (linkedFrom) {
       searchPromises.push(this.linkedSearch(linkedFrom, 2));
@@ -667,53 +555,39 @@ export class Retriever {
     kbId: string,
     topK: number,
   ): Promise<EntitySearchResult[]> {
-    const db = DB.getInstance().raw;
-    const likePattern = `%${query}%`;
+    const repos = await getRepos();
+    const lowerQuery = query.toLowerCase();
 
     try {
-      const rows = db
-        .prepare(
-          `SELECT wp.id, wp.title, wp.page_type,
-                  COUNT(DISTINCT wl.source_page_id) as mention_count
-           FROM wiki_pages wp
-           LEFT JOIN wiki_links wl ON wl.target_page_id = wp.id AND wl.link_type = 'entity_ref'
-           WHERE wp.kb_id = ?
-             AND wp.page_type = 'entity'
-             AND wp.title LIKE ?
-           GROUP BY wp.id
-           ORDER BY mention_count DESC
-           LIMIT ?`,
-        )
-        .all(kbId, likePattern, topK) as Array<{
-        id: string;
-        title: string;
-        page_type: string;
-        mention_count: number;
-      }>;
+      // Get entity pages matching the query
+      const entityPages = await repos.wikiPage.getByKbAndType(kbId, "entity");
+      const matchingEntities = entityPages.filter(p =>
+        p.title.toLowerCase().includes(lowerQuery)
+      ).slice(0, topK);
 
-      // Also find related page IDs for each entity
-      return rows.map((row) => {
-        const relatedRows = db
-          .prepare(
-            `SELECT DISTINCT source_page_id
-             FROM wiki_links
-             WHERE target_page_id = ? AND link_type = 'entity_ref'
-             LIMIT 10`,
-          )
-          .all(row.id) as Array<{ source_page_id: string }>;
+      const results: EntitySearchResult[] = [];
+
+      for (const page of matchingEntities) {
+        // Get incoming entity_ref links to count mentions
+        const incomingLinks = await repos.wikiLink.getIncoming(page.id);
+        const entityRefLinks = incomingLinks.filter(l => l.linkType === "entity_ref");
 
         // Extract entity type from title (format: "Type: Name")
-        const parts = row.title.split(": ");
+        const parts = page.title.split(": ");
         const type = parts.length > 1 ? parts[0] : "entity";
-        const name = parts.length > 1 ? parts.slice(1).join(": ") : row.title;
+        const name = parts.length > 1 ? parts.slice(1).join(": ") : page.title;
 
-        return {
+        results.push({
           name,
           type,
-          count: row.mention_count,
-          relatedPages: relatedRows.map((r) => r.source_page_id),
-        };
-      });
+          count: entityRefLinks.length,
+          relatedPages: entityRefLinks.map(l => l.sourcePageId).slice(0, 10),
+        });
+      }
+
+      // Sort by mention count descending
+      results.sort((a, b) => b.count - a.count);
+      return results;
     } catch {
       return [];
     }
@@ -766,104 +640,6 @@ export class Retriever {
     // Sort by position
     highlights.sort((a, b) => a.position - b.position);
     return highlights;
-  }
-
-  // -----------------------------------------------------------------------
-  // PG Repository layer search methods
-  // -----------------------------------------------------------------------
-
-  /**
-   * Vector search using PG VectorSearchRepo (pgvector HNSW index).
-   * Replaces the brute-force JS cosine similarity computation.
-   */
-  private async pgVectorSearch(
-    query: string,
-    kbIds: string[],
-    topK: number,
-  ): Promise<SearchResult[]> {
-    if (kbIds.length === 0) return [];
-
-    try {
-      const { createReposAsync } = await import("../store/repos/index.js");
-      const repos = await createReposAsync();
-
-      const queryResult = await this.embeddingManager.embed(query);
-      const results = await repos.vectorSearch.searchByVector(
-        queryResult.embedding,
-        kbIds,
-        {
-          topK,
-          pageTypes: ["structure"],
-          modelName: process.env.EMBEDDING_MODEL ?? "bge-m3",
-        },
-      );
-
-      return results.map((r) => ({
-        pageId: r.page_id,
-        kbId: r.kb_id,
-        docId: r.doc_id,
-        pageType: r.page_type,
-        title: r.title,
-        score: r.similarity,
-        snippet: this.extractSnippet(r.text_chunk ?? "", query),
-        source: "vector" as const,
-      }));
-    } catch (err) {
-      console.warn(
-        `[Retriever] PG vector search failed, falling back to SQLite:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return this.vectorSearch(query, kbIds, topK);
-    }
-  }
-
-  /**
-   * Full-text search using PG FTSSearchRepo (zhparser + GIN index).
-   * Replaces SQLite FTS5.
-   */
-  private async pgFtsSearch(
-    query: string,
-    kbIds: string[],
-    topK: number,
-  ): Promise<SearchResult[]> {
-    if (kbIds.length === 0) return [];
-
-    try {
-      const { createReposAsync } = await import("../store/repos/index.js");
-      const repos = await createReposAsync();
-
-      const results = await repos.ftsSearch.searchByText(query, kbIds, { topK });
-
-      return results.map((r) => {
-        let snippet = "";
-        try {
-          const content = getPageContent(r.file_path);
-          snippet = this.extractSnippet(content, query);
-        } catch {
-          snippet = "";
-        }
-
-        // Normalize PG ts_rank score to 0-1 range
-        const normalizedScore = Math.max(0, Math.min(1, 1 / (1 + Math.exp(-r.rank))));
-
-        return {
-          pageId: r.id,
-          kbId: r.kb_id,
-          docId: r.doc_id,
-          pageType: r.page_type,
-          title: r.title,
-          score: normalizedScore,
-          snippet,
-          source: "bm25" as const,
-        };
-      });
-    } catch (err) {
-      console.warn(
-        `[Retriever] PG FTS search failed, falling back to SQLite:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return this.bm25Search(query, kbIds, topK);
-    }
   }
 
   // -----------------------------------------------------------------------

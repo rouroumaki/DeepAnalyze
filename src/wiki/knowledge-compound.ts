@@ -4,11 +4,14 @@
 // Takes agent output and writes it back to the wiki as report-type pages.
 // This enables "knowledge compounding" -- analysis results are automatically
 // saved to the knowledge base so they can be discovered by future searches.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
-import { createWikiPage } from "../store/wiki-pages.js";
-import { DB } from "../store/database.js";
-import { join } from "node:path";
+import { getRepos } from "../store/repos/index.js";
+import { randomUUID } from "node:crypto";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { Linker } from "./linker.js";
 
 // ---------------------------------------------------------------------------
@@ -86,12 +89,12 @@ export class KnowledgeCompounder {
    * @returns The created page ID, or `null` if nothing was written (output
    *          too short or looks like an error).
    */
-  compoundAgentResult(
+  async compoundAgentResult(
     kbId: string,
     agentType: string,
     input: string,
     output: string,
-  ): string | null {
+  ): Promise<string | null> {
     // ---- Guards ----------------------------------------------------------
     // Skip if the output is too short to be useful
     if (!output || output.trim().length < 50) {
@@ -127,15 +130,7 @@ export class KnowledgeCompounder {
     ].join("\n");
 
     // ---- Persist ---------------------------------------------------------
-    const wikiDir = join(this.dataDir, "wiki");
-    const page = createWikiPage(
-      kbId,
-      null,          // reports are not tied to a specific document
-      "report",
-      title,
-      content,
-      wikiDir,
-    );
+    const page = await this.createReportPage(kbId, title, content);
 
     console.log(
       `[KnowledgeCompounder] Saved report page ${page.id} for KB ${kbId}`,
@@ -211,37 +206,26 @@ export class KnowledgeCompounder {
    * will be linked; entities without a pre-existing page are still recorded
    * as links for future discovery.
    */
-  compoundWithEntities(
+  async compoundWithEntities(
     kbId: string,
     content: string,
     title: string,
     linker: Linker,
-  ): string {
+  ): Promise<string> {
     // Create the report page
-    const wikiDir = join(this.dataDir, "wiki");
-    const page = createWikiPage(
-      kbId,
-      null,
-      "report",
-      title,
-      content,
-      wikiDir,
-    );
+    const page = await this.createReportPage(kbId, title, content);
 
     // Extract entities and create entity_ref links
     const entities = this.extractEntities(content);
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
+
     for (const entity of entities) {
       // Look up whether an entity page already exists for this name in the KB
-      const existingPage = db
-        .prepare(
-          "SELECT id FROM wiki_pages WHERE kb_id = ? AND title = ? AND page_type = 'entity' LIMIT 1",
-        )
-        .get(kbId, entity.name) as { id: string } | undefined;
+      const existingPage = await repos.wikiPage.findByTitle(kbId, entity.name, "entity");
 
       if (existingPage) {
         // Create bidirectional entity_ref links between report and entity page
-        linker.createBidirectionalLinks(
+        await linker.createBidirectionalLinks(
           page.id,
           existingPage.id,
           entity.name,
@@ -273,13 +257,13 @@ export class KnowledgeCompounder {
    * @param sources   Array of source pages that were accessed during the run
    * @returns The created page ID, or `null` if nothing was written.
    */
-  compoundWithTracing(
+  async compoundWithTracing(
     kbId: string,
     agentType: string,
     input: string,
     output: string,
     sources: Array<{ pageId: string; title: string }>,
-  ): string | null {
+  ): Promise<string | null> {
     // Skip if output is too short to be worth compounding
     if (!output || output.trim().length < 100) return null;
 
@@ -309,16 +293,8 @@ export class KnowledgeCompounder {
       tracingSection,
     ].join("\n");
 
-    // Save as wiki report page (same pattern as compoundAgentResult)
-    const wikiDir = join(this.dataDir, "wiki");
-    const page = createWikiPage(
-      kbId,
-      null,          // reports are not tied to a specific document
-      "report",
-      title,
-      content,
-      wikiDir,
-    );
+    // Save as wiki report page
+    const page = await this.createReportPage(kbId, title, content);
 
     console.log(
       `[KnowledgeCompounder] Saved traced report page ${page.id} for KB ${kbId} (confidence: ${confidence}, sources: ${sources.length})`,
@@ -381,6 +357,42 @@ export class KnowledgeCompounder {
     }
 
     return false;
+  }
+
+  /**
+   * Create a report page in PG and on the filesystem.
+   */
+  private async createReportPage(
+    kbId: string,
+    title: string,
+    content: string,
+  ): Promise<import("../store/repos/interfaces.js").WikiPage> {
+    const wikiDir = join(this.dataDir, "wiki");
+    const id = randomUUID();
+
+    // Resolve filesystem path for report
+    const filePath = join(wikiDir, kbId, "reports", `${id}.md`);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content, "utf-8");
+
+    // Compute content hash and token count
+    const contentHash = createHash("md5").update(content).digest("hex");
+    const tokenCount = Math.ceil(content.length / 4);
+
+    // Insert into PG
+    const repos = await getRepos();
+    const page = await repos.wikiPage.create({
+      kb_id: kbId,
+      doc_id: undefined,
+      page_type: "report",
+      title,
+      content,
+      file_path: filePath,
+      content_hash: contentHash,
+      token_count: tokenCount,
+    });
+
+    return page;
   }
 }
 

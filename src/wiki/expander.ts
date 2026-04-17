@@ -2,14 +2,10 @@
 // DeepAnalyze - Wiki Expander
 // Layer-by-layer expand tool for drilling down from abstract to full content.
 // Supports expanding from Abstract → Structure → Raw (DoclingDocument JSON).
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
-import { DB } from "../store/database.js";
-import {
-  getWikiPage,
-  getWikiPageByDoc,
-  getPageContent,
-} from "../store/wiki-pages.js";
+import { getRepos } from "../store/repos/index.js";
 import type { WikiPage } from "../types/index.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -72,33 +68,34 @@ export class Expander {
    * Also returns child pages that can be expanded further.
    */
   async expand(pageId: string): Promise<ExpandResult> {
-    const page = getWikiPage(pageId);
-    if (!page) {
+    const repos = await getRepos();
+    const pgPage = await repos.wikiPage.getById(pageId);
+    if (!pgPage) {
       throw new Error(`Wiki page not found: ${pageId}`);
     }
 
-    const content = getPageContent(page.filePath);
-    const level = this.pageTypeToLevel(page.pageType);
+    const content = pgPage.content || "";
+    const level = this.pageTypeToLevel(pgPage.page_type);
 
     // Get child pages at the next level of detail
     let childPages: ExpandResult[] | undefined;
 
-    if (page.docId && level !== "raw") {
+    if (pgPage.doc_id && level !== "raw") {
       const childLevel = this.nextLevel(level);
       if (childLevel) {
         const childPageType = this.levelToPageType(childLevel);
         if (childPageType) {
-          const childPage = getWikiPageByDoc(page.docId, childPageType);
+          const childPage = await repos.wikiPage.getByDocAndType(pgPage.doc_id, childPageType);
           if (childPage) {
-            const childContent = getPageContent(childPage.filePath);
+            const childContent = childPage.content || "";
             childPages = [
               {
                 pageId: childPage.id,
-                docId: childPage.docId,
+                docId: childPage.doc_id,
                 level: childLevel,
                 content: childContent,
                 title: childPage.title,
-                tokenCount: childPage.tokenCount,
+                tokenCount: childPage.token_count,
               },
             ];
           }
@@ -107,13 +104,13 @@ export class Expander {
     }
 
     return {
-      pageId: page.id,
-      docId: page.docId,
+      pageId: pgPage.id,
+      docId: pgPage.doc_id,
       level,
       content,
-      title: page.title,
+      title: pgPage.title,
       childPages,
-      tokenCount: page.tokenCount,
+      tokenCount: pgPage.token_count,
     };
   }
 
@@ -126,37 +123,38 @@ export class Expander {
     docId: string,
     targetLevel: "L0" | "L1" | "L2",
   ): Promise<ExpandResult> {
+    const repos = await getRepos();
     const targetPageType = this.levelToPageType(targetLevel);
     if (!targetPageType) {
       throw new Error(`Invalid target level: ${targetLevel}`);
     }
 
-    const page = getWikiPageByDoc(docId, targetPageType);
+    const page = await repos.wikiPage.getByDocAndType(docId, targetPageType);
     if (!page) {
       throw new Error(
         `No page found for document ${docId} at level ${targetLevel}`,
       );
     }
 
-    const content = getPageContent(page.filePath);
+    const content = page.content || "";
 
     // Build the tree of child pages at more detailed levels
     let childPages: ExpandResult[] | undefined;
     const childLevel = this.nextLevel(targetLevel);
     if (childLevel) {
       const childPageType = this.levelToPageType(childLevel);
-      if (childPageType && page.docId) {
-        const childPage = getWikiPageByDoc(page.docId, childPageType);
+      if (childPageType && page.doc_id) {
+        const childPage = await repos.wikiPage.getByDocAndType(page.doc_id, childPageType);
         if (childPage) {
-          const childContent = getPageContent(childPage.filePath);
+          const childContent = childPage.content || "";
           childPages = [
             {
               pageId: childPage.id,
-              docId: childPage.docId,
+              docId: childPage.doc_id,
               level: childLevel,
               content: childContent,
               title: childPage.title,
-              tokenCount: childPage.tokenCount,
+              tokenCount: childPage.token_count,
             },
           ];
         }
@@ -165,12 +163,12 @@ export class Expander {
 
     return {
       pageId: page.id,
-      docId: page.docId,
+      docId: page.doc_id,
       level: targetLevel,
       content,
       title: page.title,
       childPages,
-      tokenCount: page.tokenCount,
+      tokenCount: page.token_count,
     };
   }
 
@@ -183,13 +181,14 @@ export class Expander {
     pageId: string,
     heading: string,
   ): Promise<ExpandResult | null> {
-    const page = getWikiPage(pageId);
-    if (!page) {
+    const repos = await getRepos();
+    const pgPage = await repos.wikiPage.getById(pageId);
+    if (!pgPage) {
       throw new Error(`Wiki page not found: ${pageId}`);
     }
 
-    const content = getPageContent(page.filePath);
-    const level = this.pageTypeToLevel(page.pageType);
+    const content = pgPage.content || "";
+    const level = this.pageTypeToLevel(pgPage.page_type);
 
     // Find the section by heading (case-insensitive match)
     const lines = content.split("\n");
@@ -232,11 +231,11 @@ export class Expander {
     const tokenCount = Math.ceil(sectionContent.length / 4);
 
     return {
-      pageId: page.id,
-      docId: page.docId,
+      pageId: pgPage.id,
+      docId: pgPage.doc_id,
       level,
       content: sectionContent,
-      title: `${page.title} - ${lines[sectionStart].replace(/^#+\s*/, "")}`,
+      title: `${pgPage.title} - ${lines[sectionStart].replace(/^#+\s*/, "")}`,
       tokenCount,
     };
   }
@@ -250,6 +249,7 @@ export class Expander {
     docId: string,
     tokenBudget: number,
   ): Promise<ExpandResult> {
+    const repos = await getRepos();
     const levels: Array<"L0" | "L1" | "L2"> = ["L0", "L1", "L2"];
     let totalTokens = 0;
     let bestResult: ExpandResult | null = null;
@@ -258,20 +258,20 @@ export class Expander {
       const pageType = this.levelToPageType(level);
       if (!pageType) continue;
 
-      const page = getWikiPageByDoc(docId, pageType);
+      const page = await repos.wikiPage.getByDocAndType(docId, pageType);
       if (!page) continue;
 
-      const tokens = page.tokenCount;
+      const tokens = page.token_count;
 
       // Check if adding this level would exceed the budget
       if (totalTokens + tokens > tokenBudget) {
         // Budget is exhausted. If we have no result yet, include this
         // level anyway (better to return something than nothing).
         if (!bestResult) {
-          const content = getPageContent(page.filePath);
+          const content = page.content || "";
           bestResult = {
             pageId: page.id,
-            docId: page.docId,
+            docId: page.doc_id,
             level,
             content,
             title: page.title,
@@ -281,10 +281,10 @@ export class Expander {
         break;
       }
 
-      const content = getPageContent(page.filePath);
+      const content = page.content || "";
       bestResult = {
         pageId: page.id,
-        docId: page.docId,
+        docId: page.doc_id,
         level,
         content,
         title: page.title,
@@ -310,7 +310,7 @@ export class Expander {
    * Expand to the Raw layer for a specific anchor element.
    *
    * Flow:
-   *  1. Look up anchor by ID from AnchorRepo (PG) or local cache
+   *  1. Look up anchor by ID from AnchorRepo (PG)
    *  2. Read the raw DoclingDocument JSON from disk
    *  3. Use JSON Pointer to locate the target element
    *  4. Return the element with surrounding context
@@ -394,33 +394,24 @@ export class Expander {
   // -----------------------------------------------------------------------
 
   /**
-   * Get an anchor by ID via PG Repository or fallback.
+   * Get an anchor by ID via PG Repository.
    */
   private async getAnchorById(
     anchorId: string,
   ): Promise<{ doc_id: string; raw_json_path?: string } | null> {
-    if (process.env.PG_HOST) {
-      try {
-        const { createReposAsync } = await import("../store/repos/index.js");
-        const repos = await createReposAsync();
-        const anchor = await repos.anchor.getById(anchorId);
-        return anchor ?? null;
-      } catch {
-        // Fall through
-      }
+    try {
+      const repos = await getRepos();
+      const anchor = await repos.anchor.getById(anchorId);
+      return anchor ?? null;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   /**
    * Load the raw DoclingDocument JSON from disk.
    */
   private loadRawJson(docId: string): Record<string, unknown> | null {
-    // Try to find the docling.json file
-    const possiblePaths = [
-      join(this.dataDir, "wiki", "*", "documents", docId, "raw", "docling.json"),
-    ];
-
     // Try to find the wiki directory
     const wikiDir = join(this.dataDir, "wiki");
 

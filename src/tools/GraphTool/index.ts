@@ -3,12 +3,13 @@
 // =============================================================================
 // Extracts entity relationships from wiki pages and link data, building a
 // knowledge graph with nodes and edges suitable for frontend visualization.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
 import type { AgentTool } from "../../services/agent/types.js";
 import type { Retriever } from "../../wiki/retriever.js";
 import type { Linker } from "../../wiki/linker.js";
-import { getWikiPage, getWikiPagesByKb } from "../../store/wiki-pages.js";
+import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies
@@ -91,19 +92,20 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
         const startPageId = input.startPageId as string | undefined;
         const depth = Math.min((input.depth as number) || 2, 3);
         const maxNodes = (input.maxNodes as number) || 100;
+        const repos = await getRepos();
 
         const nodeMap = new Map<string, GraphNode>();
         const edgeList: GraphEdge[] = [];
         const edgeSet = new Set<string>(); // "source->target->type" to deduplicate
 
         // Helper to add a node
-        function addNode(page: { id: string; title: string; pageType: string; kbId: string }): void {
+        function addNode(page: { id: string; title: string; page_type: string; kb_id: string }): void {
           if (!nodeMap.has(page.id)) {
             nodeMap.set(page.id, {
               id: page.id,
               label: page.title,
-              type: mapPageTypeToNodeType(page.pageType),
-              group: page.kbId,
+              type: mapPageTypeToNodeType(page.page_type),
+              group: page.kb_id,
             });
           }
         }
@@ -132,7 +134,7 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
         // -----------------------------------------------------------------
 
         if (startPageId) {
-          const startPage = getWikiPage(startPageId);
+          const startPage = await repos.wikiPage.getById(startPageId);
           if (!startPage) {
             return { error: `Start page not found: ${startPageId}` };
           }
@@ -153,9 +155,9 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
             if (current.currentDepth >= depth) continue;
 
             // Get outgoing links
-            const outgoing = deps.linker.getOutgoingLinks(current.pageId);
+            const outgoing = await deps.linker.getOutgoingLinks(current.pageId);
             for (const link of outgoing) {
-              const targetPage = getWikiPage(link.targetPageId);
+              const targetPage = await repos.wikiPage.getById(link.targetPageId);
               if (!targetPage) continue;
 
               addNode(targetPage);
@@ -176,9 +178,9 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
             }
 
             // Get incoming links
-            const incoming = deps.linker.getIncomingLinks(current.pageId);
+            const incoming = await deps.linker.getIncomingLinks(current.pageId);
             for (const link of incoming) {
-              const sourcePage = getWikiPage(link.sourcePageId);
+              const sourcePage = await repos.wikiPage.getById(link.sourcePageId);
               if (!sourcePage) continue;
 
               addNode(sourcePage);
@@ -220,13 +222,13 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
               addNode({
                 id: result.pageId,
                 title: result.title,
-                pageType: result.pageType,
-                kbId: result.kbId,
+                page_type: result.pageType,
+                kb_id: result.kbId,
               });
             }
           } else {
             // Full KB graph - get all pages
-            const pages = getWikiPagesByKb(kbId);
+            const pages = await repos.wikiPage.getByKbAndType(kbId);
             pageIds = pages.map((p) => p.id);
 
             // Add all pages as nodes
@@ -239,13 +241,13 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
           for (const pageId of pageIds) {
             if (nodeMap.size >= maxNodes) break;
 
-            const outgoing = deps.linker.getOutgoingLinks(pageId);
+            const outgoing = await deps.linker.getOutgoingLinks(pageId);
             for (const link of outgoing) {
-              const targetPage = getWikiPage(link.targetPageId);
+              const targetPage = await repos.wikiPage.getById(link.targetPageId);
               if (!targetPage) continue;
 
               // Only include targets in the same KB
-              if (targetPage.kbId !== kbId) continue;
+              if (targetPage.kb_id !== kbId) continue;
 
               addNode(targetPage);
               addEdge(
@@ -257,12 +259,12 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
             }
 
             // Also get incoming links for better connectivity
-            const incoming = deps.linker.getIncomingLinks(pageId);
+            const incoming = await deps.linker.getIncomingLinks(pageId);
             for (const link of incoming) {
-              const sourcePage = getWikiPage(link.sourcePageId);
+              const sourcePage = await repos.wikiPage.getById(link.sourcePageId);
               if (!sourcePage) continue;
 
-              if (sourcePage.kbId !== kbId) continue;
+              if (sourcePage.kb_id !== kbId) continue;
 
               addNode(sourcePage);
               addEdge(

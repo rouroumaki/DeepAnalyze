@@ -4,43 +4,10 @@
 // references and concept references. Supports BFS-based link traversal.
 // =============================================================================
 
-import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { DB } from "../store/database.js";
+import { getRepos } from "../store/repos/index.js";
 import type { WikiLink, WikiPage, LinkType } from "../types/index.js";
-import { getWikiPage, getPageContent, updateWikiPage } from "../store/wiki-pages.js";
-
-// ---------------------------------------------------------------------------
-// Row-to-object mapping
-// ---------------------------------------------------------------------------
-
-function rowToWikiLink(row: Record<string, unknown>): WikiLink {
-  return {
-    id: row.id as string,
-    sourcePageId: row.source_page_id as string,
-    targetPageId: row.target_page_id as string,
-    linkType: row.link_type as LinkType,
-    entityName: row.entity_name as string | null,
-    context: row.context as string | null,
-    createdAt: row.created_at as string,
-  };
-}
-
-function rowToWikiPage(row: Record<string, unknown>): WikiPage {
-  return {
-    id: row.id as string,
-    kbId: row.kb_id as string,
-    docId: row.doc_id as string | null,
-    pageType: row.page_type as WikiPage["pageType"],
-    title: row.title as string,
-    filePath: row.file_path as string,
-    contentHash: row.content_hash as string,
-    tokenCount: row.token_count as number,
-    metadata: row.metadata as string | null,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
-}
+import type { WikiLink as PgWikiLink, WikiPage as PgWikiPage } from "../store/repos/interfaces.js";
 
 // ---------------------------------------------------------------------------
 // Linked page result (includes distance from start)
@@ -50,6 +17,38 @@ export interface LinkedPageResult {
   page: WikiPage;
   distance: number;
   linkType: LinkType;
+}
+
+// ---------------------------------------------------------------------------
+// PG repo result → domain type mappers
+// ---------------------------------------------------------------------------
+
+function pgLinkToWikiLink(link: PgWikiLink): WikiLink {
+  return {
+    id: link.id,
+    sourcePageId: link.sourcePageId,
+    targetPageId: link.targetPageId,
+    linkType: link.linkType as LinkType,
+    entityName: link.entityName,
+    context: link.context,
+    createdAt: link.createdAt,
+  };
+}
+
+function pgPageToWikiPage(page: PgWikiPage): WikiPage {
+  return {
+    id: page.id,
+    kbId: page.kb_id,
+    docId: page.doc_id,
+    pageType: page.page_type as WikiPage["pageType"],
+    title: page.title,
+    filePath: page.file_path,
+    contentHash: page.content_hash,
+    tokenCount: page.token_count,
+    metadata: page.metadata ? JSON.stringify(page.metadata) : null,
+    createdAt: page.created_at,
+    updatedAt: page.updated_at,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -64,68 +63,50 @@ export class Linker {
   /**
    * Create a link between two pages.
    */
-  createLink(
+  async createLink(
     sourcePageId: string,
     targetPageId: string,
     linkType: LinkType,
     entityName?: string,
     context?: string,
-  ): WikiLink {
-    const db = DB.getInstance().raw;
+  ): Promise<WikiLink> {
+    const repos = await getRepos();
 
     // Check for duplicate link
-    const existing = db
-      .prepare(
-        "SELECT id FROM wiki_links WHERE source_page_id = ? AND target_page_id = ? AND link_type = ?",
-      )
-      .get(sourcePageId, targetPageId, linkType) as
-      | Record<string, unknown>
-      | undefined;
-
-    if (existing) {
-      // Return the existing link
-      const row = db
-        .prepare("SELECT * FROM wiki_links WHERE id = ?")
-        .get(existing.id) as Record<string, unknown>;
-      return rowToWikiLink(row);
-    }
-
-    const id = randomUUID();
-    db.prepare(
-      `INSERT INTO wiki_links (id, source_page_id, target_page_id, link_type, entity_name, context)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
+    const existing = await repos.wikiLink.findExisting(
       sourcePageId,
       targetPageId,
       linkType,
-      entityName ?? null,
-      context ?? null,
+      entityName,
     );
 
-    return {
-      id,
+    if (existing) {
+      return pgLinkToWikiLink(existing);
+    }
+
+    const link = await repos.wikiLink.create(
       sourcePageId,
       targetPageId,
       linkType,
-      entityName: entityName ?? null,
-      context: context ?? null,
-      createdAt: new Date().toISOString(),
-    };
+      entityName,
+      context,
+    );
+
+    return pgLinkToWikiLink(link);
   }
 
   /**
    * Create bidirectional forward/backward links between two pages.
    * Returns a tuple of [forwardLink, backwardLink].
    */
-  createBidirectionalLinks(
+  async createBidirectionalLinks(
     pageA: string,
     pageB: string,
     entityName?: string,
     context?: string,
-  ): [WikiLink, WikiLink] {
-    const forward = this.createLink(pageA, pageB, "forward", entityName, context);
-    const backward = this.createLink(pageB, pageA, "backward", entityName, context);
+  ): Promise<[WikiLink, WikiLink]> {
+    const forward = await this.createLink(pageA, pageB, "forward", entityName, context);
+    const backward = await this.createLink(pageB, pageA, "backward", entityName, context);
     return [forward, backward];
   }
 
@@ -136,36 +117,32 @@ export class Linker {
   /**
    * Get all outgoing links from a page.
    */
-  getOutgoingLinks(pageId: string): WikiLink[] {
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare("SELECT * FROM wiki_links WHERE source_page_id = ?")
-      .all(pageId) as Record<string, unknown>[];
-    return rows.map(rowToWikiLink);
+  async getOutgoingLinks(pageId: string): Promise<WikiLink[]> {
+    const repos = await getRepos();
+    const links = await repos.wikiLink.getOutgoing(pageId);
+    return links.map(pgLinkToWikiLink);
   }
 
   /**
    * Get all incoming links to a page.
    */
-  getIncomingLinks(pageId: string): WikiLink[] {
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare("SELECT * FROM wiki_links WHERE target_page_id = ?")
-      .all(pageId) as Record<string, unknown>[];
-    return rows.map(rowToWikiLink);
+  async getIncomingLinks(pageId: string): Promise<WikiLink[]> {
+    const repos = await getRepos();
+    const links = await repos.wikiLink.getIncoming(pageId);
+    return links.map(pgLinkToWikiLink);
   }
 
   /**
    * Get all linked pages within N hops using BFS traversal.
    * Returns pages with their distance from the start page and the link type.
    */
-  getLinkedPages(
+  async getLinkedPages(
     startPageId: string,
     depth: number,
-  ): LinkedPageResult[] {
+  ): Promise<LinkedPageResult[]> {
     if (depth <= 0) return [];
 
-    const db = DB.getInstance().raw;
+    const repos = await getRepos();
     const visited = new Set<string>([startPageId]);
     const results: LinkedPageResult[] = [];
     const queue: Array<{ pageId: string; distance: number }> = [
@@ -178,24 +155,20 @@ export class Linker {
       if (current.distance >= depth) continue;
 
       // Get all links from the current page
-      const links = db
-        .prepare("SELECT * FROM wiki_links WHERE source_page_id = ?")
-        .all(current.pageId) as Record<string, unknown>[];
+      const links = await repos.wikiLink.getOutgoing(current.pageId);
 
-      for (const linkRow of links) {
-        const targetId = linkRow.target_page_id as string;
-        const linkType = linkRow.link_type as LinkType;
+      for (const link of links) {
+        const targetId = link.targetPageId;
+        const linkType = link.linkType as LinkType;
 
         if (visited.has(targetId)) continue;
         visited.add(targetId);
 
         // Look up the target page
-        const pageRow = db
-          .prepare("SELECT * FROM wiki_pages WHERE id = ?")
-          .get(targetId) as Record<string, unknown> | undefined;
+        const pageRow = await repos.wikiPage.getById(targetId);
 
         if (pageRow) {
-          const page = rowToWikiPage(pageRow);
+          const page = pgPageToWikiPage(pageRow);
           results.push({
             page,
             distance: current.distance + 1,
@@ -221,11 +194,9 @@ export class Linker {
   /**
    * Remove all links for a page (both incoming and outgoing).
    */
-  removePageLinks(pageId: string): void {
-    const db = DB.getInstance().raw;
-    db.prepare(
-      "DELETE FROM wiki_links WHERE source_page_id = ? OR target_page_id = ?",
-    ).run(pageId, pageId);
+  async removePageLinks(pageId: string): Promise<void> {
+    const repos = await getRepos();
+    await repos.wikiLink.deleteByPageId(pageId);
   }
 
   // -----------------------------------------------------------------------
@@ -235,20 +206,19 @@ export class Linker {
   /**
    * Find all pages that reference a specific entity within a knowledge base.
    */
-  findRelatedByEntity(kbId: string, entityName: string): WikiPage[] {
-    const db = DB.getInstance().raw;
+  async findRelatedByEntity(kbId: string, entityName: string): Promise<WikiPage[]> {
+    const repos = await getRepos();
+    const summaries = await repos.wikiLink.findRelatedByEntity(kbId, entityName);
 
-    // Find links with the given entity name, where the source page belongs to the kb
-    const rows = db
-      .prepare(
-        `SELECT DISTINCT wp.*
-         FROM wiki_pages wp
-         JOIN wiki_links wl ON wl.source_page_id = wp.id
-         WHERE wp.kb_id = ? AND wl.entity_name = ?`,
-      )
-      .all(kbId, entityName) as Record<string, unknown>[];
-
-    return rows.map(rowToWikiPage);
+    // For each summary, fetch the full page to get complete WikiPage data
+    const pages: WikiPage[] = [];
+    for (const summary of summaries) {
+      const fullPage = await repos.wikiPage.getById(summary.id);
+      if (fullPage) {
+        pages.push(pgPageToWikiPage(fullPage));
+      }
+    }
+    return pages;
   }
 
   // -----------------------------------------------------------------------
@@ -259,25 +229,18 @@ export class Linker {
    * Build forward links between documents in a knowledge base based on
    * entity co-occurrence. Documents that share entities get linked.
    */
-  buildForwardLinks(kbId: string): void {
-    const db = DB.getInstance().raw;
+  async buildForwardLinks(kbId: string): Promise<void> {
+    const repos = await getRepos();
 
     // Get all pages in the KB that have entity references
-    const entityPages = db
-      .prepare(
-        `SELECT DISTINCT wl.source_page_id, wl.entity_name
-         FROM wiki_links wl
-         JOIN wiki_pages wp ON wp.id = wl.source_page_id
-         WHERE wp.kb_id = ? AND wl.link_type = 'entity_ref'`,
-      )
-      .all(kbId) as Array<{ source_page_id: string; entity_name: string }>;
+    const entityLinks = await repos.wikiLink.findEntityLinksByKb(kbId);
 
     // Group pages by shared entities
     const entityToPages = new Map<string, string[]>();
-    for (const row of entityPages) {
-      const pages = entityToPages.get(row.entity_name) ?? [];
-      pages.push(row.source_page_id);
-      entityToPages.set(row.entity_name, pages);
+    for (const row of entityLinks) {
+      const pages = entityToPages.get(row.entityName) ?? [];
+      pages.push(row.sourcePageId);
+      entityToPages.set(row.entityName, pages);
     }
 
     // For each entity shared by multiple pages, create forward links
@@ -286,7 +249,7 @@ export class Linker {
 
       for (let i = 0; i < pages.length; i++) {
         for (let j = i + 1; j < pages.length; j++) {
-          this.createBidirectionalLinks(pages[i], pages[j]);
+          await this.createBidirectionalLinks(pages[i], pages[j]);
         }
       }
     }
@@ -301,30 +264,26 @@ export class Linker {
    * "## Related Pages" section that lists outgoing and incoming links.
    * This keeps the overview page in sync with the link graph.
    */
-  updateOverviewLinks(docId: string): void {
+  async updateOverviewLinks(docId: string): Promise<void> {
+    const repos = await getRepos();
+
     // Find the overview page for this document
-    const db = DB.getInstance().raw;
-    const overviewRow = db
-      .prepare(
-        "SELECT * FROM wiki_pages WHERE doc_id = ? AND page_type = 'overview' LIMIT 1",
-      )
-      .get(docId) as Record<string, unknown> | undefined;
+    const overviewPage = await repos.wikiPage.getByDocAndType(docId, "overview");
 
-    if (!overviewRow) return;
+    if (!overviewPage) return;
 
-    const overviewPage = rowToWikiPage(overviewRow);
     const pageId = overviewPage.id;
 
     // Get outgoing and incoming links
-    const outgoing = this.getOutgoingLinks(pageId);
-    const incoming = this.getIncomingLinks(pageId);
+    const outgoing = await this.getOutgoingLinks(pageId);
+    const incoming = await this.getIncomingLinks(pageId);
 
     if (outgoing.length === 0 && incoming.length === 0) return;
 
-    // Read current overview content
+    // Read current overview content from DB (content column) or filesystem
     let content: string;
     try {
-      content = getPageContent(overviewPage.filePath);
+      content = overviewPage.content || readFileSync(overviewPage.file_path, "utf-8");
     } catch {
       return;
     }
@@ -342,9 +301,7 @@ export class Linker {
     if (outgoing.length > 0) {
       lines.push("### Outgoing References");
       for (const link of outgoing) {
-        const targetPage = db
-          .prepare("SELECT title, page_type FROM wiki_pages WHERE id = ?")
-          .get(link.targetPageId) as { title: string; page_type: string } | undefined;
+        const targetPage = await repos.wikiPage.getById(link.targetPageId);
         if (targetPage) {
           const entityLabel = link.entityName ? ` (${link.entityName})` : "";
           lines.push(
@@ -358,9 +315,7 @@ export class Linker {
     if (incoming.length > 0) {
       lines.push("### Incoming References");
       for (const link of incoming) {
-        const sourcePage = db
-          .prepare("SELECT title, page_type FROM wiki_pages WHERE id = ?")
-          .get(link.sourcePageId) as { title: string; page_type: string } | undefined;
+        const sourcePage = await repos.wikiPage.getById(link.sourcePageId);
         if (sourcePage) {
           const entityLabel = link.entityName ? ` (${link.entityName})` : "";
           lines.push(
@@ -375,6 +330,15 @@ export class Linker {
     const updatedContent = content + lines.join("\n") + "\n";
 
     // Update the page content (filesystem + DB)
-    updateWikiPage(pageId, updatedContent);
+    try {
+      writeFileSync(overviewPage.file_path, updatedContent, "utf-8");
+    } catch {
+      // Filesystem write may fail; continue with DB update
+    }
+
+    const { createHash } = await import("node:crypto");
+    const contentHash = createHash("md5").update(updatedContent).digest("hex");
+    const tokenCount = Math.ceil(updatedContent.length / 4);
+    await repos.wikiPage.updateContent(pageId, updatedContent, contentHash, tokenCount);
   }
 }

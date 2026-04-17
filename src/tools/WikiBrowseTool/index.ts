@@ -2,11 +2,11 @@
 // DeepAnalyze - Wiki Browse Tool
 // Browse wiki pages and follow links between related documents.
 // Provides page content viewing and link traversal capabilities.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
-import { getWikiPage, getWikiPagesByKb, getPageContent } from "../../store/wiki-pages.js";
-import type { WikiPage } from "../../types/index.js";
-import type { Linker, LinkedPageResult } from "../../wiki/linker.js";
+import { getRepos } from "../../store/repos/index.js";
+import type { Linker } from "../../wiki/linker.js";
 import type { PageManager } from "../../wiki/page-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -79,50 +79,48 @@ export class WikiBrowseTool {
    * Execute the browse operation.
    */
   async execute(input: WikiBrowseInput): Promise<WikiBrowseOutput> {
+    const repos = await getRepos();
     const output: WikiBrowseOutput = {};
 
     // View a specific page
     if (input.pageId) {
-      const page = getWikiPage(input.pageId);
+      const page = await repos.wikiPage.getById(input.pageId);
       if (!page) {
         throw new Error(`Wiki page not found: ${input.pageId}`);
       }
 
-      let content: string;
-      try {
-        content = getPageContent(page.filePath);
-      } catch {
-        content = "";
-      }
+      const content = page.content || "";
 
       // Get outgoing and incoming links
-      const outgoing = this.linker.getOutgoingLinks(page.id);
-      const incoming = this.linker.getIncomingLinks(page.id);
+      const outgoing = await this.linker.getOutgoingLinks(page.id);
+      const incoming = await this.linker.getIncomingLinks(page.id);
 
-      const outgoingLinks = outgoing.map((l) => {
-        const target = getWikiPage(l.targetPageId);
-        return {
+      const outgoingLinks = [];
+      for (const l of outgoing) {
+        const target = await repos.wikiPage.getById(l.targetPageId);
+        outgoingLinks.push({
           targetId: l.targetPageId,
           targetTitle: target?.title ?? l.targetPageId,
           linkType: l.linkType,
-        };
-      });
+        });
+      }
 
-      const incomingLinks = incoming.map((l) => {
-        const source = getWikiPage(l.sourcePageId);
-        return {
+      const incomingLinks = [];
+      for (const l of incoming) {
+        const source = await repos.wikiPage.getById(l.sourcePageId);
+        incomingLinks.push({
           sourceId: l.sourcePageId,
           sourceTitle: source?.title ?? l.sourcePageId,
           linkType: l.linkType,
-        };
-      });
+        });
+      }
 
       output.page = {
         id: page.id,
         title: page.title,
-        pageType: page.pageType,
+        pageType: page.page_type,
         content,
-        tokenCount: page.tokenCount,
+        tokenCount: page.token_count,
         outgoingLinks,
         incomingLinks,
       };
@@ -142,7 +140,7 @@ export class WikiBrowseTool {
     // Follow links from a page
     if (input.followLinks && input.pageId) {
       const depth = Math.min(input.depth ?? 1, 3);
-      const linkedPages = this.linker.getLinkedPages(input.pageId, depth);
+      const linkedPages = await this.linker.getLinkedPages(input.pageId, depth);
 
       output.linkedPages = linkedPages.map((lp) => ({
         id: lp.page.id,

@@ -2,7 +2,8 @@
 // DeepAnalyze - Wiki Compiler (Three-Layer Architecture)
 // Transforms parsed document content into a layered wiki structure:
 //   Raw (DoclingDocument JSON) → Structure (DocTags sections) → Abstract (LLM summary)
-// Plus entity extraction and cross-document linking (frozen subsystem).
+// Plus entity extraction and cross-document linking.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
 import { ModelRouter } from "../models/router.js";
@@ -12,18 +13,12 @@ import {
   type ExtractedEntity,
 } from "./entity-extractor.js";
 import { AnchorGenerator, type AnchorDef } from "./anchor-generator.js";
-import {
-  createWikiPage,
-  getWikiPageByDoc,
-  getPageContent,
-} from "../store/wiki-pages.js";
-import { updateDocumentStatus } from "../store/documents.js";
-import { DB } from "../store/database.js";
+import { getRepos } from "../store/repos/index.js";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 import type { ParsedContent } from "../services/document-processors/types.js";
-import type { RepoSet } from "../store/repos/interfaces.js";
 import type { ImageRawData, AudioRawData, VideoRawData } from "../services/document-processors/modality-types.js";
 import { compileImageStructure } from "./modality-compilers/image-structure.js";
 import { compileAudioStructure } from "./modality-compilers/audio-structure.js";
@@ -81,9 +76,11 @@ export class WikiCompiler {
     metadata: Record<string, unknown>,
     options?: { skipStatusUpdates?: boolean },
   ): Promise<void> {
+    const repos = await getRepos();
+
     try {
       if (!options?.skipStatusUpdates) {
-        updateDocumentStatus(docId, "compiling");
+        await repos.document.updateStatus(docId, "compiling");
       }
 
       // Ensure the KB wiki directory structure exists
@@ -117,7 +114,7 @@ export class WikiCompiler {
         await this.compileAbstract(kbId, docId, richContent.modality);
 
         // Also save fulltext for backward compatibility
-        this.compileFulltext(
+        await this.compileFulltext(
           kbId,
           docId,
           textContent || "(No extractable text content)",
@@ -126,19 +123,19 @@ export class WikiCompiler {
       } else {
         // === LEGACY flow ===
         const content = textContent || "(No extractable text content)";
-        this.compileFulltext(kbId, docId, content, metadata);
+        await this.compileFulltext(kbId, docId, content, metadata);
         await this.compileOverview(kbId, docId, content);
         await this.compileLegacyAbstract(kbId, docId);
       }
 
-      // Entity extraction and link creation (frozen subsystem)
+      // Entity extraction and link creation
       await this.extractAndUpdateLinks(kbId, docId);
 
-      // Build cross-document links (frozen subsystem)
+      // Build cross-document links
       try {
         const { Linker } = await import("../wiki/linker.js");
         const linker = new Linker();
-        linker.buildForwardLinks(kbId);
+        await linker.buildForwardLinks(kbId);
         console.log(`[WikiCompiler] Built cross-document links for KB ${kbId}`);
       } catch (err) {
         console.warn(
@@ -148,7 +145,7 @@ export class WikiCompiler {
       }
 
       if (!options?.skipStatusUpdates) {
-        updateDocumentStatus(docId, "ready");
+        await repos.document.updateStatus(docId, "ready");
       }
     } catch (err) {
       console.error(
@@ -156,7 +153,11 @@ export class WikiCompiler {
         err instanceof Error ? err.message : String(err),
       );
       if (!options?.skipStatusUpdates) {
-        updateDocumentStatus(docId, "error");
+        try {
+          await repos.document.updateStatus(docId, "error");
+        } catch {
+          // Ignore status update error during failure handling
+        }
       }
       throw err;
     }
@@ -237,10 +238,9 @@ export class WikiCompiler {
     }
 
     // Dispatch to modality-specific Structure compilers when PG repos are available
-    if (process.env.PG_HOST && content.doctags) {
+    if (content.doctags) {
       try {
-        const { createReposAsync } = await import("../store/repos/index.js");
-        const repos = await createReposAsync();
+        const repos = await getRepos();
 
         switch (modality) {
           case "image":
@@ -295,7 +295,7 @@ export class WikiCompiler {
   }
 
   // -----------------------------------------------------------------------
-  // Structure layer: Document/Excel fallback (non-PG or PG failure)
+  // Structure layer: Document/Excel fallback
   // -----------------------------------------------------------------------
 
   private async compileStructureDocument(
@@ -317,7 +317,7 @@ export class WikiCompiler {
       return;
     }
 
-    // Write anchors to PG via Repository layer (if available)
+    // Write anchors to PG via Repository layer
     await this.writeAnchorsToRepo(anchors);
 
     // Split DocTags into sections by H1 headings
@@ -337,7 +337,7 @@ export class WikiCompiler {
     // Create a structure page for each section
     for (const section of sections) {
       const sectionTitle = section.title || `Section ${section.sectionPath || "0"}`;
-      createWikiPage(
+      await this.createWikiPageViaRepo(
         kbId,
         docId,
         "structure",
@@ -370,7 +370,7 @@ export class WikiCompiler {
         ? structureSections
             .map((s) => `## ${s.title}\n${s.preview}`)
             .join("\n\n")
-        : this.getOverviewFallback(docId);
+        : await this.getOverviewFallback(docId);
 
     if (!abstractInput || abstractInput.trim().length === 0) {
       console.warn(
@@ -426,7 +426,7 @@ ${truncated}`;
       response = abstractInput.slice(0, 200).split("\n")[0] || "No abstract available.";
     }
 
-    createWikiPage(
+    await this.createWikiPageViaRepo(
       kbId,
       docId,
       "abstract",
@@ -440,15 +440,15 @@ ${truncated}`;
   // Legacy: Fulltext (L2 equivalent - backward compatibility)
   // -----------------------------------------------------------------------
 
-  private compileFulltext(
+  private async compileFulltext(
     kbId: string,
     docId: string,
     content: string,
     metadata: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     const wikiDir = this.pageManager.getWikiDir();
 
-    createWikiPage(
+    await this.createWikiPageViaRepo(
       kbId,
       docId,
       "fulltext",
@@ -523,7 +523,7 @@ ${truncated}`;
       response = `# Document Overview (auto-generated)\n\n${truncated}`;
     }
 
-    createWikiPage(
+    await this.createWikiPageViaRepo(
       kbId,
       docId,
       "overview",
@@ -538,7 +538,8 @@ ${truncated}`;
   // -----------------------------------------------------------------------
 
   private async compileLegacyAbstract(kbId: string, docId: string): Promise<void> {
-    const l1Page = getWikiPageByDoc(docId, "overview");
+    const repos = await getRepos();
+    const l1Page = await repos.wikiPage.getByDocAndType(docId, "overview");
     if (!l1Page) {
       console.warn(
         `[WikiCompiler] Overview not found for doc ${docId}, skipping Abstract`,
@@ -546,13 +547,10 @@ ${truncated}`;
       return;
     }
 
-    let l1Content: string;
-    try {
-      l1Content = getPageContent(l1Page.filePath);
-    } catch (err) {
+    const l1Content = l1Page.content || "";
+    if (!l1Content || l1Content.trim().length === 0) {
       console.warn(
-        `[WikiCompiler] Failed to read overview for doc ${docId}:`,
-        err instanceof Error ? err.message : String(err),
+        `[WikiCompiler] Empty overview content for doc ${docId}, skipping Abstract`,
       );
       return;
     }
@@ -593,7 +591,7 @@ ${truncated}`;
       response = l1Content.slice(0, 200).split("\n")[0] || "No abstract available.";
     }
 
-    createWikiPage(
+    await this.createWikiPageViaRepo(
       kbId,
       docId,
       "abstract",
@@ -604,15 +602,17 @@ ${truncated}`;
   }
 
   // -----------------------------------------------------------------------
-  // Entity extraction and link creation (FROZEN - no modifications)
+  // Entity extraction and link creation
   // -----------------------------------------------------------------------
 
   private async extractAndUpdateLinks(
     kbId: string,
     docId: string,
   ): Promise<void> {
+    const repos = await getRepos();
+
     // Read overview for entity extraction (use overview or abstract as source)
-    const l1Page = getWikiPageByDoc(docId, "overview");
+    const l1Page = await repos.wikiPage.getByDocAndType(docId, "overview");
     if (!l1Page) {
       console.warn(
         `[WikiCompiler] Overview not found for doc ${docId}, skipping entity extraction`,
@@ -620,13 +620,10 @@ ${truncated}`;
       return;
     }
 
-    let l1Content: string;
-    try {
-      l1Content = getPageContent(l1Page.filePath);
-    } catch (err) {
+    const l1Content = l1Page.content || "";
+    if (!l1Content || l1Content.trim().length === 0) {
       console.warn(
-        `[WikiCompiler] Failed to read overview for entity extraction, doc ${docId}:`,
-        err instanceof Error ? err.message : String(err),
+        `[WikiCompiler] Empty overview content for entity extraction, doc ${docId}`,
       );
       return;
     }
@@ -638,21 +635,16 @@ ${truncated}`;
       return;
     }
 
-    const db = DB.getInstance().raw;
     const wikiDir = this.pageManager.getWikiDir();
 
     for (const entity of entities) {
       try {
         // Check if entity page already exists for this KB
-        const existing = db
-          .prepare(
-            "SELECT id FROM wiki_pages WHERE kb_id = ? AND title = ? AND page_type = 'entity'",
-          )
-          .get(kbId, entity.name) as { id: string } | undefined;
+        let existingPage = await repos.wikiPage.findByTitle(kbId, entity.name, "entity");
 
-        if (!existing) {
+        if (!existingPage) {
           // Create new entity page
-          createWikiPage(
+          existingPage = await this.createWikiPageViaRepo(
             kbId,
             null,
             "entity",
@@ -663,31 +655,20 @@ ${truncated}`;
         }
 
         // Create a wiki_link from the document's overview page to the entity page
-        const entityPage = db
-          .prepare(
-            "SELECT id FROM wiki_pages WHERE kb_id = ? AND title = ? AND page_type = 'entity'",
-          )
-          .get(kbId, entity.name) as { id: string } | undefined;
-
-        if (entityPage && l1Page) {
+        if (existingPage && l1Page) {
           // Check if link already exists to avoid duplicates
-          const existingLink = db
-            .prepare(
-              "SELECT id FROM wiki_links WHERE source_page_id = ? AND target_page_id = ? AND entity_name = ?",
-            )
-            .get(l1Page.id, entityPage.id, entity.name) as
-            | { id: string }
-            | undefined;
+          const existingLink = await repos.wikiLink.findExisting(
+            l1Page.id,
+            existingPage.id,
+            "entity_ref",
+            entity.name,
+          );
 
           if (!existingLink) {
-            const linkId = randomUUID();
-            db.prepare(
-              `INSERT INTO wiki_links (id, source_page_id, target_page_id, link_type, entity_name, context)
-               VALUES (?, ?, ?, 'entity_ref', ?, ?)`,
-            ).run(
-              linkId,
+            await repos.wikiLink.create(
               l1Page.id,
-              entityPage.id,
+              existingPage.id,
+              "entity_ref",
               entity.name,
               entity.mentions[0] ?? null,
             );
@@ -823,14 +804,11 @@ ${truncated}`;
   }
 
   /**
-   * Write anchors to the PG Repository layer if available.
+   * Write anchors to the PG Repository layer.
    */
   private async writeAnchorsToRepo(anchors: AnchorDef[]): Promise<void> {
-    if (!process.env.PG_HOST) return;
-
     try {
-      const { createReposAsync } = await import("../store/repos/index.js");
-      const repos = await createReposAsync();
+      const repos = await getRepos();
 
       // Delete existing anchors for this doc (to handle recompilation)
       if (anchors.length > 0) {
@@ -855,39 +833,35 @@ ${truncated}`;
   private async getStructureSectionSummaries(
     docId: string,
   ): Promise<Array<{ title: string; preview: string }>> {
-    // Try PG Repository first
-    if (process.env.PG_HOST) {
-      try {
-        const { createReposAsync } = await import("../store/repos/index.js");
-        const repos = await createReposAsync();
-        const anchors = await repos.anchor.getByDocId(docId);
+    try {
+      const repos = await getRepos();
+      const anchors = await repos.anchor.getByDocId(docId);
 
-        // Group by section_path, build summaries
-        const sectionMap = new Map<
-          string,
-          { title: string; previews: string[] }
-        >();
+      // Group by section_path, build summaries
+      const sectionMap = new Map<
+        string,
+        { title: string; previews: string[] }
+      >();
 
-        for (const anchor of anchors) {
-          const path = anchor.section_path || "0";
-          if (!sectionMap.has(path)) {
-            sectionMap.set(path, {
-              title: anchor.section_title || `Section ${path}`,
-              previews: [],
-            });
-          }
-          if (anchor.content_preview) {
-            sectionMap.get(path)!.previews.push(anchor.content_preview);
-          }
+      for (const anchor of anchors) {
+        const path = anchor.section_path || "0";
+        if (!sectionMap.has(path)) {
+          sectionMap.set(path, {
+            title: anchor.section_title || `Section ${path}`,
+            previews: [],
+          });
         }
-
-        return Array.from(sectionMap.entries()).map(([, v]) => ({
-          title: v.title,
-          preview: v.previews.slice(0, 3).join("\n"),
-        }));
-      } catch {
-        // Fall through to SQLite
+        if (anchor.content_preview) {
+          sectionMap.get(path)!.previews.push(anchor.content_preview);
+        }
       }
+
+      return Array.from(sectionMap.entries()).map(([, v]) => ({
+        title: v.title,
+        preview: v.previews.slice(0, 3).join("\n"),
+      }));
+    } catch {
+      // Fall through
     }
 
     // Fallback: no anchors available
@@ -897,25 +871,109 @@ ${truncated}`;
   /**
    * Get overview content as fallback for abstract generation.
    */
-  private getOverviewFallback(docId: string): string {
-    const overviewPage = getWikiPageByDoc(docId, "overview");
-    if (overviewPage) {
-      try {
-        return getPageContent(overviewPage.filePath);
-      } catch {
-        // Fall through
-      }
+  private async getOverviewFallback(docId: string): Promise<string> {
+    const repos = await getRepos();
+
+    const overviewPage = await repos.wikiPage.getByDocAndType(docId, "overview");
+    if (overviewPage && overviewPage.content) {
+      return overviewPage.content;
     }
 
-    const fulltextPage = getWikiPageByDoc(docId, "fulltext");
-    if (fulltextPage) {
-      try {
-        return getPageContent(fulltextPage.filePath).slice(0, 2000);
-      } catch {
-        // Fall through
-      }
+    const fulltextPage = await repos.wikiPage.getByDocAndType(docId, "fulltext");
+    if (fulltextPage && fulltextPage.content) {
+      return fulltextPage.content.slice(0, 2000);
     }
 
     return "";
+  }
+
+  // -----------------------------------------------------------------------
+  // Helper: create wiki page via repos (DB + filesystem)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Create a wiki page: write content to filesystem and insert into PG.
+   * This replaces the old createWikiPage() from wiki-pages.ts.
+   */
+  private async createWikiPageViaRepo(
+    kbId: string,
+    docId: string | null,
+    pageType: string,
+    title: string,
+    content: string,
+    wikiDir: string,
+  ): Promise<import("../store/repos/interfaces.js").WikiPage> {
+    // Resolve filesystem path
+    const id = randomUUID();
+    const filePath = this.resolvePageFilePath(wikiDir, kbId, docId, pageType, title, id);
+
+    // Ensure parent directory exists
+    const parentDir = dirname(filePath);
+    mkdirSync(parentDir, { recursive: true });
+
+    // Check if file already exists (e.g., entity pages with same title)
+    if (existsSync(filePath) && (pageType === "entity" || pageType === "concept")) {
+      const existing = readFileSync(filePath, "utf-8");
+      const updated = existing + "\n\n---\n\n" + content;
+      writeFileSync(filePath, updated, "utf-8");
+    } else {
+      writeFileSync(filePath, content, "utf-8");
+    }
+
+    // Compute content hash and token count
+    const contentHash = createHash("md5").update(content).digest("hex");
+    const tokenCount = Math.ceil(content.length / 4);
+
+    // Insert into PG
+    const repos = await getRepos();
+    const page = await repos.wikiPage.create({
+      kb_id: kbId,
+      doc_id: docId ?? undefined,
+      page_type: pageType,
+      title,
+      content,
+      file_path: filePath,
+      content_hash: contentHash,
+      token_count: tokenCount,
+    });
+
+    return page;
+  }
+
+  /**
+   * Resolve filesystem path for a wiki page based on its type.
+   */
+  private resolvePageFilePath(
+    wikiDir: string,
+    kbId: string,
+    docId: string | null,
+    pageType: string,
+    title: string,
+    id: string,
+  ): string {
+    switch (pageType) {
+      case "abstract":
+        return join(wikiDir, kbId, "documents", docId!, ".abstract.md");
+      case "overview":
+        return join(wikiDir, kbId, "documents", docId!, ".overview.md");
+      case "fulltext":
+        return join(wikiDir, kbId, "documents", docId!, "parsed.md");
+      case "entity": {
+        const safeName = title.replace(/[/\\?%*:|"<>]/g, "_");
+        return join(wikiDir, kbId, "entities", `${safeName}.md`);
+      }
+      case "concept": {
+        const safeName = title.replace(/[/\\?%*:|"<>]/g, "_");
+        return join(wikiDir, kbId, "concepts", `${safeName}.md`);
+      }
+      case "report":
+        return join(wikiDir, kbId, "reports", `${id}.md`);
+      case "structure": {
+        const safeName = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 100);
+        return join(wikiDir, kbId, "documents", docId!, "structure", `${safeName}.md`);
+      }
+      default:
+        return join(wikiDir, kbId, "documents", `${id}.md`);
+    }
   }
 }

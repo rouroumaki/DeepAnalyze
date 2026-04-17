@@ -6,7 +6,10 @@
 // =============================================================================
 
 import { join } from "node:path";
-import { createWikiPage, getWikiPage, getPageContent } from "../../store/wiki-pages.js";
+import { getRepos } from "../../store/repos/index.js";
+import { randomUUID } from "node:crypto";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { AgentTool } from "../../services/agent/types.js";
 import type { Retriever } from "../../wiki/retriever.js";
 import type { SearchResult } from "../../wiki/retriever.js";
@@ -123,12 +126,13 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
         for (const result of topResults) {
           let content = result.snippet;
           try {
-            const page = getWikiPage(result.pageId);
-            if (page) {
-              content = getPageContent(page.filePath);
+            const repos = await getRepos();
+            const page = await repos.wikiPage.getById(result.pageId);
+            if (page && page.content) {
+              content = page.content;
             }
           } catch {
-            // Fall back to snippet if file read fails
+            // Fall back to snippet if read fails
           }
 
           sources.push({
@@ -249,14 +253,25 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
         // -------------------------------------------------------------------
 
         const wikiDir = join(deps.dataDir, "wiki");
-        const page = createWikiPage(
-          kbId,
-          null, // reports are not tied to a specific document
-          "report",
+        const pageId = randomUUID();
+        const filePath = join(wikiDir, kbId, "reports", `${pageId}.md`);
+        mkdirSync(join(wikiDir, kbId, "reports"), { recursive: true });
+        writeFileSync(filePath, reportContent, "utf-8");
+
+        const contentHash = createHash("md5").update(reportContent).digest("hex");
+        const tokenCount = Math.ceil(reportContent.length / 4);
+
+        const repos = await getRepos();
+        const page = await repos.wikiPage.create({
+          kb_id: kbId,
+          doc_id: undefined,
+          page_type: "report",
           title,
-          reportContent,
-          wikiDir,
-        );
+          content: reportContent,
+          file_path: filePath,
+          content_hash: contentHash,
+          token_count: tokenCount,
+        });
 
         // -------------------------------------------------------------------
         // 5. Return result

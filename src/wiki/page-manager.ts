@@ -1,15 +1,10 @@
 // =============================================================================
 // DeepAnalyze - Page Manager
 // High-level wiki page management that coordinates DB records and filesystem.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
-import {
-  createWikiPage,
-  getWikiPage,
-  getWikiPagesByKb,
-  getPageContent,
-  updateWikiPage as updateWikiPageInStore,
-} from "../store/wiki-pages.js";
+import { getRepos } from "../store/repos/index.js";
 import type { WikiPage } from "../types/index.js";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -69,27 +64,80 @@ export class PageManager {
   }
 
   /**
-   * Read the content of a wiki page from the filesystem.
+   * Read the content of a wiki page.
+   * Tries DB content column first, falls back to filesystem read.
    */
   async getPageContent(pageId: string): Promise<string> {
-    const page = getWikiPage(pageId);
+    const repos = await getRepos();
+    const page = await repos.wikiPage.getById(pageId);
     if (!page) {
       throw new Error(`Wiki page not found: ${pageId}`);
     }
-    return getPageContent(page.filePath);
+
+    // Use content from DB if available
+    if (page.content) {
+      return page.content;
+    }
+
+    // Fallback to filesystem
+    if (page.file_path) {
+      try {
+        const { readFileSync } = await import("node:fs");
+        return readFileSync(page.file_path, "utf-8");
+      } catch {
+        throw new Error(`Failed to read content for wiki page: ${pageId}`);
+      }
+    }
+
+    return "";
   }
 
   /**
    * Update the content of a wiki page on both filesystem and DB.
    */
   async updatePage(pageId: string, content: string): Promise<void> {
-    updateWikiPageInStore(pageId, content);
+    const repos = await getRepos();
+    const page = await repos.wikiPage.getById(pageId);
+    if (!page) {
+      throw new Error(`Wiki page not found: ${pageId}`);
+    }
+
+    // Write to filesystem
+    if (page.file_path) {
+      const { writeFileSync } = await import("node:fs");
+      try {
+        writeFileSync(page.file_path, content, "utf-8");
+      } catch {
+        // Filesystem write may fail; continue with DB update
+      }
+    }
+
+    // Update DB
+    const { createHash } = await import("node:crypto");
+    const contentHash = createHash("md5").update(content).digest("hex");
+    const tokenCount = Math.ceil(content.length / 4);
+    await repos.wikiPage.updateContent(pageId, content, contentHash, tokenCount);
   }
 
   /**
    * List all pages for a knowledge base, optionally filtered by page type.
    */
   async listPages(kbId: string, pageType?: string): Promise<WikiPage[]> {
-    return getWikiPagesByKb(kbId, pageType);
+    const repos = await getRepos();
+    const pages = await repos.wikiPage.getByKbAndType(kbId, pageType);
+
+    return pages.map((p) => ({
+      id: p.id,
+      kbId: p.kb_id,
+      docId: p.doc_id,
+      pageType: p.page_type as WikiPage["pageType"],
+      title: p.title,
+      filePath: p.file_path,
+      contentHash: p.content_hash,
+      tokenCount: p.token_count,
+      metadata: p.metadata ? JSON.stringify(p.metadata) : null,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+    }));
   }
 }

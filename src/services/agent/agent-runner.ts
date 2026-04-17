@@ -45,7 +45,7 @@ const DEFAULT_AGENT_DEFINITION: AgentDefinition = {
     "When you have completed the task, call the 'finish' tool with your final answer.",
   tools: ["*"],
   modelRole: "main",
-  maxTurns: 50,
+  maxTurns: -1,
   readOnly: false,
 };
 
@@ -110,8 +110,14 @@ export class AgentRunner {
     }
 
     // Load agent settings from DB
-    const settingsStore = new SettingsStore();
-    const agentSettings = settingsStore.getAgentSettings();
+    let agentSettings;
+    try {
+      const settingsStore = new SettingsStore();
+      agentSettings = settingsStore.getAgentSettings();
+    } catch (err) {
+      console.error("[AgentRunner] Failed to load agent settings:", err instanceof Error ? err.message : String(err));
+      throw err;
+    }
 
     // Resolve effective turn limit (API override > settings > definition > default)
     const advisoryLimit = options.maxTurns ?? definition.maxTurns ?? agentSettings.maxTurns;
@@ -119,8 +125,20 @@ export class AgentRunner {
     const hardLimit = isUnlimited ? Infinity : advisoryLimit * 3;
 
     const modelRole = options.modelRole ?? definition.modelRole ?? "main";
-    const modelId = this.modelRouter.getDefaultModel(modelRole);
+    let modelId: string;
+    try {
+      // Ensure the router has the latest provider config before resolving
+      // the default model — otherwise we may use a stale model ID.
+      await this.modelRouter.ensureCurrent();
+      modelId = this.modelRouter.getDefaultModel(modelRole);
+    } catch (err) {
+      console.error(`[AgentRunner] Failed to resolve default model for role "${modelRole}":`, err instanceof Error ? err.message : String(err));
+      console.error(`[AgentRouter] Available providers: ${this.modelRouter.listProviderNames().join(", ")}`);
+      throw err;
+    }
     const effectiveSystemPrompt = options.systemPromptOverride ?? definition.systemPrompt;
+
+    console.log(`[AgentRunner] Starting agent run: taskId=${taskId}, agentType=${agentType}, modelRole=${modelRole}, modelId=${modelId}, providers=${this.modelRouter.listProviderNames().join(",")}`);
 
     // Build initial messages
     const messages = this.buildMessages(
@@ -130,7 +148,14 @@ export class AgentRunner {
     );
 
     const effectiveTools = options.toolsOverride ?? definition.tools;
-    const toolDefs = this.toolRegistry.buildToolDefinitions(effectiveTools);
+    let toolDefs;
+    try {
+      toolDefs = this.toolRegistry.buildToolDefinitions(effectiveTools);
+    } catch (err) {
+      console.error("[AgentRunner] Failed to build tool definitions:", err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+    console.log(`[AgentRunner] Built ${toolDefs.length} tool definitions, starting LLM loop...`);
 
     // Track execution state
     let totalToolCalls = 0;
@@ -177,7 +202,10 @@ export class AgentRunner {
     // Continuous TAOR Loop
     // -------------------------------------------------------------------
     let turn = 0;
-    let emergencyCompacted = false;
+    let emergencyCompactionCount = 0;
+    const MAX_EMERGENCY_COMPACTIONS = 5;
+    let consecutiveLLMErrors = 0;
+    const MAX_CONSECUTIVE_LLM_ERRORS = 5;
 
     while (true) {
       turn++;
@@ -214,9 +242,9 @@ export class AgentRunner {
         const errorMsg = err instanceof Error ? err.message : String(err);
 
         // Emergency compaction: detect prompt_too_long errors
-        if (this.isPromptTooLongError(errorMsg) && !emergencyCompacted) {
-          console.log("[AgentRunner] prompt_too_long detected, triggering emergency compaction");
-          emergencyCompacted = true;
+        if (this.isPromptTooLongError(errorMsg) && emergencyCompactionCount < MAX_EMERGENCY_COMPACTIONS) {
+          console.log(`[AgentRunner] prompt_too_long detected, triggering emergency compaction (attempt ${emergencyCompactionCount + 1}/${MAX_EMERGENCY_COMPACTIONS})`);
+          emergencyCompactionCount++;
           try {
             const result = await compactionEngine.compact(messages, sessionMemory, options.signal);
             if (result.method !== "none") {
@@ -238,12 +266,25 @@ export class AgentRunner {
           }
         }
 
+        // Transient error retry (rate limit, network, server errors)
+        if (this.isTransientError(errorMsg) && consecutiveLLMErrors < MAX_CONSECUTIVE_LLM_ERRORS) {
+          consecutiveLLMErrors++;
+          const backoff = Math.min(5000, 1000 * Math.pow(2, consecutiveLLMErrors - 1));
+          console.warn(`[AgentRunner] Transient error (attempt ${consecutiveLLMErrors}/${MAX_CONSECUTIVE_LLM_ERRORS}), retrying in ${backoff}ms: ${errorMsg}`);
+          this.recordProgress(options.onEvent, taskId, turn, "error", `Transient error, retrying (${consecutiveLLMErrors}/${MAX_CONSECUTIVE_LLM_ERRORS}): ${errorMsg}`);
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          turn--; // Don't count this as a turn
+          continue;
+        }
+
+        consecutiveLLMErrors = 0; // Reset on non-transient or exhausted retries
         this.recordProgress(options.onEvent, taskId, turn, "error", `Model call failed: ${errorMsg}`);
         this.emitEvent(options.onEvent, { type: "error", taskId, error: errorMsg });
         return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, `Agent failed: ${errorMsg}`, options.onEvent);
       }
 
       // 5. Track token usage
+      consecutiveLLMErrors = 0; // Reset on successful response
       if (response.usage) {
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
@@ -396,7 +437,7 @@ export class AgentRunner {
             anchorData,
           );
           if (anchorContent) {
-            compounder.compoundAgentResult(
+            await compounder.compoundAgentResult(
               kbId,
               agentType,
               options.input,
@@ -405,7 +446,7 @@ export class AgentRunner {
           }
         } else {
           // Fallback to page-level tracing
-          compounder.compoundWithTracing(
+          await compounder.compoundWithTracing(
             kbId,
             agentType,
             options.input,
@@ -697,6 +738,28 @@ export class AgentRunner {
       lower.includes("maximum context length") ||
       lower.includes("too many tokens") ||
       lower.includes("token limit exceeded")
+    );
+  }
+
+  private isTransientError(errorMsg: string): boolean {
+    const lower = errorMsg.toLowerCase();
+    return (
+      lower.includes("rate_limit") ||
+      lower.includes("rate limit") ||
+      lower.includes("429") ||
+      lower.includes("503") ||
+      lower.includes("529") ||
+      lower.includes("server error") ||
+      lower.includes("internal server error") ||
+      lower.includes("service unavailable") ||
+      lower.includes("overloaded") ||
+      lower.includes("capacity") ||
+      lower.includes("timeout") ||
+      lower.includes("econnrefused") ||
+      lower.includes("econnreset") ||
+      lower.includes("socket hang up") ||
+      lower.includes("fetch failed") ||
+      lower.includes("network error")
     );
   }
 

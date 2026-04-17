@@ -2,10 +2,11 @@
 // DeepAnalyze - L0 Knowledge Linker
 // Builds cross-document associations at the abstract (L0) layer by matching
 // entities and tags across documents within the same knowledge base.
+// Uses PG Repository layer for all database operations.
 // =============================================================================
 
 import { Linker } from "./linker.js";
-import { getWikiPagesByKb, getPageContent } from "../store/wiki-pages.js";
+import { getRepos } from "../store/repos/index.js";
 
 export class L0Linker {
   /**
@@ -13,9 +14,11 @@ export class L0Linker {
    * Reads every abstract page, extracts entity/tag lines, and creates
    * bidirectional links between documents whose abstracts share 2+ entities.
    */
-  buildL0Associations(kbId: string): void {
+  async buildL0Associations(kbId: string): Promise<void> {
+    const repos = await getRepos();
+
     // 1. Get all abstract pages for this KB
-    const abstracts = getWikiPagesByKb(kbId, "abstract");
+    const abstracts = await repos.wikiPage.getByKbAndType(kbId, "abstract");
     if (abstracts.length < 2) {
       console.log(
         `[L0Linker] KB ${kbId}: fewer than 2 abstracts, skipping association build`,
@@ -26,16 +29,8 @@ export class L0Linker {
     // 2. Extract entities/tags from each abstract page
     const pageEntities = new Map<string, Set<string>>();
     for (const page of abstracts) {
-      let content: string;
-      try {
-        content = getPageContent(page.filePath);
-      } catch (err) {
-        console.warn(
-          `[L0Linker] Failed to read abstract for page ${page.id}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        continue;
-      }
+      const content = page.content || "";
+      if (!content || content.trim().length === 0) continue;
 
       const entities = this.parseL0Entities(content);
       if (entities.size > 0) {
@@ -64,7 +59,7 @@ export class L0Linker {
         const overlap = this.intersection(entitiesA, entitiesB);
         if (overlap.size >= 2) {
           const sharedEntities = Array.from(overlap).join(", ");
-          linker.createBidirectionalLinks(
+          await linker.createBidirectionalLinks(
             pageIdA,
             pageIdB,
             undefined,

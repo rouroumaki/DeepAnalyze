@@ -4,7 +4,7 @@
 // =============================================================================
 
 import { Hono } from "hono";
-import { createReposAsync } from "../../store/repos/index.js";
+import { getRepos } from "../../store/repos/index.js";
 import { getEmbeddingManager } from "../../models/embedding.js";
 import { DisplayResolver } from "../../services/display-resolver.js";
 
@@ -27,7 +27,7 @@ export function createSearchTestRoutes(): Hono {
   app.post("/test", async (c) => {
     const body = await c.req.json<SearchTestRequest>();
     const { query, kbIds, methods, layer, topK } = body;
-    const repos = await createReposAsync();
+    const repos = await getRepos();
 
     const results: Record<string, SearchResultItem[]> = {};
 

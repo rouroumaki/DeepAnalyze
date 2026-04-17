@@ -6,7 +6,7 @@
 import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createReposAsync } from "../../store/repos/index.js";
+import { getRepos } from "../../store/repos/index.js";
 import { DisplayResolver } from "../../services/display-resolver.js";
 import { DEEPANALYZE_CONFIG } from "../../core/config.js";
 
@@ -20,7 +20,7 @@ export function createPreviewRoutes(): Hono {
 
   app.get("/kbs/:kbId/documents/:docId/preview/:layer", async (c) => {
     const { kbId, docId, layer } = c.req.param();
-    const repos = await createReposAsync();
+    const repos = await getRepos();
 
     switch (layer) {
       case "raw": {
@@ -85,7 +85,7 @@ export function createPreviewRoutes(): Hono {
 
   app.get("/anchors/:anchorId", async (c) => {
     const { anchorId } = c.req.param();
-    const repos = await createReposAsync();
+    const repos = await getRepos();
 
     const anchor = await repos.anchor.getById(anchorId);
     if (!anchor) return c.json({ error: "Anchor not found" }, 404);
@@ -130,7 +130,7 @@ export function createPreviewRoutes(): Hono {
 
   app.get("/kbs/:kbId/documents/:docId/structure-map", async (c) => {
     const { docId } = c.req.param();
-    const repos = await createReposAsync();
+    const repos = await getRepos();
 
     const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
     const anchors = await repos.anchor.getByDocId(docId);

@@ -14,8 +14,7 @@ import { stream } from "hono/streaming";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
 import { getCompounder, getPluginManager } from "../../services/agent/agent-system.js";
-import * as messageStore from "../../store/messages.js";
-import * as sessionStore from "../../store/sessions.js";
+import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -77,13 +76,14 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       );
     }
 
-    const session = sessionStore.getSession(body.sessionId);
+    const repos = await getRepos();
+    const session = await repos.session.get(body.sessionId);
     if (!session) {
       return c.json({ error: "Session not found" }, 404);
     }
 
     // Save user message to the chat session
-    messageStore.createMessage(body.sessionId, "user", body.input);
+    await repos.message.create(body.sessionId, "user", body.input);
 
     try {
       const result = await orchestrator.runSingle({
@@ -95,7 +95,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
       // Save assistant response to the chat session
       if (result.output) {
-        messageStore.createMessage(
+        await repos.message.create(
           body.sessionId,
           "assistant",
           result.output,
@@ -153,13 +153,14 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       return c.json({ error: "sessionId and input are required" }, 400);
     }
 
-    const session = sessionStore.getSession(body.sessionId);
+    const repos = await getRepos();
+    const session = await repos.session.get(body.sessionId);
     if (!session) {
       return c.json({ error: "Session not found" }, 404);
     }
 
     // Save user message
-    messageStore.createMessage(body.sessionId, "user", body.input);
+    await repos.message.create(body.sessionId, "user", body.input);
 
     // Set up SSE response
     c.header("Content-Type", "text/event-stream");
@@ -275,14 +276,18 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
           onEvent,
         });
 
+        // Determine if the agent actually failed (orchestrator catches errors
+        // and returns a result with error output, so we check the output text)
+        const agentFailed = result.output?.startsWith("Agent failed:") ?? false;
+
         // Save assistant response
         const savedContent = fullContent || result.output;
         if (savedContent) {
-          messageStore.createMessage(body.sessionId, "assistant", savedContent);
+          await repos.message.create(body.sessionId, "assistant", savedContent);
         }
 
         // Auto-compound if kbId provided
-        if (body.kbId && savedContent) {
+        if (body.kbId && savedContent && !agentFailed) {
           try {
             const compounder = await getCompounder();
             compounder.compoundAgentResult(
@@ -297,9 +302,11 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         }
 
         // Send done event with final metadata
+        // If agent failed, include the error output so the frontend can display it
         sendEvent("done", {
           taskId: result.taskId,
-          status: "completed",
+          status: agentFailed ? "failed" : "completed",
+          output: agentFailed ? result.output : undefined,
           turnsUsed: result.turnsUsed,
           usage: result.usage,
           compactionEvents: result.compactionEvents,
@@ -331,13 +338,14 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       );
     }
 
-    const session = sessionStore.getSession(body.sessionId);
+    const repos = await getRepos();
+    const session = await repos.session.get(body.sessionId);
     if (!session) {
       return c.json({ error: "Session not found" }, 404);
     }
 
     // Save user message to the chat session
-    messageStore.createMessage(body.sessionId, "user", body.input);
+    await repos.message.create(body.sessionId, "user", body.input);
 
     // Run the coordinated workflow in the background. We return the parent
     // task ID immediately and let the client poll for results.
@@ -373,7 +381,8 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       );
     }
 
-    const session = sessionStore.getSession(body.sessionId);
+    const repos = await getRepos();
+    const session = await repos.session.get(body.sessionId);
     if (!session) {
       return c.json({ error: "Session not found" }, 404);
     }
@@ -397,7 +406,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       const userInput = body.input ?? "Execute the skill task.";
 
       // Save user message to the chat session
-      messageStore.createMessage(
+      await repos.message.create(
         body.sessionId,
         "user",
         `[Skill: ${skill.name}] ${userInput}`,
@@ -415,7 +424,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
       // Save assistant response to the chat session
       if (result.output) {
-        messageStore.createMessage(
+        await repos.message.create(
           body.sessionId,
           "assistant",
           result.output,
@@ -524,7 +533,7 @@ function taskToResponse(task: AgentTask) {
     input: task.input,
     output: task.output,
     error: task.error,
-    parentId: task.parentId,
+    parentId: task.parentTaskId,
     sessionId: task.sessionId,
     createdAt: task.createdAt,
     completedAt: task.completedAt,
@@ -546,13 +555,15 @@ async function startCoordinatedRun(
   });
 
   // When it completes, save the synthesis as an assistant message.
-  runPromise.then((result) => {
+  runPromise.then(async (result) => {
     if (result.synthesis) {
-      messageStore.createMessage(sessionId, "assistant", result.synthesis);
+      const repos = await getRepos();
+      await repos.message.create(sessionId, "assistant", result.synthesis);
     }
-  }).catch((err) => {
+  }).catch(async (err) => {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    messageStore.createMessage(
+    const repos = await getRepos();
+    await repos.message.create(
       sessionId,
       "assistant",
       `Coordinated workflow failed: ${errorMsg}`,

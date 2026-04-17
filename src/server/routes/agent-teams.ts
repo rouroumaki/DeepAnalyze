@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import { getTeamManager, getRunner, getToolRegistry } from "../../services/agent/agent-system.js";
 import { WorkflowEngine } from "../../services/agent/workflow-engine.js";
 import type { WorkflowAgent, WorkflowEvent } from "../../services/agent/workflow-engine.js";
-import type { CreateTeamData, UpdateTeamData } from "../../store/agent-teams.js";
+import type { CreateTeamData, UpdateTeamData } from "../../store/repos/index.js";
 
 export function createAgentTeamRoutes(): Hono {
   const router = new Hono();

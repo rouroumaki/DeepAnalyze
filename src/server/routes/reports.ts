@@ -2,26 +2,14 @@
 // DeepAnalyze - Report, Timeline, and Graph API Routes
 // =============================================================================
 // Hono routes for report management, timeline extraction, and knowledge graph
-// visualization. Uses wiki-pages store directly for reads and the agent system
+// visualization. Uses PG repos for all data access and the agent system
 // (via getOrchestrator) for asynchronous report generation.
 // =============================================================================
 
 import { Hono } from "hono";
-import { DB } from "../../store/database.js";
-import {
-  getWikiPage,
-  getWikiPagesByKb,
-  getPageContent,
-} from "../../store/wiki-pages.js";
-import {
-  listReports,
-  getReport,
-  getReportsBySession,
-  deleteReport,
-} from "../../store/reports.js";
+import { getRepos } from "../../store/repos/index.js";
 import { getOrchestrator } from "../../services/agent/agent-system.js";
 import { randomUUID } from "node:crypto";
-import { createReposAsync } from "../../store/repos/index.js";
 import { DisplayResolver } from "../../services/display-resolver.js";
 
 // ---------------------------------------------------------------------------
@@ -87,11 +75,12 @@ export function createReportRoutes(): Hono {
   // GET /reports - List all reports (paginated)
   // =====================================================================
 
-  router.get("/reports", (c) => {
+  router.get("/reports", async (c) => {
     const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
     const offset = parseInt(c.req.query("offset") || "0", 10);
 
-    const reports = listReports(limit, offset);
+    const repos = await getRepos();
+    const reports = await repos.report.list(limit, offset);
 
     return c.json({
       reports,
@@ -109,36 +98,34 @@ export function createReportRoutes(): Hono {
   // NOTE: This route must come after any static /reports/* paths (like
   // /reports/kb/:kbId below) to avoid the :id parameter matching "kb".
 
-  router.get("/reports/kb/:kbId", (c) => {
+  router.get("/reports/kb/:kbId", async (c) => {
     const kbId = c.req.param("kbId");
+    const repos = await getRepos();
 
     // Verify the knowledge base exists
-    const db = DB.getInstance().raw;
-    const kbRow = db
-      .prepare("SELECT id FROM knowledge_bases WHERE id = ?")
-      .get(kbId) as Record<string, unknown> | undefined;
-
-    if (!kbRow) {
+    const kb = await repos.knowledgeBase.get(kbId);
+    if (!kb) {
       return c.json({ error: "Knowledge base not found" }, 404);
     }
 
-    const pages = getWikiPagesByKb(kbId, "report");
+    const pages = await repos.wikiPage.getByKbAndType(kbId, "report");
 
     const reports = pages.map((page) => ({
       id: page.id,
       title: page.title,
-      tokenCount: page.tokenCount,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
+      tokenCount: page.token_count,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
     }));
 
     return c.json({ kbId, reports });
   });
 
-  router.get("/reports/:id", (c) => {
+  router.get("/reports/:id", async (c) => {
     const id = c.req.param("id");
 
-    const report = getReport(id);
+    const repos = await getRepos();
+    const report = await repos.report.get(id);
     if (!report) {
       return c.json({ error: "Report not found" }, 404);
     }
@@ -150,10 +137,11 @@ export function createReportRoutes(): Hono {
   // DELETE /reports/:id - Delete a report
   // =====================================================================
 
-  router.delete("/reports/:id", (c) => {
+  router.delete("/reports/:id", async (c) => {
     const id = c.req.param("id");
 
-    const deleted = deleteReport(id);
+    const repos = await getRepos();
+    const deleted = await repos.report.delete(id);
     if (!deleted) {
       return c.json({ error: "Report not found" }, 404);
     }
@@ -165,10 +153,11 @@ export function createReportRoutes(): Hono {
   // GET /reports/:id/export - Export report as Markdown
   // =====================================================================
 
-  router.get("/reports/:id/export", (c) => {
+  router.get("/reports/:id/export", async (c) => {
     const id = c.req.param("id");
 
-    const report = getReport(id);
+    const repos = await getRepos();
+    const report = await repos.report.get(id);
     if (!report) {
       return c.json({ error: "Report not found" }, 404);
     }
@@ -213,10 +202,11 @@ export function createReportRoutes(): Hono {
   // GET /sessions/:sessionId/reports - List reports by session
   // =====================================================================
 
-  router.get("/sessions/:sessionId/reports", (c) => {
+  router.get("/sessions/:sessionId/reports", async (c) => {
     const sessionId = c.req.param("sessionId");
 
-    const reports = getReportsBySession(sessionId);
+    const repos = await getRepos();
+    const reports = await repos.report.listBySession(sessionId);
 
     return c.json({
       sessionId,
@@ -231,33 +221,27 @@ export function createReportRoutes(): Hono {
   // GET /report/:reportId - Get full report content
   // =====================================================================
 
-  router.get("/report/:reportId", (c) => {
+  router.get("/report/:reportId", async (c) => {
     const reportId = c.req.param("reportId");
 
-    const page = getWikiPage(reportId);
+    const repos = await getRepos();
+    const page = await repos.wikiPage.getById(reportId);
     if (!page) {
       return c.json({ error: "Report not found" }, 404);
     }
 
-    if (page.pageType !== "report") {
+    if (page.page_type !== "report") {
       return c.json({ error: "Page is not a report" }, 400);
-    }
-
-    let content: string;
-    try {
-      content = getPageContent(page.filePath);
-    } catch {
-      return c.json({ error: "Failed to read report content" }, 500);
     }
 
     return c.json({
       id: page.id,
-      kbId: page.kbId,
+      kbId: page.kb_id,
       title: page.title,
-      content,
-      tokenCount: page.tokenCount,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
+      content: page.content,
+      tokenCount: page.token_count,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
     });
   });
 
@@ -276,12 +260,10 @@ export function createReportRoutes(): Hono {
     }
 
     // Verify the knowledge base exists
-    const db = DB.getInstance().raw;
-    const kbRow = db
-      .prepare("SELECT id, name FROM knowledge_bases WHERE id = ?")
-      .get(body.kbId) as Record<string, unknown> | undefined;
+    const repos = await getRepos();
+    const kb = await repos.knowledgeBase.get(body.kbId);
 
-    if (!kbRow) {
+    if (!kb) {
       return c.json({ error: "Knowledge base not found" }, 404);
     }
 
@@ -336,41 +318,30 @@ export function createReportRoutes(): Hono {
   // GET /timeline/:kbId - Get timeline data for a knowledge base
   // =====================================================================
 
-  router.get("/timeline/:kbId", (c) => {
+  router.get("/timeline/:kbId", async (c) => {
     const kbId = c.req.param("kbId");
     const query = c.req.query("query") || "";
     const maxEvents = parseInt(c.req.query("maxEvents") || "50", 10);
 
-    // Verify the knowledge base exists
-    const db = DB.getInstance().raw;
-    const kbRow = db
-      .prepare("SELECT id FROM knowledge_bases WHERE id = ?")
-      .get(kbId) as Record<string, unknown> | undefined;
+    const repos = await getRepos();
 
-    if (!kbRow) {
+    // Verify the knowledge base exists
+    const kb = await repos.knowledgeBase.get(kbId);
+    if (!kb) {
       return c.json({ error: "Knowledge base not found" }, 404);
     }
 
     // Get pages to extract dates from.
-    // If a query is provided, do a simple LIKE search on titles and content.
+    // If a query is provided, do a simple search on titles and content.
     // Otherwise, use all pages in the KB.
-    const pages = getWikiPagesByKb(kbId);
-
-    // Cache content loaded during filtering to avoid double-reading files
-    const contentCache = new Map<string, string>();
+    const pages = await repos.wikiPage.getByKbAndType(kbId);
 
     // Filter pages by query if provided
     const targetPages = query
       ? pages.filter((page) => {
           const titleMatch = page.title.toLowerCase().includes(query.toLowerCase());
           if (titleMatch) return true;
-          try {
-            const content = getPageContent(page.filePath);
-            contentCache.set(page.id, content);
-            return content.toLowerCase().includes(query.toLowerCase());
-          } catch {
-            return false;
-          }
+          return page.content.toLowerCase().includes(query.toLowerCase());
         })
       : pages;
 
@@ -378,12 +349,8 @@ export function createReportRoutes(): Hono {
     const events: TimelineEventResponse[] = [];
 
     for (const page of targetPages) {
-      let content: string;
-      try {
-        content = contentCache.get(page.id) ?? getPageContent(page.filePath);
-      } catch {
-        continue;
-      }
+      const content = page.content;
+      if (!content) continue;
 
       const rawEvents = extractDateEvents(content, page.id, page.title);
 
@@ -416,18 +383,16 @@ export function createReportRoutes(): Hono {
   // GET /graph/:kbId - Get graph data for a knowledge base
   // =====================================================================
 
-  router.get("/graph/:kbId", (c) => {
+  router.get("/graph/:kbId", async (c) => {
     const kbId = c.req.param("kbId");
     const query = c.req.query("query") || "";
     const maxNodes = parseInt(c.req.query("maxNodes") || "100", 10);
 
-    // Verify the knowledge base exists
-    const db = DB.getInstance().raw;
-    const kbRow = db
-      .prepare("SELECT id FROM knowledge_bases WHERE id = ?")
-      .get(kbId) as Record<string, unknown> | undefined;
+    const repos = await getRepos();
 
-    if (!kbRow) {
+    // Verify the knowledge base exists
+    const kb = await repos.knowledgeBase.get(kbId);
+    if (!kb) {
       return c.json({ error: "Knowledge base not found" }, 404);
     }
 
@@ -436,13 +401,13 @@ export function createReportRoutes(): Hono {
     const edgeSet = new Set<string>();
 
     // Helper to add a node
-    function addNode(page: { id: string; title: string; pageType: string; kbId: string }): void {
+    function addNode(page: { id: string; title: string; page_type: string; kb_id: string }): void {
       if (!nodeMap.has(page.id)) {
         nodeMap.set(page.id, {
           id: page.id,
           label: page.title,
-          type: mapPageTypeToNodeType(page.pageType),
-          group: page.kbId,
+          type: mapPageTypeToNodeType(page.page_type),
+          group: page.kb_id,
         });
       }
     }
@@ -462,19 +427,14 @@ export function createReportRoutes(): Hono {
     }
 
     // Get pages for the KB
-    let pages = getWikiPagesByKb(kbId);
+    let pages = await repos.wikiPage.getByKbAndType(kbId);
 
     // Filter by query if provided
     if (query) {
       const q = query.toLowerCase();
       pages = pages.filter((page) => {
         if (page.title.toLowerCase().includes(q)) return true;
-        try {
-          const content = getPageContent(page.filePath);
-          return content.toLowerCase().includes(q);
-        } catch {
-          return false;
-        }
+        return page.content.toLowerCase().includes(q);
       });
     }
 
@@ -484,71 +444,46 @@ export function createReportRoutes(): Hono {
       if (nodeMap.size >= maxNodes) break;
     }
 
-    // Query wiki_links directly from the database for edges
+    // Query wiki_links for edges
     const pageIds = Array.from(nodeMap.keys());
     if (pageIds.length > 0) {
-      // Build a parameterized query to get all links involving our pages
-      const placeholders = pageIds.map(() => "?").join(",");
-
       // Outgoing links from our pages
-      const outgoingRows = db
-        .prepare(
-          `SELECT wl.source_page_id, wl.target_page_id, wl.link_type, wl.entity_name
-           FROM wiki_links wl
-           JOIN wiki_pages wp ON wp.id = wl.target_page_id
-           WHERE wl.source_page_id IN (${placeholders})
-             AND wp.kb_id = ?`,
-        )
-        .all(...pageIds, kbId) as Array<{
-        source_page_id: string;
-        target_page_id: string;
-        link_type: string;
-        entity_name: string | null;
-      }>;
+      for (const pageId of pageIds) {
+        const outgoing = await repos.wikiLink.getOutgoing(pageId);
+        for (const link of outgoing) {
+          const targetPage = await repos.wikiPage.getById(link.targetPageId);
+          if (!targetPage) continue;
 
-      for (const row of outgoingRows) {
-        const targetPage = getWikiPage(row.target_page_id);
-        if (!targetPage) continue;
+          addNode(targetPage);
+          addEdge(
+            link.sourcePageId,
+            link.targetPageId,
+            link.linkType,
+            link.entityName || undefined,
+          );
 
-        addNode(targetPage);
-        addEdge(
-          row.source_page_id,
-          row.target_page_id,
-          row.link_type,
-          row.entity_name || undefined,
-        );
-
+          if (nodeMap.size >= maxNodes) break;
+        }
         if (nodeMap.size >= maxNodes) break;
       }
 
       // Incoming links to our pages
-      const incomingRows = db
-        .prepare(
-          `SELECT wl.source_page_id, wl.target_page_id, wl.link_type, wl.entity_name
-           FROM wiki_links wl
-           JOIN wiki_pages wp ON wp.id = wl.source_page_id
-           WHERE wl.target_page_id IN (${placeholders})
-             AND wp.kb_id = ?`,
-        )
-        .all(...pageIds, kbId) as Array<{
-        source_page_id: string;
-        target_page_id: string;
-        link_type: string;
-        entity_name: string | null;
-      }>;
+      for (const pageId of pageIds) {
+        const incoming = await repos.wikiLink.getIncoming(pageId);
+        for (const link of incoming) {
+          const sourcePage = await repos.wikiPage.getById(link.sourcePageId);
+          if (!sourcePage) continue;
 
-      for (const row of incomingRows) {
-        const sourcePage = getWikiPage(row.source_page_id);
-        if (!sourcePage) continue;
+          addNode(sourcePage);
+          addEdge(
+            link.sourcePageId,
+            link.targetPageId,
+            link.linkType,
+            link.entityName || undefined,
+          );
 
-        addNode(sourcePage);
-        addEdge(
-          row.source_page_id,
-          row.target_page_id,
-          row.link_type,
-          row.entity_name || undefined,
-        );
-
+          if (nodeMap.size >= maxNodes) break;
+        }
         if (nodeMap.size >= maxNodes) break;
       }
     }
@@ -578,7 +513,8 @@ export function createReportRoutes(): Hono {
   router.get("/reports/:id/sources", async (c) => {
     const id = c.req.param("id");
 
-    const report = getReport(id);
+    const repos = await getRepos();
+    const report = await repos.report.get(id);
     if (!report) {
       return c.json({ error: "Report not found" }, 404);
     }
@@ -605,7 +541,6 @@ export function createReportRoutes(): Hono {
     }
 
     // Query anchor details
-    const repos = await createReposAsync();
     const anchors = [];
     for (const anchorId of anchorIds) {
       const anchor = await repos.anchor.getById(anchorId);

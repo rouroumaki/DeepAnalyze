@@ -391,13 +391,13 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       // Get the plugin manager and resolve the skill
       const pluginManager = await getPluginManager();
 
-      const skill = pluginManager.getSkill(body.skillId);
+      const skill = await pluginManager.getSkill(body.skillId);
       if (!skill) {
         return c.json({ error: `Skill "${body.skillId}" not found.` }, 404);
       }
 
       // Resolve the system prompt with provided variables
-      const resolvedPrompt = pluginManager.resolveSkillPrompt(
+      const resolvedPrompt = await pluginManager.resolveSkillPrompt(
         body.skillId,
         body.variables,
       );

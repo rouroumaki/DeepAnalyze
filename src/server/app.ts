@@ -393,7 +393,7 @@ export function createApp(): Hono {
       try {
         console.log("[ChannelSystem] Initializing channel routes...");
         const { createChannelRoutes } = await import("./routes/channels.js");
-        channelRoutes = createChannelRoutes();
+        channelRoutes = await createChannelRoutes();
         console.log("[ChannelSystem] Channel routes ready.");
       } catch (err) {
         console.error("[ChannelSystem] Initialization failed:", err);

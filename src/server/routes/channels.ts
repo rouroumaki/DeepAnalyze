@@ -7,9 +7,10 @@ import { Hono } from "hono";
 import { ChannelManager } from "../../services/channels/channel-manager.js";
 import type { ChannelId } from "../../services/channels/types.js";
 
-export function createChannelRoutes(): Hono {
+export async function createChannelRoutes(): Promise<Hono> {
   const router = new Hono();
   const manager = new ChannelManager();
+  await manager.init();
 
   /** List all channels with metadata and status */
   router.get("/list", (c) => {
@@ -45,7 +46,7 @@ export function createChannelRoutes(): Hono {
     if (!body.id) return c.json({ error: "缺少渠道 ID" }, 400);
 
     try {
-      const updated = manager.updateConfig(body.id, body.config as any);
+      const updated = await manager.updateConfig(body.id, body.config as any);
       return c.json({ success: true, config: updated });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "更新失败" }, 400);

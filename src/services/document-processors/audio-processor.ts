@@ -144,9 +144,10 @@ export class AudioProcessor implements DocumentProcessor {
     apiKey?: string;
   } | null> {
     try {
-      const { SettingsStore } = await import("../../store/settings.js");
-      const store = new SettingsStore();
-      const models = store.getEnhancedModels();
+      const { getRepos } = await import("../../store/repos/index.js");
+      const repos = await getRepos();
+      const rawModels = await repos.settings.get("enhanced_models");
+      const models = rawModels ? JSON.parse(rawModels) : [];
       const asrModel = models.find(
         (m: Record<string, unknown>) =>
           m.modelType === "audio_transcribe" && m.enabled,
@@ -164,7 +165,8 @@ export class AudioProcessor implements DocumentProcessor {
       }
 
       // Look up the provider's apiBase
-      const provider = store.getProvider(providerId);
+      const rawProviders = await repos.settings.getProviderSettings();
+      const provider = rawProviders.providers?.find((p: any) => p.id === providerId);
       if (provider) {
         return {
           endpoint: provider.endpoint || "https://api.openai.com/v1",

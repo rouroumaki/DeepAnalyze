@@ -3,7 +3,7 @@
 // Manages lifecycle of all communication channel instances
 // =============================================================================
 
-import { SettingsStore } from "../../store/settings.js";
+import { getRepos } from "../../store/repos/index.js";
 import { IChannel } from "./channel-base.js";
 import {
   type ChannelId,
@@ -19,18 +19,30 @@ import {
 export class ChannelManager {
   private channels = new Map<string, IChannel>();
   private configs: ChannelsConfig;
-  private settingsStore = new SettingsStore();
+  private _repos: Awaited<ReturnType<typeof getRepos>> | null = null;
+
+  private async getReposInstance() {
+    if (!this._repos) this._repos = await getRepos();
+    return this._repos;
+  }
 
   constructor() {
-    this.configs = this.loadConfigs();
+    // Start with defaults; init() will load from DB
+    this.configs = defaultChannelsConfig();
+  }
+
+  /** Load persisted channel configs from the database. Call after construction. */
+  async init(): Promise<void> {
+    this.configs = await this.loadConfigs();
   }
 
   // -----------------------------------------------------------------------
   // Config management
   // -----------------------------------------------------------------------
 
-  private loadConfigs(): ChannelsConfig {
-    const raw = this.settingsStore.get("channels");
+  private async loadConfigs(): Promise<ChannelsConfig> {
+    const repos = await this.getReposInstance();
+    const raw = await repos.settings.get("channels");
     if (!raw) return defaultChannelsConfig();
     try {
       const parsed = JSON.parse(raw) as Partial<ChannelsConfig>;
@@ -41,8 +53,9 @@ export class ChannelManager {
     }
   }
 
-  private saveConfigs(): void {
-    this.settingsStore.set("channels", JSON.stringify(this.configs));
+  private async saveConfigs(): Promise<void> {
+    const repos = await this.getReposInstance();
+    await repos.settings.set("channels", JSON.stringify(this.configs));
   }
 
   getConfigs(): ChannelsConfig {
@@ -53,9 +66,9 @@ export class ChannelManager {
     return this.configs[id] ?? defaultChannelsConfig()[id];
   }
 
-  updateConfig<K extends ChannelId>(id: K, config: Partial<ChannelsConfig[K]>): ChannelsConfig[K] {
+  async updateConfig<K extends ChannelId>(id: K, config: Partial<ChannelsConfig[K]>): Promise<ChannelsConfig[K]> {
     this.configs[id] = { ...this.configs[id], ...config };
-    this.saveConfigs();
+    await this.saveConfigs();
 
     // Restart channel if it was running
     if (this.channels.has(id)) {

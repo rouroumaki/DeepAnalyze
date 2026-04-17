@@ -144,7 +144,7 @@ export function createPluginRoutes(): Hono {
         defaultConfig: body.defaultConfig,
       };
 
-      const state: PluginState = pm.registerPlugin(manifest);
+      const state: PluginState = await pm.registerPlugin(manifest);
       return c.json(state, 201);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -161,7 +161,7 @@ export function createPluginRoutes(): Hono {
       const pluginId = c.req.param("pluginId");
       const pm = await getPluginManager();
 
-      pm.enablePlugin(pluginId);
+      await pm.enablePlugin(pluginId);
 
       return c.json({ pluginId, enabled: true });
     } catch (err) {
@@ -179,7 +179,7 @@ export function createPluginRoutes(): Hono {
       const pluginId = c.req.param("pluginId");
       const pm = await getPluginManager();
 
-      pm.disablePlugin(pluginId);
+      await pm.disablePlugin(pluginId);
 
       return c.json({ pluginId, enabled: false });
     } catch (err) {
@@ -197,7 +197,7 @@ export function createPluginRoutes(): Hono {
       const pluginId = c.req.param("pluginId");
       const pm = await getPluginManager();
 
-      pm.unregisterPlugin(pluginId);
+      await pm.unregisterPlugin(pluginId);
 
       return c.json({ pluginId, deleted: true });
     } catch (err) {
@@ -224,7 +224,7 @@ export function createPluginRoutes(): Hono {
 
       const pm = await getPluginManager();
 
-      pm.updatePluginConfig(pluginId, body.config);
+      await pm.updatePluginConfig(pluginId, body.config);
 
       return c.json({ pluginId, config: body.config });
     } catch (err) {
@@ -242,7 +242,7 @@ export function createPluginRoutes(): Hono {
       const pm = await getPluginManager();
       const pluginId = c.req.query("pluginId");
 
-      const skills: SkillDefinition[] = pm.listSkills(pluginId || undefined);
+      const skills: SkillDefinition[] = await pm.listSkills(pluginId || undefined);
       return c.json({ skills });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -258,7 +258,7 @@ export function createPluginRoutes(): Hono {
     try {
       const skillId = c.req.param("skillId");
       const pm = await getPluginManager();
-      const skill = pm.getSkill(skillId);
+      const skill = await pm.getSkill(skillId);
 
       if (!skill) {
         return c.json({ error: `Skill "${skillId}" not found.` }, 404);
@@ -288,7 +288,7 @@ export function createPluginRoutes(): Hono {
 
       const pm = await getPluginManager();
 
-      const skill: SkillDefinition = pm.createSkill({
+      const skill: SkillDefinition = await pm.createSkill({
         name: body.name,
         pluginId: body.pluginId ?? null,
         description: body.description,
@@ -316,7 +316,7 @@ export function createPluginRoutes(): Hono {
       const skillId = c.req.param("skillId");
       const pm = await getPluginManager();
 
-      pm.deleteSkill(skillId);
+      await pm.deleteSkill(skillId);
 
       return c.json({ skillId, deleted: true });
     } catch (err) {
@@ -342,7 +342,7 @@ export function createPluginRoutes(): Hono {
       }
 
       const pm = await getPluginManager();
-      const prompt = pm.resolveSkillPrompt(skillId, body.variables);
+      const prompt = await pm.resolveSkillPrompt(skillId, body.variables);
 
       return c.json({ prompt });
     } catch (err) {

@@ -17,7 +17,7 @@ import { ContextManager } from "./context-manager.js";
 import { CompactionEngine } from "./compaction.js";
 import { MicroCompactor } from "./micro-compact.js";
 import { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
-import { SettingsStore } from "../../store/settings.js";
+import { getRepos } from "../../store/repos/index.js";
 import { DisplayResolver } from "../display-resolver.js";
 import type {
   AgentDefinition,
@@ -26,6 +26,7 @@ import type {
   AgentEvent,
   AgentProgressEntry,
 } from "./types.js";
+import { DEFAULT_AGENT_SETTINGS } from "./types.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -112,8 +113,11 @@ export class AgentRunner {
     // Load agent settings from DB
     let agentSettings;
     try {
-      const settingsStore = new SettingsStore();
-      agentSettings = settingsStore.getAgentSettings();
+      const repos = await getRepos();
+      const raw = await repos.settings.get("agent_settings");
+      agentSettings = raw ? JSON.parse(raw) : {};
+      // Merge with defaults
+      agentSettings = { ...DEFAULT_AGENT_SETTINGS, ...agentSettings };
     } catch (err) {
       console.error("[AgentRunner] Failed to load agent settings:", err instanceof Error ? err.message : String(err));
       throw err;

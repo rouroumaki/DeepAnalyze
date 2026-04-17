@@ -6,7 +6,7 @@
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
-import { DB } from "../../store/database.js";
+import { getRepos } from "../../store/repos/index.js";
 import { ToolRegistry } from "../agent/tool-registry.js";
 import type { AgentRunner } from "../agent/agent-runner.js";
 import type {
@@ -66,11 +66,11 @@ export class PluginManager {
    *
    * Returns the runtime PluginState.
    */
-  registerPlugin(manifest: PluginManifest): PluginState {
+  async registerPlugin(manifest: PluginManifest): Promise<PluginState> {
     const now = new Date().toISOString();
 
     // Merge default config with any stored config
-    const storedConfig = this.loadStoredConfig(manifest.id);
+    const storedConfig = await this.loadStoredConfig(manifest.id);
     const config = {
       ...(manifest.defaultConfig ?? {}),
       ...storedConfig,
@@ -117,7 +117,7 @@ export class PluginManager {
     this.loadedPlugins.set(manifest.id, state);
 
     // Persist to database
-    this.persistPlugin(manifest, true);
+    await this.persistPlugin(manifest, true);
 
     console.log(
       `[PluginManager] Registered plugin "${manifest.name}" (${manifest.id}) ` +
@@ -135,25 +135,24 @@ export class PluginManager {
    * Plugins that were persisted but whose manifests cannot be fully loaded
    * (missing execute functions) are loaded in a metadata-only state.
    */
-  loadFromDatabase(): void {
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare("SELECT * FROM plugins")
-      .all() as Record<string, unknown>[];
+  async loadFromDatabase(): Promise<void> {
+    const repos = await getRepos();
+    const rows = await repos.plugin.list();
 
     console.log(`[PluginManager] Loading ${rows.length} plugins from database...`);
 
     for (const row of rows) {
-      const manifest = this.loadManifestFromDb(row);
+      const config = row.config as Record<string, unknown> ?? {};
+      const manifest = this.loadManifestFromPlugin(row);
       if (!manifest) {
         console.warn(
           `[PluginManager] Could not load manifest for plugin row: ${row.id}`,
         );
         // Still track the plugin as disabled/metadata-only
         const state: PluginState = {
-          id: row.id as string,
-          name: row.name as string,
-          version: row.version as string,
+          id: row.id,
+          name: row.name,
+          version: row.version ?? "0.0.1",
           description: "",
           enabled: false,
           config: {},
@@ -162,7 +161,7 @@ export class PluginManager {
           loadedAt: new Date().toISOString(),
           error: "Manifest could not be loaded from database (tools/agents require re-registration at runtime)",
         };
-        this.loadedPlugins.set(row.id as string, state);
+        this.loadedPlugins.set(row.id, state);
         continue;
       }
 
@@ -194,7 +193,7 @@ export class PluginManager {
           description: manifest.description,
           author: manifest.author,
           enabled: true,
-          config: this.parseJson(row.config) ?? {},
+          config: typeof config === "object" ? config : {},
           toolNames,
           agentTypes,
           loadedAt: new Date().toISOString(),
@@ -212,7 +211,7 @@ export class PluginManager {
           description: manifest.description,
           author: manifest.author,
           enabled: false,
-          config: this.parseJson(row.config) ?? {},
+          config: typeof config === "object" ? config : {},
           toolNames: [],
           agentTypes: [],
           loadedAt: new Date().toISOString(),
@@ -232,7 +231,7 @@ export class PluginManager {
   // -----------------------------------------------------------------------
 
   /** Enable a plugin by ID. Re-registers its tools and agents. */
-  enablePlugin(pluginId: string): void {
+  async enablePlugin(pluginId: string): Promise<void> {
     const state = this.loadedPlugins.get(pluginId);
     const manifest = this.manifests.get(pluginId);
 
@@ -259,14 +258,14 @@ export class PluginManager {
     state.error = undefined;
 
     // Update database
-    const db = DB.getInstance().raw;
-    db.prepare("UPDATE plugins SET enabled = 1 WHERE id = ?").run(pluginId);
+    const repos = await getRepos();
+    await repos.plugin.updateEnabled(pluginId, true);
 
     console.log(`[PluginManager] Enabled plugin "${pluginId}"`);
   }
 
   /** Disable a plugin by ID. Removes its tools and agents. */
-  disablePlugin(pluginId: string): void {
+  async disablePlugin(pluginId: string): Promise<void> {
     const state = this.loadedPlugins.get(pluginId);
 
     if (!state) {
@@ -287,8 +286,8 @@ export class PluginManager {
     state.agentTypes = [];
 
     // Update database
-    const db = DB.getInstance().raw;
-    db.prepare("UPDATE plugins SET enabled = 0 WHERE id = ?").run(pluginId);
+    const repos = await getRepos();
+    await repos.plugin.updateEnabled(pluginId, false);
 
     console.log(`[PluginManager] Disabled plugin "${pluginId}"`);
   }
@@ -298,7 +297,7 @@ export class PluginManager {
   // -----------------------------------------------------------------------
 
   /** Unregister a plugin completely (DB + runtime). */
-  unregisterPlugin(pluginId: string): void {
+  async unregisterPlugin(pluginId: string): Promise<void> {
     const state = this.loadedPlugins.get(pluginId);
 
     if (!state) {
@@ -317,8 +316,8 @@ export class PluginManager {
     this.pluginAgentTypes.delete(pluginId);
 
     // Remove from database (CASCADE will delete associated skills)
-    const db = DB.getInstance().raw;
-    db.prepare("DELETE FROM plugins WHERE id = ?").run(pluginId);
+    const repos = await getRepos();
+    await repos.plugin.delete(pluginId);
 
     console.log(`[PluginManager] Unregistered plugin "${pluginId}"`);
   }
@@ -338,10 +337,10 @@ export class PluginManager {
   }
 
   /** Update plugin configuration. */
-  updatePluginConfig(
+  async updatePluginConfig(
     pluginId: string,
     config: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     const state = this.loadedPlugins.get(pluginId);
     if (!state) {
       throw new Error(`Plugin "${pluginId}" not found.`);
@@ -351,11 +350,8 @@ export class PluginManager {
     state.config = { ...state.config, ...config };
 
     // Persist to database
-    const db = DB.getInstance().raw;
-    db.prepare("UPDATE plugins SET config = ? WHERE id = ?").run(
-      JSON.stringify(state.config),
-      pluginId,
-    );
+    const repos = await getRepos();
+    await repos.plugin.updateConfig(pluginId, state.config);
 
     // If enabled and has tools, re-register tools with updated config
     if (state.enabled) {
@@ -373,68 +369,52 @@ export class PluginManager {
   // -----------------------------------------------------------------------
 
   /** Create a new skill. */
-  createSkill(skill: Omit<SkillDefinition, "id">): SkillDefinition {
+  async createSkill(skill: Omit<SkillDefinition, "id">): Promise<SkillDefinition> {
     const id = randomUUID();
     const fullSkill: SkillDefinition = { id, ...skill };
 
-    const db = DB.getInstance().raw;
-    db.prepare(
-      `INSERT INTO skills (id, name, plugin_id, description, config, created_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-    ).run(
+    const repos = await getRepos();
+    await repos.skill.create({
       id,
-      skill.name,
-      skill.pluginId,
-      skill.description,
-      JSON.stringify({
+      name: skill.name,
+      pluginId: skill.pluginId ?? "",
+      description: skill.description,
+      config: {
         systemPrompt: skill.systemPrompt,
         tools: skill.tools,
         variables: skill.variables,
         modelRole: skill.modelRole,
         maxTurns: skill.maxTurns,
         config: skill.config,
-      }),
-    );
+      },
+    });
 
     console.log(`[PluginManager] Created skill "${skill.name}" (${id})`);
     return fullSkill;
   }
 
   /** Get a skill by ID. */
-  getSkill(skillId: string): SkillDefinition | undefined {
-    const db = DB.getInstance().raw;
-    const row = db
-      .prepare("SELECT * FROM skills WHERE id = ?")
-      .get(skillId) as Record<string, unknown> | undefined;
+  async getSkill(skillId: string): Promise<SkillDefinition | undefined> {
+    const repos = await getRepos();
+    const row = await repos.skill.get(skillId);
 
     if (!row) return undefined;
-    return this.rowToSkill(row);
+    return this.repoSkillToDefinition(row);
   }
 
   /** List all skills, optionally filtered by plugin. */
-  listSkills(pluginId?: string): SkillDefinition[] {
-    const db = DB.getInstance().raw;
-    let rows: Record<string, unknown>[];
-
-    if (pluginId) {
-      rows = db
-        .prepare("SELECT * FROM skills WHERE plugin_id = ? ORDER BY created_at DESC")
-        .all(pluginId) as Record<string, unknown>[];
-    } else {
-      rows = db
-        .prepare("SELECT * FROM skills ORDER BY created_at DESC")
-        .all() as Record<string, unknown>[];
-    }
-
-    return rows.map((row) => this.rowToSkill(row));
+  async listSkills(pluginId?: string): Promise<SkillDefinition[]> {
+    const repos = await getRepos();
+    const rows = await repos.skill.list(pluginId);
+    return rows.map((row) => this.repoSkillToDefinition(row));
   }
 
   /** Delete a skill by ID. */
-  deleteSkill(skillId: string): void {
-    const db = DB.getInstance().raw;
-    const result = db.prepare("DELETE FROM skills WHERE id = ?").run(skillId);
+  async deleteSkill(skillId: string): Promise<void> {
+    const repos = await getRepos();
+    const deleted = await repos.skill.delete(skillId);
 
-    if (result.changes === 0) {
+    if (!deleted) {
       throw new Error(`Skill "${skillId}" not found.`);
     }
 
@@ -445,11 +425,11 @@ export class PluginManager {
    * Resolve a skill's system prompt by filling in variable values.
    * Replaces {{variableName}} placeholders with provided values.
    */
-  resolveSkillPrompt(
+  async resolveSkillPrompt(
     skillId: string,
     variables: Record<string, string>,
-  ): string {
-    const skill = this.getSkill(skillId);
+  ): Promise<string> {
+    const skill = await this.getSkill(skillId);
     if (!skill) {
       throw new Error(`Skill "${skillId}" not found.`);
     }
@@ -583,13 +563,13 @@ export class PluginManager {
   // -----------------------------------------------------------------------
 
   /** Persist a plugin to the database. */
-  private persistPlugin(manifest: PluginManifest, enabled: boolean): void {
-    const db = DB.getInstance().raw;
+  private async persistPlugin(manifest: PluginManifest, enabled: boolean): Promise<void> {
+    const repos = await getRepos();
 
     // Serialize the full manifest into the config JSON so we can restore it.
     // Note: The execute functions cannot be serialized; they are lost and
     // must be re-registered at runtime.
-    const configJson = JSON.stringify({
+    const configJson: Record<string, unknown> = {
       description: manifest.description,
       author: manifest.author,
       tools: (manifest.tools ?? []).map((t) => ({
@@ -608,37 +588,33 @@ export class PluginManager {
       })),
       configSchema: manifest.configSchema,
       defaultConfig: manifest.defaultConfig,
-    });
+    };
 
-    // Upsert: INSERT OR REPLACE
-    db.prepare(
-      `INSERT OR REPLACE INTO plugins (id, name, version, enabled, config, created_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-    ).run(
-      manifest.id,
-      manifest.name,
-      manifest.version,
-      enabled ? 1 : 0,
-      configJson,
-    );
+    await repos.plugin.upsert({
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      enabled,
+      config: configJson,
+    });
   }
 
   /**
-   * Load a plugin's manifest from the database config JSON.
+   * Load a plugin's manifest from a plugin repo row.
    * Note: Tool execute functions are NOT restored (cannot be serialized).
    * The manifest returned will have tools without execute functions.
    */
-  private loadManifestFromDb(
-    row: Record<string, unknown>,
+  private loadManifestFromPlugin(
+    row: { id: string; name: string; version: string; config: Record<string, unknown> | null },
   ): PluginManifest | null {
     try {
-      const config = this.parseJson(row.config);
+      const config = row.config;
       if (!config) return null;
 
       return {
-        id: row.id as string,
-        name: row.name as string,
-        version: row.version as string,
+        id: row.id,
+        name: row.name,
+        version: row.version,
         description: (config.description as string) ?? "",
         author: config.author as string | undefined,
         tools: Array.isArray(config.tools)
@@ -682,44 +658,31 @@ export class PluginManager {
   }
 
   /** Load stored config for a plugin from the database. */
-  private loadStoredConfig(pluginId: string): Record<string, unknown> | null {
+  private async loadStoredConfig(pluginId: string): Promise<Record<string, unknown> | null> {
     try {
-      const db = DB.getInstance().raw;
-      const row = db
-        .prepare("SELECT config FROM plugins WHERE id = ?")
-        .get(pluginId) as Record<string, unknown> | undefined;
+      const repos = await getRepos();
+      const row = await repos.plugin.get(pluginId);
 
       if (!row?.config) return null;
 
-      const parsed = this.parseJson(row.config);
       // The stored config JSON contains manifest metadata too.
       // We only want the plugin-specific config values, not the manifest.
-      // For now, return the full parsed config and let callers decide.
-      return parsed;
+      // For now, return the full config and let callers decide.
+      return row.config;
     } catch {
       return null;
     }
   }
 
-  /** Safely parse JSON, returning null on failure. */
-  private parseJson(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== "string") return null;
-    try {
-      return JSON.parse(value) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Convert a database row to a SkillDefinition. */
-  private rowToSkill(row: Record<string, unknown>): SkillDefinition {
-    const config = this.parseJson(row.config) ?? {};
+  /** Convert a repo Skill row to a SkillDefinition. */
+  private repoSkillToDefinition(row: { id: string; name: string; pluginId: string; description?: string; config: Record<string, unknown> | null }): SkillDefinition {
+    const config = row.config ?? {};
 
     return {
-      id: row.id as string,
-      name: row.name as string,
-      pluginId: (row.plugin_id as string) ?? null,
-      description: (row.description as string) ?? "",
+      id: row.id,
+      name: row.name,
+      pluginId: row.pluginId ?? null,
+      description: row.description ?? "",
       systemPrompt: (config.systemPrompt as string) ?? "",
       tools: (config.tools as string[]) ?? ["*"],
       variables: config.variables as SkillVariable[] | undefined,

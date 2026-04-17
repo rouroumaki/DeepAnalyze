@@ -1,5 +1,4 @@
-import type pg from 'pg';
-import { getPool } from '../store/pg';
+import { getRepos } from '../store/repos/index.js';
 
 export interface DisplayInfo {
   originalName: string;
@@ -19,15 +18,10 @@ const FILE_TYPE_ICONS: Record<string, string> = {
 
 /**
  * Resolves internal docId to user-visible display names.
- * Queries documents + knowledge_bases tables, with in-memory cache.
+ * Queries documents + knowledge_bases tables via PG repos, with in-memory cache.
  */
 export class DisplayResolver {
-  private poolPromise: Promise<pg.Pool>;
   private cache: Map<string, DisplayInfo> = new Map();
-
-  constructor() {
-    this.poolPromise = getPool();
-  }
 
   /** Resolve a single docId to its display info. */
   async resolve(docId: string): Promise<DisplayInfo> {
@@ -44,7 +38,7 @@ export class DisplayResolver {
     };
   }
 
-  /** Resolve multiple docIds in one query to avoid N+1. */
+  /** Resolve multiple docIds using repos to avoid N+1. */
   async resolveBatch(docIds: string[]): Promise<Record<string, DisplayInfo>> {
     const uncached = docIds.filter(id => !this.cache.has(id));
     const result: Record<string, DisplayInfo> = {};
@@ -56,31 +50,23 @@ export class DisplayResolver {
     }
 
     if (uncached.length > 0) {
-      const pool = await this.poolPromise;
-      const { rows } = await pool.query(
-        `SELECT d.id, d.filename as original_name, kb.name as kb_name,
-                d.file_type
-         FROM documents d
-         JOIN knowledge_bases kb ON kb.id = d.kb_id
-         WHERE d.id = ANY($1)`,
-        [uncached],
-      );
+      const repos = await getRepos();
 
-      for (const row of rows) {
-        const info: DisplayInfo = {
-          originalName: row.original_name,
-          kbName: row.kb_name,
-          displayLabel: `${row.kb_name}/${row.original_name}`,
-          fileType: row.file_type ?? '',
-          modalityIcon: FILE_TYPE_ICONS[row.file_type] ?? '📄',
-        };
-        this.cache.set(row.id, info);
-        result[row.id] = info;
-      }
-
-      // Fill in fallbacks for uncached IDs not found in DB
       for (const id of uncached) {
-        if (!result[id]) {
+        const doc = await repos.document.getById(id);
+        if (doc) {
+          const kb = doc.kb_id ? await repos.knowledgeBase.get(doc.kb_id) : undefined;
+          const kbName = kb?.name ?? '';
+          const info: DisplayInfo = {
+            originalName: doc.filename,
+            kbName,
+            displayLabel: `${kbName}/${doc.filename}`,
+            fileType: doc.file_type ?? '',
+            modalityIcon: FILE_TYPE_ICONS[doc.file_type] ?? '📄',
+          };
+          this.cache.set(id, info);
+          result[id] = info;
+        } else {
           const fallback: DisplayInfo = {
             originalName: id,
             kbName: '',

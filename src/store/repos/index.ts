@@ -12,6 +12,18 @@ import { PgAnchorRepo } from './anchor';
 import { PgWikiPageRepo } from './wiki-page';
 import { PgDocumentRepo } from './document';
 import { PgEmbeddingRepo } from './embedding';
+import { PgSessionRepo } from './session';
+import { PgMessageRepo } from './message';
+import { PgKnowledgeBaseRepo } from './knowledge-base';
+import { PgWikiLinkRepo } from './wiki-link';
+import { PgSettingsRepo } from './settings';
+import { PgReportRepo } from './report';
+import { PgAgentTeamRepo } from './agent-team';
+import { PgCronJobRepo } from './cron-job';
+import { PgPluginRepo } from './plugin';
+import { PgSkillRepo } from './skill';
+import { PgSessionMemoryRepo } from './session-memory';
+import { PgAgentTaskRepo } from './agent-task';
 
 let cachedRepos: RepoSet | null = null;
 let initPromise: Promise<RepoSet> | null = null;
@@ -31,19 +43,18 @@ export async function getRepos(): Promise<RepoSet> {
         wikiPage: new PgWikiPageRepo(pool),
         document: new PgDocumentRepo(pool),
         embedding: new PgEmbeddingRepo(pool),
-        // Placeholder repos - will be replaced with real implementations in Phase 2
-        session: null as any,
-        message: null as any,
-        knowledgeBase: null as any,
-        wikiLink: null as any,
-        settings: null as any,
-        report: null as any,
-        agentTeam: null as any,
-        cronJob: null as any,
-        plugin: null as any,
-        skill: null as any,
-        sessionMemory: null as any,
-        agentTask: null as any,
+        session: new PgSessionRepo(pool),
+        message: new PgMessageRepo(pool),
+        knowledgeBase: new PgKnowledgeBaseRepo(pool),
+        wikiLink: new PgWikiLinkRepo(pool),
+        settings: new PgSettingsRepo(pool),
+        report: new PgReportRepo(pool),
+        agentTeam: new PgAgentTeamRepo(pool),
+        cronJob: new PgCronJobRepo(pool),
+        plugin: new PgPluginRepo(pool),
+        skill: new PgSkillRepo(pool),
+        sessionMemory: new PgSessionMemoryRepo(pool),
+        agentTask: new PgAgentTaskRepo(pool),
       };
       return cachedRepos;
     })();

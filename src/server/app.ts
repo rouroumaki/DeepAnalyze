@@ -18,21 +18,12 @@ import { createSearchRoutes } from "./routes/search.js";
 import { createAgentTeamRoutes } from "./routes/agent-teams.js";
 import { createPreviewRoutes } from "./routes/preview.js";
 import { createSearchTestRoutes } from "./routes/search-test.js";
-import { migrateReports } from "../store/reports.js";
-import { migrateAgentTeams } from "../store/agent-teams.js";
-import { DB } from "../store/database.js";
 
 // Frontend static files directory (built by `npm run build` in frontend/)
 const FRONTEND_DIST = resolve(import.meta.dirname ?? __dirname, "../../frontend/dist");
 
 export function createApp(): Hono {
   const app = new Hono();
-
-  // Run report schema migration (safe to call multiple times)
-  migrateReports(DB.getInstance().raw);
-
-  // Run agent team schema migration (safe to call multiple times)
-  migrateAgentTeams(DB.getInstance().raw);
 
   // Global error handler (must be registered before routes)
   app.onError(errorHandler);

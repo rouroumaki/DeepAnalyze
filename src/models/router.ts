@@ -24,7 +24,24 @@ import {
   OpenAICompatibleProvider,
   type OpenAICompatibleOptions,
 } from "./openai-compatible";
-import type { ProviderConfig } from "../store/settings.js";
+import type { ProviderConfig } from "../store/repos/index.js";
+
+// ---------------------------------------------------------------------------
+// Global config version counter — incremented when settings change via API.
+// Each ModelRouter instance checks this on each call and auto-reloads if stale.
+// ---------------------------------------------------------------------------
+
+let configVersion = 0;
+
+/**
+ * Increment the global config version. Called by the Settings API after
+ * provider/defaults/enhanced-model changes. All ModelRouter instances will
+ * reload on their next operation.
+ */
+export function bumpConfigVersion(): void {
+  configVersion++;
+  console.log(`[ModelRouter] Config version bumped to ${configVersion}`);
+}
 
 // ---------------------------------------------------------------------------
 // ModelRouter
@@ -36,7 +53,9 @@ export class ModelRouter {
   /** Maps provider IDs to provider names for role resolution */
   private providerIdToName = new Map<string, string>();
   /** Default role assignments from DB settings */
-  private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string } | null = null;
+  private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string; tts: string; image_gen: string; video_gen: string; music_gen: string } | null = null;
+  /** Config version at the time of last initialization */
+  private loadedVersion = -1;
 
   // -----------------------------------------------------------------------
   // Initialization
@@ -52,12 +71,14 @@ export class ModelRouter {
     // Try database settings first
     const dbLoaded = await this.tryLoadFromDatabase();
     if (dbLoaded) {
+      this.loadedVersion = configVersion;
       console.log("[ModelRouter] Loaded provider config from database");
       return;
     }
 
     // Fallback to YAML config
     this.loadFromYaml(configPath);
+    this.loadedVersion = configVersion;
     console.log("[ModelRouter] Loaded provider config from YAML file");
   }
 
@@ -78,13 +99,27 @@ export class ModelRouter {
   // -----------------------------------------------------------------------
 
   /**
+   * Ensure the router has the latest config. Auto-reloads if the global
+   * config version has changed since last initialization.
+   */
+  async ensureCurrent(): Promise<void> {
+    if (this.loadedVersion < configVersion) {
+      await this.reload();
+    }
+  }
+
+  /**
    * Return a provider by its config name, or the default main provider
    * if no name is given.
    */
   getProvider(name?: string): ModelProvider {
     if (!this.config && this.dbDefaults) {
       // Using database config - resolve by ID or default
-      const providerId = name ?? this.dbDefaults.main;
+      let providerId = name ?? this.dbDefaults.main;
+      // If no default configured, fall back to first available provider
+      if (!providerId && this.providers.size > 0) {
+        providerId = this.providers.keys().next().value;
+      }
       const provider = this.providers.get(providerId);
       if (!provider) {
         const available = [...this.providers.keys()].join(", ");
@@ -118,6 +153,7 @@ export class ModelRouter {
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): Promise<ChatResponse> {
+    await this.ensureCurrent();
     // options.model is a provider lookup key (e.g. "minimax"), NOT the API model name.
     // Strip it before forwarding to the provider so the provider uses its own defaultModel.
     const { model: _providerKey, ...providerOptions } = options;
@@ -128,6 +164,7 @@ export class ModelRouter {
     messages: ChatMessage[],
     options: ChatOptions = {},
   ): AsyncGenerator<StreamChunk> {
+    await this.ensureCurrent();
     const { model: _providerKey, ...providerOptions } = options;
     const provider = this.getProvider(options.model);
     yield* provider.chatStream(messages, providerOptions);
@@ -146,7 +183,10 @@ export class ModelRouter {
     if (this.dbDefaults) {
       const modelId = this.dbDefaults[role];
       if (modelId) return modelId;
-      return this.dbDefaults.main;
+      if (this.dbDefaults.main) return this.dbDefaults.main;
+      // No default configured — fall back to first available provider
+      const firstId = this.providers.keys().next().value;
+      if (firstId) return firstId;
     }
 
     // YAML config path
@@ -182,30 +222,33 @@ export class ModelRouter {
 
   private async tryLoadFromDatabase(): Promise<boolean> {
     try {
-      // Dynamic import to avoid circular dependency at module load time.
-      // DB singleton is initialized in main.ts before the ModelRouter.
-      const { DB } = await import("../store/database.js");
-      if (!DB.isReady()) return false;
-
-      const db = DB.getInstance();
-
-      // Check if the settings table exists yet
-      const table = db.raw
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
-        .get() as { name: string } | undefined;
-      if (!table) return false;
-
-      const row = db.raw
-        .prepare("SELECT value FROM settings WHERE key = 'providers'")
-        .get() as { value: string } | undefined;
-      if (!row) return false;
-
-      const settings = JSON.parse(row.value) as {
-        providers: ProviderConfig[];
-        defaults: { main: string; summarizer: string; embedding: string; vlm: string };
-      };
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      const settings = await repos.settings.getProviderSettings();
 
       if (!settings.providers || settings.providers.length === 0) return false;
+
+      // Clean up stale "default" provider seeded by migration 004 (now removed).
+      // It pointed to localhost:11434 with model "qwen2.5-14b" and no API key.
+      let changed = false;
+      settings.providers = settings.providers.filter((p: ProviderConfig) => {
+        if (p.id === "default" && (!p.apiKey || p.apiKey === "") && p.endpoint?.includes("localhost:11434")) {
+          console.log("[ModelRouter] Removing stale 'default' provider (migration seed)");
+          changed = true;
+          return false;
+        }
+        return true;
+      });
+      // Also clear defaults references to the removed "default" provider
+      if (changed) {
+        const defaults = settings.defaults as unknown as Record<string, string>;
+        for (const key of Object.keys(defaults)) {
+          if (defaults[key] === "default") {
+            defaults[key] = "";
+          }
+        }
+        await repos.settings.saveProviderSettings(settings);
+      }
 
       // Clear and rebuild from DB config
       this.providers.clear();
@@ -307,6 +350,8 @@ export class ModelRouter {
       apiKey: p.apiKey || undefined,
       model: p.model,
       maxTokens: p.maxTokens,
+      temperature: p.temperature,
+      topP: p.topP,
     };
     return new OpenAICompatibleProvider(options);
   }

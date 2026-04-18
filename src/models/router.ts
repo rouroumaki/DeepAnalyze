@@ -24,6 +24,7 @@ import {
   OpenAICompatibleProvider,
   type OpenAICompatibleOptions,
 } from "./openai-compatible";
+import { getProviderMetadata } from "./provider-registry";
 import type { ProviderConfig } from "../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
@@ -343,8 +344,10 @@ export class ModelRouter {
   }
 
   private createProviderFromConfig(p: ProviderConfig): ModelProvider {
-    // All provider types use OpenAI-compatible protocol for now
-    // (Ollama, vLLM, LM Studio, LiteLLM, OpenAI, DeepSeek, etc.)
+    // Look up thinking config from registry if available
+    const meta = getProviderMetadata(p.id);
+    const defaultModel = meta?.models.find(m => m.id === p.model);
+
     const options: OpenAICompatibleOptions = {
       name: p.id,
       endpoint: p.endpoint,
@@ -353,6 +356,11 @@ export class ModelRouter {
       maxTokens: p.maxTokens,
       temperature: p.temperature,
       topP: p.topP,
+      topK: p.topK,
+      frequencyPenalty: p.frequencyPenalty,
+      presencePenalty: p.presencePenalty,
+      thinkingEnabled: p.thinkingEnabled,
+      thinkingConfig: defaultModel?.thinkingConfig,
     };
     return new OpenAICompatibleProvider(options);
   }

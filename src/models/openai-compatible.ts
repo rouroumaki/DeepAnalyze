@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   ChatOptions,
   ChatResponse,
+  ContentPart,
   ModelProvider,
   StreamChunk,
   ToolCall,
@@ -37,6 +38,31 @@ export interface OpenAICompatibleOptions {
 
   /** Default maximum tokens for responses. */
   maxTokens: number;
+
+  /** Default sampling temperature (0-2). */
+  temperature?: number;
+
+  /** Default nucleus sampling threshold (0-1). */
+  topP?: number;
+
+  /** Default top-k sampling. */
+  topK?: number;
+
+  /** Default frequency penalty. */
+  frequencyPenalty?: number;
+
+  /** Default presence penalty. */
+  presencePenalty?: number;
+
+  /** Whether thinking/reasoning mode is enabled by default. */
+  thinkingEnabled?: boolean;
+
+  /** Configuration for passing thinking/reasoning parameters. */
+  thinkingConfig?: {
+    type: 'extra_body' | 'top_level';
+    field: string;
+    values: { enabled: unknown; disabled: unknown };
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +80,7 @@ interface OpenAITool {
 
 interface OpenAIMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | ContentPart[] | null;
   tool_call_id?: string;
   tool_calls?: {
     id: string;
@@ -98,6 +124,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly apiKey: string | undefined;
   private readonly defaultModel: string;
   private readonly defaultMaxTokens: number;
+  private readonly defaultTemperature: number | undefined;
+  private readonly defaultTopP: number | undefined;
+  private readonly defaultTopK: number | undefined;
+  private readonly defaultFrequencyPenalty: number | undefined;
+  private readonly defaultPresencePenalty: number | undefined;
+  private readonly defaultThinkingEnabled: boolean | undefined;
+  private readonly thinkingConfig: OpenAICompatibleOptions['thinkingConfig'];
 
   constructor(options: OpenAICompatibleOptions) {
     this.name = options.name;
@@ -106,6 +139,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.apiKey = options.apiKey;
     this.defaultModel = options.model;
     this.defaultMaxTokens = options.maxTokens;
+    this.defaultTemperature = options.temperature;
+    this.defaultTopP = options.topP;
+    this.defaultTopK = options.topK;
+    this.defaultFrequencyPenalty = options.frequencyPenalty;
+    this.defaultPresencePenalty = options.presencePenalty;
+    this.defaultThinkingEnabled = options.thinkingEnabled;
+    this.thinkingConfig = options.thinkingConfig;
   }
 
   // -----------------------------------------------------------------------
@@ -368,10 +408,35 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     if (options.temperature !== undefined) {
       body.temperature = options.temperature;
+    } else if (this.defaultTemperature !== undefined) {
+      body.temperature = this.defaultTemperature;
+    }
+
+    if (this.defaultTopP !== undefined) {
+      body.top_p = this.defaultTopP;
     }
 
     if (options.tools && options.tools.length > 0) {
       body.tools = this.formatTools(options.tools);
+    }
+
+    // Thinking/reasoning parameter injection
+    if (this.defaultThinkingEnabled && this.thinkingConfig) {
+      const value = this.defaultThinkingEnabled
+        ? this.thinkingConfig.values.enabled
+        : this.thinkingConfig.values.disabled;
+      body[this.thinkingConfig.field] = value;
+    }
+
+    // Optional sampling parameters
+    if (this.defaultTopK !== undefined) {
+      body.top_k = this.defaultTopK;
+    }
+    if (this.defaultFrequencyPenalty !== undefined) {
+      body.frequency_penalty = this.defaultFrequencyPenalty;
+    }
+    if (this.defaultPresencePenalty !== undefined) {
+      body.presence_penalty = this.defaultPresencePenalty;
     }
 
     return body;

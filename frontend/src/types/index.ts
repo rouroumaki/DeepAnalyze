@@ -112,6 +112,8 @@ export interface ProviderDefaults {
   image_gen: string;
   video_gen: string;
   music_gen: string;
+  audio_transcribe?: string;
+  video_understand?: string;
 }
 
 export interface ProviderSettings {

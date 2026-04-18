@@ -9,22 +9,31 @@ import { useToast } from "../../hooks/useToast";
 import { MainModelConfig } from "./MainModelConfig";
 import { SubModelConfig } from "./SubModelConfig";
 import { EmbeddingModelConfig } from "./EmbeddingModelConfig";
+import { ASRModelConfig } from "./ASRModelConfig";
+import { VideoUnderstandModelConfig } from "./VideoUnderstandModelConfig";
 import { EnhancedModelsConfig } from "./EnhancedModelsConfig";
+import { DoclingConfig } from "./DoclingConfig";
 import type { ProviderConfig, ProviderDefaults, ProviderSettings, ProviderMetadata } from "../../types/index";
 import {
   Bot,
   Sparkles,
   Binary,
+  Mic,
+  Video,
   Wand,
+  FileText,
 } from "lucide-react";
 
-type ModelTabId = "main" | "sub" | "embedding" | "enhanced";
+type ModelTabId = "main" | "sub" | "embedding" | "audio_transcribe" | "video_understand" | "enhanced" | "docling";
 
 const modelTabs: { id: ModelTabId; label: string; shortLabel: string; icon: React.ReactNode }[] = [
   { id: "main", label: "主模型", shortLabel: "主模型", icon: <Bot size={14} /> },
   { id: "sub", label: "辅助模型", shortLabel: "辅助", icon: <Sparkles size={14} /> },
   { id: "embedding", label: "嵌入模型", shortLabel: "嵌入", icon: <Binary size={14} /> },
+  { id: "audio_transcribe", label: "ASR 模型", shortLabel: "ASR", icon: <Mic size={14} /> },
+  { id: "video_understand", label: "视频理解", shortLabel: "视频", icon: <Video size={14} /> },
   { id: "enhanced", label: "增强模型", shortLabel: "增强", icon: <Wand size={14} /> },
+  { id: "docling", label: "文档处理", shortLabel: "文档", icon: <FileText size={14} /> },
 ];
 
 interface ModelsPanelProps {
@@ -61,6 +70,11 @@ export function ModelsPanel({ providers, settings, registry, onSettingsChanged }
       success: result.success,
       message: result.success ? "嵌入模型连接成功!" : (result.error ?? "连接失败"),
     };
+  };
+
+  const handleSaveProvider = async (provider: ProviderConfig) => {
+    await api.saveProvider(provider);
+    onSettingsChanged();
   };
 
   return (
@@ -100,16 +114,25 @@ export function ModelsPanel({ providers, settings, registry, onSettingsChanged }
 
       {/* Tab content */}
       {activeTab === "main" && (
-        <MainModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} />
+        <MainModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />
       )}
       {activeTab === "sub" && (
-        <SubModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} />
+        <SubModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />
       )}
       {activeTab === "embedding" && (
         <EmbeddingModelConfig providers={providers} defaults={defaults} onSave={handleEmbeddingSave} onTest={handleEmbeddingTest} />
       )}
+      {activeTab === "audio_transcribe" && (
+        <ASRModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />
+      )}
+      {activeTab === "video_understand" && (
+        <VideoUnderstandModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />
+      )}
       {activeTab === "enhanced" && (
         <EnhancedModelsConfig providers={providers} />
+      )}
+      {activeTab === "docling" && (
+        <DoclingConfig />
       )}
     </div>
   );

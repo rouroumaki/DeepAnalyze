@@ -31,6 +31,10 @@ export interface ModelConfigCardProps {
   testing?: boolean;
   testResult?: { success: boolean; message: string } | null;
   extra?: React.ReactNode;
+  /** Whether thinking/reasoning mode is enabled */
+  thinkingEnabled?: boolean;
+  /** Callback when thinking mode changes */
+  onThinkingChange?: (enabled: boolean) => void;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -61,7 +65,7 @@ export function ModelConfigCard({
   model,
   temperature,
   maxTokens,
-  maxTokensLimit = 32768,
+  maxTokensLimit = 131072,
   enabled,
   showEnable = false,
   providers,
@@ -71,6 +75,8 @@ export function ModelConfigCard({
   testing = false,
   testResult = null,
   extra,
+  thinkingEnabled,
+  onThinkingChange,
 }: ModelConfigCardProps) {
   const emit = (patch: Partial<Parameters<ModelConfigCardProps["onConfigChange"]>[0]>) => {
     onConfigChange({ providerId, model, temperature, maxTokens, enabled, ...patch });
@@ -174,6 +180,28 @@ export function ModelConfigCard({
             <span>创意 (2)</span>
           </div>
         </div>
+
+        {/* Thinking/Reasoning toggle */}
+        {(() => {
+          const meta = registry.find((r) => r.id === providerId);
+          const modelMeta = meta?.models?.find((m) => m.id === model);
+          return modelMeta?.thinkingSupport && modelMeta.thinkingSupport !== 'unsupported' ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginTop: "var(--space-1)" }}>
+              <label style={{ ...labelStyle, margin: 0 }}>
+                Thinking / 推理模式
+              </label>
+              <input
+                type="checkbox"
+                checked={thinkingEnabled}
+                onChange={(e) => onThinkingChange?.(e.target.checked)}
+                style={{ accentColor: "var(--interactive)" }}
+              />
+              {modelMeta.thinkingSupport === 'experimental' && (
+                <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>(实验性)</span>
+              )}
+            </div>
+          ) : null;
+        })()}
 
         {/* Max Tokens */}
         <div>

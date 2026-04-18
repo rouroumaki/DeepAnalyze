@@ -421,6 +421,7 @@ knowledgeRoutes.get("/kbs/:kbId/entities", async (c) => {
 const PAGE_TYPE_TO_LEVEL: Record<string, "L0" | "L1" | "L2"> = {
   abstract: "L0",
   overview: "L1",
+  structure: "L1",
   fulltext: "L2",
 };
 

@@ -459,6 +459,7 @@ export class Expander {
       case "abstract":
         return "L0";
       case "overview":
+      case "structure":
         return "L1";
       case "fulltext":
         return "L2";
@@ -481,7 +482,7 @@ export class Expander {
       case "L0":
         return "abstract";
       case "L1":
-        return "overview";
+        return "structure";
       case "L2":
         return "fulltext";
       case "raw":

@@ -478,7 +478,7 @@ export class Retriever {
     // Mapping from level to page_type values in the DB
     const levelMap: Record<string, string[]> = {
       L0: ["abstract"],
-      L1: ["overview"],
+      L1: ["overview", "structure"],
       L2: ["fulltext"],
     };
 

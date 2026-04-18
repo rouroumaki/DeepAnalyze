@@ -1,15 +1,21 @@
 // =============================================================================
 // DeepAnalyze - Audio Processor
-// Uses ASR (Whisper API compatible) for audio transcription.
-// Falls back gracefully when ASR is not configured.
+// Uses CapabilityDispatcher.transcribeAudio() for ASR with speaker diarization
+// via silence detection. Falls back gracefully when ASR is not configured.
 // =============================================================================
 
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
-import type { AudioRawData } from "./modality-types.js";
-import { DocTagsFormatters, formatTime } from "./modality-types.js";
+import type { AudioRawData, SpeakerTurn } from "./modality-types.js";
+import { DocTagsFormatters } from "./modality-types.js";
+
+/** Minimum silence gap (seconds) to treat as a speaker change boundary. */
+const SILENCE_GAP_THRESHOLD = 1.5;
+
+/** Sentence-splitting regex covering CJK and Latin punctuation plus newlines. */
+const SENTENCE_RE = /[。！？.!?\n]+/;
 
 export class AudioProcessor implements DocumentProcessor {
   private static readonly HANDLED_TYPES = new Set([
@@ -25,38 +31,79 @@ export class AudioProcessor implements DocumentProcessor {
   }
 
   async parse(filePath: string): Promise<ParsedContent> {
-    const duration = this.getDuration(filePath);
+    // ---- 1. ffprobe metadata ------------------------------------------------
+    const { duration, sampleRate, channels } = this.getAudioMetadata(filePath);
     const format = filePath.split(".").pop() ?? "unknown";
     const fileName = basename(filePath);
 
     let transcription = "";
+    let detectedLanguage: string | undefined;
 
+    // ---- 2. ASR via CapabilityDispatcher ------------------------------------
     try {
-      // Try to find an audio_transcribe enhanced model configuration
-      const asrConfig = await this.getAsrConfig();
+      const audioData = readFileSync(filePath).buffer as ArrayBuffer;
+      const { CapabilityDispatcher } = await import("../../models/capability-dispatcher.js");
+      const dispatcher = new CapabilityDispatcher();
 
-      if (asrConfig) {
-        transcription = await this.callWhisperApi(filePath, asrConfig);
-      } else {
-        transcription =
-          `[音频转写不可用 - 时长: ${duration}s, 格式: ${format}]\n\n` +
-          `未配置ASR模型。请在"增强模型"中添加 audio_transcribe 类型的模型，` +
-          `指向 OpenAI Whisper API 兼容端点。`;
-      }
+      const result = await dispatcher.transcribeAudio(audioData, fileName, {
+        language: undefined, // auto-detect
+      });
+
+      transcription = result.text || "";
+      detectedLanguage = result.language;
     } catch (err) {
-      transcription =
-        `[音频转写失败: ${err instanceof Error ? err.message : String(err)}]`;
+      const message = err instanceof Error ? err.message : String(err);
+      // If the error is about no provider configured, give a helpful message
+      if (message.includes("No audio transcription provider")) {
+        transcription = "";
+      } else {
+        transcription = `[音频转写失败: ${message}]`;
+      }
     }
 
-    // Build AudioRawData from transcription
-    // When ASR provides plain text without speaker info, create a single-turn fallback
+    // ---- 3. Fallback: ASR unavailable ---------------------------------------
+    if (!transcription && !detectedLanguage) {
+      const warning =
+        `[音频转写不可用 - 时长: ${duration}s, 格式: ${format}]\n\n` +
+        `未配置ASR模型。请在设置中为 "audio_transcribe" 角色配置 Whisper API 兼容端点。`;
+
+      const audioRaw: AudioRawData = {
+        duration,
+        sampleRate,
+        channels,
+        speakers: [],
+        turns: [],
+        diarizationMethod: "none",
+      };
+
+      return {
+        text: warning,
+        metadata: { sourceType: "audio", duration, format, fileName },
+        success: true,
+        raw: audioRaw,
+        doctags: "",
+        modality: "audio",
+      };
+    }
+
+    // ---- 4. Build turns & speaker diarization --------------------------------
+    const { turns, speakers, diarizationMethod } = this.buildTurnsWithDiarization(
+      transcription,
+      duration,
+    );
+
+    // ---- 5. Build AudioRawData -----------------------------------------------
     const audioRaw: AudioRawData = {
       duration,
-      speakers: [{ id: 'S', label: '说话者' }],
-      turns: this.splitTranscriptionToTurns(transcription, duration),
+      language: detectedLanguage,
+      sampleRate,
+      channels,
+      speakers,
+      turns,
+      diarizationMethod,
     };
 
-    const doctags = audioRaw.turns
+    const doctags = turns
       .map((turn) => DocTagsFormatters.audioTurn(turn))
       .join('\n');
 
@@ -70,203 +117,210 @@ export class AudioProcessor implements DocumentProcessor {
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Turn splitting & speaker diarization
+  // ---------------------------------------------------------------------------
+
   /**
-   * Split plain transcription text into time-windowed turns.
-   * Used when ASR doesn't provide speaker diarization.
+   * Split ASR text into sentences and assign speakers via silence-based
+   * diarization (Tier 1) or fall back to single-speaker (Tier 2).
+   *
+   * Tier 1: Sentences are distributed across the total duration proportional
+   *         to their character length. If the estimated gap between consecutive
+   *         sentences is >= SILENCE_GAP_THRESHOLD seconds, we treat it as a
+   *         speaker change and assign the next speaker label (S1, S2, S3...).
+   * Tier 2: If no gaps meet the threshold, all turns belong to a single speaker.
    */
-  private splitTranscriptionToTurns(transcription: string, duration: number): Array<{
-    speaker: string;
-    startTime: number;
-    endTime: number;
-    text: string;
-  }> {
-    if (!transcription || transcription.startsWith('[')) {
-      return [{
-        speaker: 'S',
-        startTime: 0,
-        endTime: duration || 0,
-        text: transcription,
-      }];
+  private buildTurnsWithDiarization(
+    text: string,
+    duration: number,
+  ): {
+    turns: SpeakerTurn[];
+    speakers: AudioRawData["speakers"];
+    diarizationMethod: "silence" | "none";
+  } {
+    if (!text || text.startsWith("[")) {
+      // Error or empty text: single placeholder turn
+      return {
+        turns: [{
+          speaker: "S1",
+          startTime: 0,
+          endTime: duration || 0,
+          text: text || "",
+        }],
+        speakers: [{ id: "S1", label: "说话者 1", totalDuration: duration || 0 }],
+        diarizationMethod: "none",
+      };
     }
 
-    // Split into ~30 second windows
-    const windowSize = 30;
-    const sentences = transcription.split(/[。！？\n]/).filter((s) => s.trim());
-    const turns: Array<{ speaker: string; startTime: number; endTime: number; text: string }> = [];
-    let currentText: string[] = [];
-    let windowStart = 0;
-    let charCount = 0;
+    // Split into sentences, keeping only non-empty fragments
+    const rawSentences = text.split(SENTENCE_RE);
+    const sentences: string[] = [];
+    for (const s of rawSentences) {
+      const trimmed = s.trim();
+      if (trimmed) sentences.push(trimmed);
+    }
 
-    // Rough estimate: 4 chars per second for Chinese speech
-    const charsPerSecond = 4;
+    if (sentences.length === 0) {
+      return {
+        turns: [{
+          speaker: "S1",
+          startTime: 0,
+          endTime: duration || 0,
+          text: text,
+        }],
+        speakers: [{ id: "S1", label: "说话者 1", totalDuration: duration || 0 }],
+        diarizationMethod: "none",
+      };
+    }
+
+    // ---- Estimate timestamps via proportional time allocation ----------------
+    const totalChars = sentences.reduce((sum, s) => sum + s.length, 0);
+    const effectiveDuration = duration > 0 ? duration : totalChars * 0.25; // fallback ~4 chars/sec
+
+    interface SentenceWithTime {
+      text: string;
+      startTime: number;
+      endTime: number;
+    }
+
+    const timed: SentenceWithTime[] = [];
+    let cursor = 0;
 
     for (const sentence of sentences) {
-      currentText.push(sentence.trim());
-      charCount += sentence.length;
-      const estimatedTime = charCount / charsPerSecond;
+      const proportion = sentence.length / totalChars;
+      const segmentDuration = proportion * effectiveDuration;
+      const start = cursor;
+      const end = cursor + segmentDuration;
+      timed.push({ text: sentence, startTime: start, endTime: end });
+      cursor = end;
+    }
 
-      if (estimatedTime - windowStart >= windowSize || sentence === sentences[sentences.length - 1]) {
-        turns.push({
-          speaker: 'S',
-          startTime: windowStart,
-          endTime: Math.min(estimatedTime, duration || estimatedTime),
-          text: currentText.join('。'),
-        });
-        windowStart = estimatedTime;
-        currentText = [];
+    // ---- Tier 1: Silence-based speaker diarization --------------------------
+    // Detect gaps >= threshold between consecutive segments and mark as speaker changes.
+    let speakerCount = 1;
+    const speakerIds: string[] = ["S1"]; // one per sentence, by index
+    let hadSilenceGap = false;
+
+    for (let i = 1; i < timed.length; i++) {
+      const gap = timed[i].startTime - timed[i - 1].endTime;
+      if (gap >= SILENCE_GAP_THRESHOLD) {
+        speakerCount++;
+        hadSilenceGap = true;
+      }
+      const currentSpeakerNum = hadSilenceGap ? speakerCount : 1;
+      speakerIds.push(`S${currentSpeakerNum}`);
+      // If we didn't actually find a gap, reset so all are S1
+    }
+
+    // Re-evaluate: if no gap was ever >= threshold, everything is one speaker
+    let diarizationMethod: "silence" | "none";
+    const finalSpeakerIds: string[] = [];
+
+    if (!hadSilenceGap) {
+      // Tier 2: single speaker
+      diarizationMethod = "none";
+      for (let i = 0; i < timed.length; i++) {
+        finalSpeakerIds.push("S1");
+      }
+    } else {
+      // Re-run with proper speaker tracking
+      diarizationMethod = "silence";
+      let currentSpeaker = 1;
+      finalSpeakerIds.push("S1");
+
+      for (let i = 1; i < timed.length; i++) {
+        const gap = timed[i].startTime - timed[i - 1].endTime;
+        if (gap >= SILENCE_GAP_THRESHOLD) {
+          currentSpeaker++;
+        }
+        finalSpeakerIds.push(`S${currentSpeaker}`);
       }
     }
 
-    if (currentText.length > 0) {
-      turns.push({
-        speaker: 'S',
-        startTime: windowStart,
-        endTime: duration || windowStart + windowSize,
-        text: currentText.join('。'),
-      });
+    // Group consecutive sentences from the same speaker into turns
+    const turns: SpeakerTurn[] = [];
+    const speakerDurations: Map<string, number> = new Map();
+
+    let i = 0;
+    while (i < timed.length) {
+      const speaker = finalSpeakerIds[i];
+      let turnStart = timed[i].startTime;
+      let turnEnd = timed[i].endTime;
+      const textParts: string[] = [timed[i].text];
+      let j = i + 1;
+
+      while (j < timed.length && finalSpeakerIds[j] === speaker) {
+        turnEnd = timed[j].endTime;
+        textParts.push(timed[j].text);
+        j++;
+      }
+
+      const turn: SpeakerTurn = {
+        speaker,
+        startTime: turnStart,
+        endTime: turnEnd,
+        text: textParts.join(" "),
+      };
+      turns.push(turn);
+
+      const dur = turnEnd - turnStart;
+      speakerDurations.set(speaker, (speakerDurations.get(speaker) ?? 0) + dur);
+
+      i = j;
     }
 
-    return turns.length > 0 ? turns : [{
-      speaker: 'S',
-      startTime: 0,
-      endTime: duration || 0,
-      text: transcription,
-    }];
+    // Build speakers list
+    const uniqueSpeakers = [...new Set(finalSpeakerIds)];
+    const speakers: AudioRawData["speakers"] = uniqueSpeakers.map((id) => ({
+      id,
+      label: `说话者 ${id.slice(1)}`,
+      totalDuration: speakerDurations.get(id) ?? 0,
+    }));
+
+    return { turns, speakers, diarizationMethod };
   }
 
+  // ---------------------------------------------------------------------------
+  // ffprobe helpers
+  // ---------------------------------------------------------------------------
+
   /**
-   * Get the ASR (audio_transcribe) enhanced model configuration.
-   * Returns endpoint, model, apiKey if configured, null otherwise.
+   * Get audio metadata (duration, sample rate, channels) via ffprobe.
+   * Returns 0 / undefined for fields that cannot be determined.
    */
-  private async getAsrConfig(): Promise<{
-    endpoint: string;
-    model: string;
-    apiKey?: string;
-  } | null> {
+  private getAudioMetadata(filePath: string): {
+    duration: number;
+    sampleRate?: number;
+    channels?: number;
+  } {
     try {
-      const { getRepos } = await import("../../store/repos/index.js");
-      const repos = await getRepos();
-      const rawModels = await repos.settings.get("enhanced_models");
-      const models = rawModels ? JSON.parse(rawModels) : [];
-      const asrModel = models.find(
-        (m: Record<string, unknown>) =>
-          m.modelType === "audio_transcribe" && m.enabled,
-      );
-      if (!asrModel) return null;
+      const duration = this.getFFProbeValue(filePath, "format=duration");
+      const sampleRateStr = this.getFFProbeValue(filePath, "stream=sample_rate");
+      const channelsStr = this.getFFProbeValue(filePath, "stream=channels");
 
-      // Get provider info for the endpoint and apiKey
-      const providerId = asrModel.providerId as string | undefined;
-      if (!providerId) {
-        // Use the model's endpoint directly if available
-        const endpoint = (asrModel as Record<string, unknown>).endpoint as string | undefined;
-        const apiKey = (asrModel as Record<string, unknown>).apiKey as string | undefined;
-        if (endpoint) return { endpoint, model: asrModel.model as string, apiKey };
-        return null;
-      }
-
-      // Look up the provider's apiBase
-      const rawProviders = await repos.settings.getProviderSettings();
-      const provider = rawProviders.providers?.find((p: any) => p.id === providerId);
-      if (provider) {
-        return {
-          endpoint: provider.endpoint || "https://api.openai.com/v1",
-          model: asrModel.model as string,
-          apiKey: provider.apiKey,
-        };
-      }
-
-      return null;
+      return {
+        duration: parseFloat(duration) || 0,
+        sampleRate: sampleRateStr ? parseInt(sampleRateStr, 10) || undefined : undefined,
+        channels: channelsStr ? parseInt(channelsStr, 10) || undefined : undefined,
+      };
     } catch {
-      return null;
+      return { duration: 0 };
     }
   }
 
   /**
-   * Call an OpenAI Whisper API compatible endpoint for transcription.
-   * Uses multipart/form-data to upload the audio file.
+   * Query a single ffprobe entry value.
    */
-  private async callWhisperApi(
-    filePath: string,
-    config: { endpoint: string; model: string; apiKey?: string },
-  ): Promise<string> {
-    const fileBuffer = readFileSync(filePath);
-    const fileName = basename(filePath);
-
-    // Build multipart form data
-    const boundary = `----FormBoundary${Date.now().toString(16)}`;
-    const parts: Buffer[] = [];
-
-    // Add file part
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-        `Content-Type: application/octet-stream\r\n\r\n`,
-      ),
-    );
-    parts.push(fileBuffer);
-    parts.push(Buffer.from("\r\n"));
-
-    // Add model part
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="model"\r\n\r\n${config.model}\r\n`,
-      ),
-    );
-
-    // Add language part (Chinese)
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="language"\r\n\r\nzh\r\n`,
-      ),
-    );
-
-    // Close boundary
-    parts.push(Buffer.from(`--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    // Build URL
-    const endpoint = config.endpoint.replace(/\/+$/, "");
-    const url = `${endpoint}/audio/transcriptions`;
-
-    const headers: Record<string, string> = {
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-    };
-    if (config.apiKey) {
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "unknown error");
-      throw new Error(`Whisper API returned ${response.status}: ${errorText}`);
-    }
-
-    const result = (await response.json()) as { text?: string };
-    return result.text || "[转写结果为空]";
-  }
-
-  /**
-   * Get audio file duration in seconds using ffprobe.
-   * Returns 0 if ffprobe is unavailable or fails.
-   */
-  private getDuration(filePath: string): number {
+  private getFFProbeValue(filePath: string, entry: string): string {
     try {
       const result = execSync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+        `ffprobe -v error -show_entries ${entry} -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
         { encoding: "utf-8", timeout: 10000 },
       );
-      return parseFloat(result.trim()) || 0;
+      return result.trim();
     } catch {
-      return 0;
+      return "";
     }
   }
 }

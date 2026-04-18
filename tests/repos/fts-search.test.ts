@@ -2,7 +2,7 @@
 // DeepAnalyze - PgFTSSearchRepo Integration Tests
 // =============================================================================
 // Integration tests that verify full-text search operations against a running
-// PostgreSQL instance with zhparser. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance with zhparser. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';

@@ -2,7 +2,7 @@
 // DeepAnalyze - PgEmbeddingRepo Integration Tests
 // =============================================================================
 // Integration tests that verify embedding CRUD operations against a running
-// PostgreSQL instance with pgvector. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance with pgvector. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -95,7 +95,7 @@ describe.skipIf(!pgAvailable)('PgEmbeddingRepo', () => {
     const pageId = uid();
     await insertPrerequisites(kbId, docId, pageId);
 
-    const dim = 8;
+    const dim = 1024;
     const vec = makeVector(dim, 42);
     const embId = uid();
     cleanupIds.embeddingIds.push(embId);
@@ -123,7 +123,7 @@ describe.skipIf(!pgAvailable)('PgEmbeddingRepo', () => {
     const pageId = uid();
     await insertPrerequisites(kbId, docId, pageId);
 
-    const dim = 8;
+    const dim = 1024;
     const embId1 = uid();
     cleanupIds.embeddingIds.push(embId1);
 
@@ -162,8 +162,8 @@ describe.skipIf(!pgAvailable)('PgEmbeddingRepo', () => {
     cleanupIds.embeddingIds.push(embId);
 
     await repo.upsert({
-      id: embId, page_id: pageId, model_name: 'delete-model', dimension: 8,
-      vector: makeVector(8, 99), text_chunk: 'To be deleted', chunk_index: 0,
+      id: embId, page_id: pageId, model_name: 'delete-model', dimension: 1024,
+      vector: makeVector(1024, 99), text_chunk: 'To be deleted', chunk_index: 0,
     });
 
     const before = await repo.getOrNone(pageId, 'delete-model', 0);

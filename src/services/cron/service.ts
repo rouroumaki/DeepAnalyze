@@ -4,18 +4,15 @@
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
-import { DB } from "../../store/database.js";
+import { getRepos, type CronJob } from "../../store/repos/index.js";
 import {
-  type CronJob,
   type CreateCronJobRequest,
   type UpdateCronJobRequest,
-  type CronJobRow,
-  rowToJob,
 } from "./types.js";
 
 export class CronService {
-  private get db() {
-    return DB.getInstance().raw;
+  private async getRepo() {
+    return (await getRepos()).cronJob;
   }
 
   /** Validate a 5-part cron expression */
@@ -121,136 +118,91 @@ export class CronService {
 
   // --- CRUD ---
 
-  createJob(data: CreateCronJobRequest): CronJob {
+  async createJob(data: CreateCronJobRequest): Promise<CronJob> {
     if (!this.validateSchedule(data.schedule)) {
       throw new Error("无效的 cron 表达式");
     }
 
-    const id = `cron_${randomUUID().slice(0, 8)}`;
-    const now = new Date().toISOString();
     const nextRun = this.calculateNextRun(data.schedule);
+    const repo = await this.getRepo();
 
-    this.db.prepare(`
-      INSERT INTO cron_jobs (id, name, schedule, message, enabled, channel, chat_id, deliver_response, next_run, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      data.name,
-      data.schedule,
-      data.message,
-      (data.enabled ?? true) ? 1 : 0,
-      data.channel ?? null,
-      data.chatId ?? null,
-      (data.deliverResponse ?? false) ? 1 : 0,
+    return repo.create({
+      name: data.name,
+      schedule: data.schedule,
+      message: data.message,
+      enabled: data.enabled ?? true,
+      channel: data.channel ?? null,
+      chatId: data.chatId ?? null,
+      deliverResponse: data.deliverResponse ?? false,
       nextRun,
-      now,
-      now,
-    );
-
-    return this.getJob(id)!;
+    });
   }
 
-  getJob(id: string): CronJob | null {
-    const row = this.db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(id) as CronJobRow | undefined;
-    return row ? rowToJob(row) : null;
+  async getJob(id: string): Promise<CronJob | null> {
+    const repo = await this.getRepo();
+    return (await repo.get(id)) ?? null;
   }
 
-  listJobs(): CronJob[] {
-    const rows = this.db.prepare("SELECT * FROM cron_jobs ORDER BY created_at DESC").all() as CronJobRow[];
-    return rows.map(rowToJob);
+  async listJobs(): Promise<CronJob[]> {
+    const repo = await this.getRepo();
+    return repo.list();
   }
 
-  updateJob(id: string, data: UpdateCronJobRequest): CronJob | null {
-    const existing = this.getJob(id);
+  async updateJob(id: string, data: UpdateCronJobRequest): Promise<CronJob | null> {
+    const repo = await this.getRepo();
+    const existing = await repo.get(id);
     if (!existing) return null;
 
     if (data.schedule && !this.validateSchedule(data.schedule)) {
       throw new Error("无效的 cron 表达式");
     }
 
-    const updates: string[] = [];
-    const values: unknown[] = [];
-
-    const fields: Record<string, unknown> = {
-      name: data.name,
-      schedule: data.schedule,
-      message: data.message,
-      enabled: data.enabled !== undefined ? (data.enabled ? 1 : 0) : undefined,
-      channel: data.channel,
-      chat_id: data.chatId,
-      deliver_response: data.deliverResponse !== undefined ? (data.deliverResponse ? 1 : 0) : undefined,
-    };
-
-    for (const [key, value] of Object.entries(fields)) {
-      if (value !== undefined) {
-        updates.push(`${key} = ?`);
-        values.push(value);
-      }
-    }
-
-    if (updates.length === 0) return existing;
+    const fields: Record<string, unknown> = {};
+    if (data.name !== undefined) fields.name = data.name;
+    if (data.schedule !== undefined) fields.schedule = data.schedule;
+    if (data.message !== undefined) fields.message = data.message;
+    if (data.enabled !== undefined) fields.enabled = data.enabled;
+    if (data.channel !== undefined) fields.channel = data.channel;
+    if (data.chatId !== undefined) fields.chatId = data.chatId;
+    if (data.deliverResponse !== undefined) fields.deliverResponse = data.deliverResponse;
 
     // Recalculate next_run if schedule changed
     if (data.schedule) {
-      const nextRun = this.calculateNextRun(data.schedule);
-      updates.push("next_run = ?");
-      values.push(nextRun);
+      fields.nextRun = this.calculateNextRun(data.schedule);
     }
 
-    updates.push("updated_at = datetime('now')");
-    values.push(id);
+    if (Object.keys(fields).length === 0) return existing;
 
-    this.db.prepare(`UPDATE cron_jobs SET ${updates.join(", ")} WHERE id = ?`).run(...values);
-
-    return this.getJob(id);
+    await repo.update(id, fields);
+    return (await repo.get(id)) ?? null;
   }
 
-  deleteJob(id: string): boolean {
-    const result = this.db.prepare("DELETE FROM cron_jobs WHERE id = ?").run(id);
-    return result.changes > 0;
+  async deleteJob(id: string): Promise<boolean> {
+    const repo = await this.getRepo();
+    return repo.delete(id);
   }
 
   /** Get jobs that are due to run (next_run <= now AND enabled) */
-  getDueJobs(): CronJob[] {
-    const now = new Date().toISOString();
-    const rows = this.db.prepare(
-      "SELECT * FROM cron_jobs WHERE enabled = 1 AND next_run <= ?"
-    ).all(now) as CronJobRow[];
-    return rows.map(rowToJob);
+  async getDueJobs(): Promise<CronJob[]> {
+    const repo = await this.getRepo();
+    return repo.getDueJobs(new Date());
   }
 
   /** Mark a job as completed */
-  markCompleted(id: string): void {
-    const job = this.getJob(id);
+  async markCompleted(id: string): Promise<void> {
+    const repo = await this.getRepo();
+    const job = await repo.get(id);
     if (!job) return;
     const nextRun = this.calculateNextRun(job.schedule);
-    this.db.prepare(`
-      UPDATE cron_jobs
-      SET last_run = datetime('now'),
-          last_status = 'success',
-          last_error = NULL,
-          run_count = run_count + 1,
-          next_run = ?,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRun, id);
+    await repo.markCompleted(id, new Date(nextRun));
   }
 
   /** Mark a job as failed */
-  markFailed(id: string, error: string): void {
-    const job = this.getJob(id);
+  async markFailed(id: string, error: string): Promise<void> {
+    const repo = await this.getRepo();
+    const job = await repo.get(id);
     if (!job) return;
     const nextRun = this.calculateNextRun(job.schedule);
-    this.db.prepare(`
-      UPDATE cron_jobs
-      SET last_run = datetime('now'),
-          last_status = 'failed',
-          last_error = ?,
-          run_count = run_count + 1,
-          error_count = error_count + 1,
-          next_run = ?,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(error, nextRun, id);
+    await repo.markFailed(id, error, new Date(nextRun));
   }
 }

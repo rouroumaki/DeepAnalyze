@@ -39,7 +39,7 @@ export class CronScheduler {
   /** Check for and execute due jobs */
   private async tick(): Promise<void> {
     try {
-      const dueJobs = this.service.getDueJobs();
+      const dueJobs = await this.service.getDueJobs();
       if (dueJobs.length === 0) return;
 
       console.log(`[CronScheduler] ${dueJobs.length} job(s) due`);
@@ -67,7 +67,7 @@ export class CronScheduler {
 
     try {
       // Get the job's message from the database
-      const job = this.service.getJob(jobId);
+      const job = await this.service.getJob(jobId);
       if (!job) {
         console.warn(`[CronScheduler] Job ${jobId} not found`);
         return;

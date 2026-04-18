@@ -1,6 +1,7 @@
 // =============================================================================
 // DeepAnalyze - Three-Layer Compilation Integration Test
 // Tests the full compilation pipeline: Raw → Structure → Abstract
+// Uses mocked PG repos to test compiler logic without a database.
 // =============================================================================
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -8,6 +9,15 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 // Mock dependencies before importing
 // ---------------------------------------------------------------------------
+
+const mockWikiPageCreate = vi.fn().mockResolvedValue({ id: 'mock-page', title: 'mock' });
+const mockWikiPageGetByDocAndType = vi.fn().mockImplementation(async (_docId: string, _pageType: string) => {
+  return {
+    id: `mock-page-${_pageType}`,
+    file_path: `/tmp/test-wiki/mock-${_pageType}.md`,
+    doc_id: _docId,
+  };
+});
 
 vi.mock('../src/models/router.js', () => ({
   ModelRouter: vi.fn().mockImplementation(function() {
@@ -32,41 +42,29 @@ vi.mock('../src/wiki/entity-extractor.js', () => ({
   }),
 }));
 
-vi.mock('../src/store/wiki-pages.js', () => ({
-  createWikiPage: vi.fn(),
-  getWikiPageByDoc: vi.fn().mockImplementation((_docId: string, _pageType: string) => {
-    // Return a mock page for overview/fulltext lookups
-    return {
-      id: `mock-page-${_pageType}`,
-      filePath: `/tmp/test-wiki/mock-${_pageType}.md`,
-      docId: _docId,
-    };
+vi.mock('../src/store/repos/index.js', () => ({
+  getRepos: vi.fn().mockResolvedValue({
+    wikiPage: {
+      create: mockWikiPageCreate,
+      getByDocAndType: mockWikiPageGetByDocAndType,
+      getByKbAndType: vi.fn().mockResolvedValue([]),
+      updateContent: vi.fn().mockResolvedValue(undefined),
+    },
+    document: {
+      updateStatus: vi.fn().mockResolvedValue(undefined),
+      updateStatusWithProcessing: vi.fn().mockResolvedValue(undefined),
+    },
+    anchor: {
+      batchInsert: vi.fn().mockResolvedValue(undefined),
+      updateStructurePageId: vi.fn().mockResolvedValue(undefined),
+    },
+    embedding: {
+      upsert: vi.fn().mockResolvedValue(undefined),
+    },
+    ftsSearch: {
+      upsertFTSEntry: vi.fn().mockResolvedValue(undefined),
+    },
   }),
-  getPageContent: vi.fn().mockImplementation((path: string) => {
-    // Return content based on the path
-    if (path.includes('overview')) {
-      return '# Document Overview\n\nThis is a test overview.\n\n标签：测试,文档';
-    }
-    return 'Test page content for abstract generation.';
-  }),
-}));
-
-vi.mock('../src/store/documents.js', () => ({
-  updateDocumentStatus: vi.fn(),
-}));
-
-vi.mock('../src/store/database.js', () => ({
-  DB: {
-    getInstance: vi.fn().mockReturnValue({
-      raw: {
-        prepare: vi.fn().mockReturnValue({
-          get: vi.fn().mockReturnValue(undefined),
-          all: vi.fn().mockReturnValue([]),
-          run: vi.fn(),
-        }),
-      },
-    }),
-  },
 }));
 
 vi.mock('node:fs', () => ({
@@ -86,10 +84,20 @@ vi.mock('../src/wiki/linker.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { WikiCompiler } from '../src/wiki/compiler.js';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { createWikiPage } from '../src/store/wiki-pages.js';
+import { writeFileSync } from 'node:fs';
 import type { ParsedContent } from '../src/services/document-processors/types.js';
 import { ModelRouter } from '../src/models/router.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get wikiPage.create calls filtered by page_type */
+function getCreateCallsByType(pageType: string) {
+  return mockWikiPageCreate.mock.calls.filter(
+    (call: unknown[]) => typeof call[0] === 'object' && (call[0] as any).page_type === pageType,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -169,23 +177,16 @@ describe('WikiCompiler Three-Layer Compilation', () => {
     );
     expect(rawWrites.length).toBeGreaterThanOrEqual(1);
 
-    // Verify Structure layer: createWikiPage called with 'structure' type
-    const createCalls = (createWikiPage as ReturnType<typeof vi.fn>).mock.calls;
-    const structureCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'structure',
-    );
+    // Verify Structure layer: wikiPage.create called with page_type 'structure'
+    const structureCalls = getCreateCallsByType('structure');
     expect(structureCalls.length).toBeGreaterThan(0);
 
-    // Verify Abstract layer: createWikiPage called with 'abstract' type
-    const abstractCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'abstract',
-    );
+    // Verify Abstract layer: wikiPage.create called with page_type 'abstract'
+    const abstractCalls = getCreateCallsByType('abstract');
     expect(abstractCalls.length).toBe(1);
 
     // Verify fulltext also created for backward compatibility
-    const fulltextCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'fulltext',
-    );
+    const fulltextCalls = getCreateCallsByType('fulltext');
     expect(fulltextCalls.length).toBe(1);
   });
 
@@ -194,27 +195,17 @@ describe('WikiCompiler Three-Layer Compilation', () => {
       fileType: 'txt',
     });
 
-    const createCalls = (createWikiPage as ReturnType<typeof vi.fn>).mock.calls;
-
     // Should create fulltext, overview, abstract (legacy flow)
-    const fulltextCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'fulltext',
-    );
-    const overviewCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'overview',
-    );
-    const abstractCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'abstract',
-    );
+    const fulltextCalls = getCreateCallsByType('fulltext');
+    const overviewCalls = getCreateCallsByType('overview');
+    const abstractCalls = getCreateCallsByType('abstract');
 
     expect(fulltextCalls.length).toBe(1);
     expect(overviewCalls.length).toBe(1);
     expect(abstractCalls.length).toBe(1);
 
     // Should NOT create structure pages in legacy flow
-    const structureCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'structure',
-    );
+    const structureCalls = getCreateCallsByType('structure');
     expect(structureCalls.length).toBe(0);
   });
 
@@ -227,37 +218,25 @@ describe('WikiCompiler Three-Layer Compilation', () => {
 
     await compiler.compile('test-kb', 'test-doc-2', minimalContent, {});
 
-    const createCalls = (createWikiPage as ReturnType<typeof vi.fn>).mock.calls;
-
-    // Should still create fulltext and abstract (from overview fallback)
-    const fulltextCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'fulltext',
-    );
+    // Should still create fulltext (from text fallback)
+    const fulltextCalls = getCreateCallsByType('fulltext');
     expect(fulltextCalls.length).toBe(1);
   });
 
   test('generates correct anchor IDs from raw JSON', async () => {
     const parsedContent = makeParsedContent();
 
-    // Mock PG_HOST to test anchor writing
-    const originalPgHost = process.env.PG_HOST;
-    process.env.PG_HOST = '';
-
     await compiler.compile('test-kb', 'test-doc-3', parsedContent, {});
 
-    process.env.PG_HOST = originalPgHost;
-
     // Verify structure pages were created (which means anchors were generated)
-    const createCalls = (createWikiPage as ReturnType<typeof vi.fn>).mock.calls;
-    const structureCalls = createCalls.filter(
-      (call: unknown[]) => call[2] === 'structure',
-    );
+    const structureCalls = getCreateCallsByType('structure');
     expect(structureCalls.length).toBeGreaterThan(0);
 
-    // Each structure page should have content
+    // Each structure page should have content in the create call
     for (const call of structureCalls) {
-      expect(typeof call[4]).toBe('string');
-      expect((call[4] as string).length).toBeGreaterThan(0);
+      const data = call[0] as Record<string, unknown>;
+      expect(typeof data.content).toBe('string');
+      expect((data.content as string).length).toBeGreaterThan(0);
     }
   });
 });

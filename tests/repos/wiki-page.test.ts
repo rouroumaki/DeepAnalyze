@@ -2,7 +2,7 @@
 // DeepAnalyze - PgWikiPageRepo Integration Tests
 // =============================================================================
 // Integration tests that verify wiki page CRUD operations against a running
-// PostgreSQL instance. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -113,13 +113,13 @@ describe.skipIf(!pgAvailable)('PgWikiPageRepo', () => {
     const docId = uid();
     await insertPrerequisites(kbId, docId);
 
-    const p1 = await repo.create({ kb_id: kbId, doc_id: docId, page_type: 'chunk', title: 'Chunk 1' });
-    const p2 = await repo.create({ kb_id: kbId, doc_id: docId, page_type: 'chunk', title: 'Chunk 2' });
+    const p1 = await repo.create({ kb_id: kbId, doc_id: docId, page_type: 'fulltext', title: 'Fulltext 1' });
+    const p2 = await repo.create({ kb_id: kbId, doc_id: docId, page_type: 'fulltext', title: 'Fulltext 2' });
     cleanupIds.pageIds.push(p1.id, p2.id);
 
-    const results = await repo.getManyByDocAndType(docId, 'chunk');
+    const results = await repo.getManyByDocAndType(docId, 'fulltext');
     expect(results.length).toBe(2);
-    expect(results.map((r) => r.title)).toEqual(expect.arrayContaining(['Chunk 1', 'Chunk 2']));
+    expect(results.map((r) => r.title)).toEqual(expect.arrayContaining(['Fulltext 1', 'Fulltext 2']));
   });
 
   test('getByKbAndType with and without pageType filter', async () => {

@@ -122,4 +122,10 @@ export type {
   SessionMemory,
   AgentTask,
   NewAgentTask,
+  ProviderConfig,
+  ProviderDefaults,
+  ProviderSettings,
+  DoclingConfig,
 } from './interfaces';
+
+export { DEFAULT_DOCLING_CONFIG } from './interfaces';

@@ -302,13 +302,13 @@ export interface CronJob {
   schedule: string;
   message: string;
   enabled: boolean;
-  channel?: string;
-  chatId?: string;
-  deliverResponse?: boolean;
-  lastRun?: string;
-  nextRun?: string;
-  lastStatus?: string;
-  lastError?: string;
+  channel: string | null;
+  chatId: string | null;
+  deliverResponse: boolean;
+  lastRun: string | null;
+  nextRun: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
   runCount: number;
   errorCount: number;
   createdAt: string;
@@ -654,6 +654,60 @@ export interface AgentTaskRepo {
   updateStatus(id: string, status: string, output?: unknown, error?: string): Promise<void>;
   get(id: string): Promise<AgentTask | undefined>;
   listBySession(sessionId: string): Promise<AgentTask[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Domain Types — Provider & Settings Configuration
+// ---------------------------------------------------------------------------
+
+export interface DoclingConfig {
+  layout_model: string;
+  ocr_engine: "rapidocr" | "easyocr" | "tesseract";
+  ocr_backend: "torch" | "onnxruntime";
+  table_mode: "accurate" | "fast";
+  use_vlm: boolean;
+  vlm_model: string;
+}
+
+export const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
+  layout_model: "docling-project/docling-layout-egret-xlarge",
+  ocr_engine: "rapidocr",
+  ocr_backend: "torch",
+  table_mode: "accurate",
+  use_vlm: false,
+  vlm_model: "",
+};
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  type: "openai-compatible" | "anthropic" | "ollama";
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  supportsToolUse: boolean;
+  enabled: boolean;
+  contextWindow?: number;
+  dimension?: number;
+  temperature?: number;
+  topP?: number;
+}
+
+export interface ProviderDefaults {
+  main: string;
+  summarizer: string;
+  embedding: string;
+  vlm: string;
+  tts: string;
+  image_gen: string;
+  video_gen: string;
+  music_gen: string;
+}
+
+export interface ProviderSettings {
+  providers: ProviderConfig[];
+  defaults: ProviderDefaults;
 }
 
 // ---------------------------------------------------------------------------

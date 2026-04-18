@@ -3,10 +3,11 @@
 // =============================================================================
 // Tests the Orchestrator with a mock AgentRunner.
 //
-// Since better-sqlite3 doesn't work in Bun, we write Orchestrator-level tests
-// that verify the orchestration logic (agent type routing, error handling,
-// cancellation, etc.) without depending on the database. Database-dependent
-// tests (getTaskStatus, listSessionTasks) would need to run with Node.js.
+// Since the Orchestrator depends on PG repos which require a database connection,
+// we write Orchestrator-level tests that verify the orchestration logic (agent
+// type routing, error handling, cancellation, etc.) without depending on the
+// database. Database-dependent tests (getTaskStatus, listSessionTasks) would
+// need a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeEach } from "bun:test";
@@ -27,12 +28,12 @@ interface AgentRunOptions {
 }
 
 // ---------------------------------------------------------------------------
-// We cannot import Orchestrator directly because it imports DB which uses
-// better-sqlite3 (not supported in Bun). Instead, we create a lightweight
-// test harness that replicates the Orchestrator logic we want to test,
-// without the DB dependency.
+// We cannot import Orchestrator directly because it imports PG repos which
+// require a database connection. Instead, we create a lightweight test harness
+// that replicates the Orchestrator logic we want to test, without the DB
+// dependency.
 //
-// For FULL integration tests including DB, run with Node.js + jest/vitest.
+// For FULL integration tests including DB, run with a running PG instance.
 // ---------------------------------------------------------------------------
 
 /**

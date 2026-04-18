@@ -3,15 +3,15 @@
 // =============================================================================
 // Integration tests that verify the complete PG infrastructure works together:
 // connection pool, pgvector, zhparser, HNSW indexes, and the repo factory.
-// Tests are skipped when PG_HOST is not set.
+// Tests are skipped when PG is not available (no running instance).
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 
 // Skip all tests if PG is not available
-const pgHost = process.env.PG_HOST;
-describe.skipIf(!pgHost)('PostgreSQL Infrastructure', () => {
+const pgAvailable = process.env.PG_HOST;
+describe.skipIf(!pgAvailable)('PostgreSQL Infrastructure', () => {
   let pool: pg.Pool;
 
   beforeAll(async () => {
@@ -44,6 +44,13 @@ describe.skipIf(!pgHost)('PostgreSQL Infrastructure', () => {
   });
 
   test('zhparser extension is available', async () => {
+    // Ensure the chinese text search configuration exists (normally created by migration 001)
+    try {
+      await pool.query("CREATE TEXT SEARCH CONFIGURATION chinese (PARSER = zhparser)");
+      await pool.query("ALTER TEXT SEARCH CONFIGURATION chinese ADD MAPPING FOR n,v,a,i,e,l WITH simple");
+    } catch {
+      // Configuration already exists from a previous run or migration
+    }
     // Test Chinese text segmentation
     const { rows } = await pool.query("SELECT to_tsvector('chinese', '微服务架构设计模式') as vec");
     expect(rows[0].vec).toBeTruthy();
@@ -70,23 +77,28 @@ describe.skipIf(!pgHost)('PostgreSQL Infrastructure', () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  test('createReposAsync returns correct implementation', async () => {
-    // Temporarily set PG_HOST to test the factory
-    const originalPgHost = process.env.PG_HOST;
-    process.env.PG_HOST = process.env.PG_HOST ?? 'localhost';
+  test('createReposAsync returns complete RepoSet', async () => {
+    const { createReposAsync } = await import('../src/store/repos/index');
+    const repos = await createReposAsync();
 
-    try {
-      const { createReposAsync } = await import('../src/store/repos/index');
-      const repos = await createReposAsync();
-
-      expect(repos.vectorSearch).toBeDefined();
-      expect(repos.ftsSearch).toBeDefined();
-      expect(repos.anchor).toBeDefined();
-      expect(repos.wikiPage).toBeDefined();
-      expect(repos.document).toBeDefined();
-      expect(repos.embedding).toBeDefined();
-    } finally {
-      process.env.PG_HOST = originalPgHost;
-    }
+    // Verify all 18 repos are instantiated
+    expect(repos.vectorSearch).toBeDefined();
+    expect(repos.ftsSearch).toBeDefined();
+    expect(repos.anchor).toBeDefined();
+    expect(repos.wikiPage).toBeDefined();
+    expect(repos.document).toBeDefined();
+    expect(repos.embedding).toBeDefined();
+    expect(repos.session).toBeDefined();
+    expect(repos.message).toBeDefined();
+    expect(repos.knowledgeBase).toBeDefined();
+    expect(repos.wikiLink).toBeDefined();
+    expect(repos.settings).toBeDefined();
+    expect(repos.report).toBeDefined();
+    expect(repos.agentTeam).toBeDefined();
+    expect(repos.cronJob).toBeDefined();
+    expect(repos.plugin).toBeDefined();
+    expect(repos.skill).toBeDefined();
+    expect(repos.sessionMemory).toBeDefined();
+    expect(repos.agentTask).toBeDefined();
   });
 });

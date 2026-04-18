@@ -9,7 +9,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ModelRouter } from "./router.js";
-import { SettingsStore } from "../store/settings.js";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -266,13 +265,14 @@ export class EmbeddingManager {
    */
   private async checkDimensionChange(): Promise<void> {
     try {
-      const store = new SettingsStore();
-      const storedDimStr = store.get("embedding_dimension");
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      const storedDimStr = await repos.settings.get("embedding_dimension");
       const currentDim = this.provider.dimension;
 
       if (storedDimStr === null) {
         // First run — store current dimension
-        store.set("embedding_dimension", String(currentDim));
+        await repos.settings.set("embedding_dimension", String(currentDim));
         return;
       }
 
@@ -285,12 +285,10 @@ export class EmbeddingManager {
         `Marking all existing embeddings as stale. Trigger reindex to rebuild.`,
       );
 
-      const { getRepos } = await import("../store/repos/index.js");
-      const repos = await getRepos();
       await repos.embedding.markAllStale();
 
       // Update stored dimension
-      store.set("embedding_dimension", String(currentDim));
+      await repos.settings.set("embedding_dimension", String(currentDim));
     } catch (err) {
       // Non-critical — dimension check failure should not prevent startup
       console.warn(
@@ -375,14 +373,14 @@ export class EmbeddingManager {
 
   /**
    * Attempt to create a provider from DB settings table.
-   * Uses the unified SettingsReader which reads from PG or SQLite.
+   * Uses the unified SettingsRepo which reads from PG.
    * Returns null if DB is unavailable or no embedding provider is configured.
    */
   private async tryCreateFromDBSettings(): Promise<EmbeddingProvider | null> {
     try {
-      const { getSettingsReader } = await import("../store/settings-reader.js");
-      const reader = getSettingsReader();
-      const settings = await reader.getProviderSettings();
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      const settings = await repos.settings.getProviderSettings();
       const embeddingDefaultId = settings.defaults?.embedding;
 
       if (!embeddingDefaultId) return null;

@@ -62,7 +62,7 @@ export class CompactionEngine {
     sessionMemory: SessionMemoryManager | null,
     signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    const memory = sessionMemory?.load() ?? null;
+    const memory = await sessionMemory?.load() ?? null;
 
     // Try SM-compact first (no API call needed)
     if (memory) {

@@ -2,7 +2,7 @@
 // DeepAnalyze - PgDocumentRepo Integration Tests
 // =============================================================================
 // Integration tests that verify document CRUD operations against a running
-// PostgreSQL instance. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -108,9 +108,9 @@ describe.skipIf(!pgAvailable)('PgDocumentRepo', () => {
     });
     cleanupIds.docIds.push(created.id);
 
-    await repo.updateStatus(created.id, 'processing');
+    await repo.updateStatus(created.id, 'parsing');
     const fetched = await repo.getById(created.id);
-    expect(fetched!.status).toBe('processing');
+    expect(fetched!.status).toBe('parsing');
   });
 
   test('updateProcessing updates step/progress/error', async () => {
@@ -119,7 +119,7 @@ describe.skipIf(!pgAvailable)('PgDocumentRepo', () => {
 
     const created = await repo.create({
       kb_id: kbId, filename: 'proc.pdf', file_path: '/uploads/proc.pdf',
-      file_hash: 'hp', file_size: 50, file_type: 'pdf', status: 'processing', metadata: {},
+      file_hash: 'hp', file_size: 50, file_type: 'pdf', status: 'parsing', metadata: {},
     });
     cleanupIds.docIds.push(created.id);
 

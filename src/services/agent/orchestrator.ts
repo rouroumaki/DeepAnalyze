@@ -12,6 +12,7 @@ import { AgentRunner } from "./agent-runner.js";
 import { AutoDreamManager } from "./auto-dream.js";
 import type {
   AgentEvent,
+  AgentProgressEntry,
   AgentResult,
   AgentRunOptions,
   AgentStatus,
@@ -19,7 +20,7 @@ import type {
 } from "./types.js";
 import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 import type { Linker } from "../../wiki/linker.js";
-import { DB } from "../../store/database.js";
+import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -95,7 +96,7 @@ export class Orchestrator {
     const agentType = options.agentType ?? "general";
 
     // Record the task as pending in the database
-    this.recordTask({
+    await this.recordTask({
       id: taskId,
       agentType,
       status: "pending",
@@ -109,7 +110,7 @@ export class Orchestrator {
     this.activeControllers.set(taskId, controller);
 
     // Update status to running
-    this.updateTaskStatus(taskId, "running");
+    await this.updateTaskStatus(taskId, "running");
 
     // Forward the abort signal through the options
     const runOptions: AgentRunOptions = {
@@ -122,7 +123,7 @@ export class Orchestrator {
       const result = await this.runner.run(runOptions);
 
       // Store the result
-      this.updateTaskStatus(taskId, "completed", result.output);
+      await this.updateTaskStatus(taskId, "completed", result.output);
 
       // Trigger auto-dream asynchronously (fire-and-forget)
       this.maybeTriggerAutoDream(options.sessionId);
@@ -130,7 +131,7 @@ export class Orchestrator {
       return result;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.updateTaskStatus(taskId, "failed", undefined, errorMsg);
+      await this.updateTaskStatus(taskId, "failed", undefined, errorMsg);
 
       // Return a failed result
       return {
@@ -165,7 +166,7 @@ export class Orchestrator {
     const parentTaskId = options?.parentTaskId ?? randomUUID();
 
     // Record the parent task
-    this.recordTask({
+    await this.recordTask({
       id: parentTaskId,
       agentType: "coordinator",
       status: "running",
@@ -186,7 +187,7 @@ export class Orchestrator {
 
     // Record each subtask in the database
     for (const st of subTasks) {
-      this.recordTask({
+      await this.recordTask({
         id: st.id,
         agentType: st.agentType,
         status: "pending",
@@ -205,11 +206,11 @@ export class Orchestrator {
     }
 
     // Run all subtasks in parallel using Promise.allSettled
-    const runPromises = subTasks.map((st, i) => {
+    const runPromises = subTasks.map(async (st, i) => {
       const controller = controllers[i];
 
       // Update status to running
-      this.updateTaskStatus(st.id, "running");
+      await this.updateTaskStatus(st.id, "running");
 
       return this.runner.run({
         input: st.input,
@@ -239,7 +240,7 @@ export class Orchestrator {
       if (outcome.status === "fulfilled") {
         st.status = "completed";
         st.result = outcome.value;
-        this.updateTaskStatus(st.id, "completed", outcome.value.output);
+        await this.updateTaskStatus(st.id, "completed", outcome.value.output);
 
         totalInputTokens += outcome.value.usage.inputTokens;
         totalOutputTokens += outcome.value.usage.outputTokens;
@@ -251,7 +252,7 @@ export class Orchestrator {
             : String(outcome.reason);
         st.status = "failed";
         st.error = errorMsg;
-        this.updateTaskStatus(st.id, "failed", undefined, errorMsg);
+        await this.updateTaskStatus(st.id, "failed", undefined, errorMsg);
         failedCount++;
       }
     }
@@ -270,7 +271,7 @@ export class Orchestrator {
     const synthesis = this.synthesizeResults(subTasks);
 
     // Update parent task
-    this.updateTaskStatus(parentTaskId, overallStatus === "failed" ? "failed" : "completed", synthesis);
+    await this.updateTaskStatus(parentTaskId, overallStatus === "failed" ? "failed" : "completed", synthesis);
 
     // Trigger auto-dream asynchronously
     this.maybeTriggerAutoDream(options?.sessionId);
@@ -304,7 +305,7 @@ export class Orchestrator {
     const parentTaskId = randomUUID();
 
     // Record the parent task
-    this.recordTask({
+    await this.recordTask({
       id: parentTaskId,
       agentType: "coordinator",
       status: "running",
@@ -328,7 +329,7 @@ export class Orchestrator {
     // If no subtasks could be parsed, treat the coordinator output as the
     // final result and return a completed orchestrator result.
     if (parsedTasks.length === 0) {
-      this.updateTaskStatus(parentTaskId, "completed", coordinatorResult.output);
+      await this.updateTaskStatus(parentTaskId, "completed", coordinatorResult.output);
 
       return {
         taskId: parentTaskId,
@@ -381,7 +382,7 @@ export class Orchestrator {
     };
 
     // Update parent task with final synthesis
-    this.updateTaskStatus(parentTaskId, parallelResult.status === "failed" ? "failed" : "completed", parallelResult.synthesis);
+    await this.updateTaskStatus(parentTaskId, parallelResult.status === "failed" ? "failed" : "completed", parallelResult.synthesis);
 
     return {
       taskId: parentTaskId,
@@ -405,7 +406,8 @@ export class Orchestrator {
     if (controller) {
       controller.abort();
       this.activeControllers.delete(taskId);
-      this.updateTaskStatus(taskId, "cancelled");
+      // Fire-and-forget status update
+      this.updateTaskStatus(taskId, "cancelled").catch(() => {});
       return true;
     }
     return false;
@@ -419,29 +421,44 @@ export class Orchestrator {
    * Get the status of a task from the database.
    * Returns null if the task is not found.
    */
-  getTaskStatus(taskId: string): AgentTask | null {
-    const db = DB.getInstance().raw;
-    const row = db
-      .prepare("SELECT * FROM agent_tasks WHERE id = ?")
-      .get(taskId) as Record<string, unknown> | undefined;
-
-    if (!row) return null;
-
-    return this.rowToAgentTask(row);
+  async getTaskStatus(taskId: string): Promise<AgentTask | null> {
+    const repos = await getRepos();
+    const task = await repos.agentTask.get(taskId);
+    if (!task) return null;
+    return {
+      id: task.id,
+      agentType: task.agentType,
+      status: (task.status as AgentStatus) ?? "pending",
+      input: typeof task.input === "string" ? task.input : JSON.stringify(task.input) ?? "",
+      output: typeof task.output === "string" ? task.output : (task.output ? JSON.stringify(task.output) : null),
+      error: task.error ?? null,
+      parentId: task.parentTaskId ?? null,
+      sessionId: task.sessionId ?? null,
+      createdAt: task.createdAt ?? new Date().toISOString(),
+      completedAt: task.completedAt ?? null,
+      progress: [] as AgentProgressEntry[],
+    };
   }
 
   /**
    * List all tasks for a given session, ordered by creation time (newest first).
    */
-  listSessionTasks(sessionId: string): AgentTask[] {
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare(
-        "SELECT * FROM agent_tasks WHERE session_id = ? ORDER BY created_at DESC",
-      )
-      .all(sessionId) as Record<string, unknown>[];
-
-    return rows.map((row) => this.rowToAgentTask(row));
+  async listSessionTasks(sessionId: string): Promise<AgentTask[]> {
+    const repos = await getRepos();
+    const tasks = await repos.agentTask.listBySession(sessionId);
+    return tasks.map((t) => ({
+      id: t.id,
+      agentType: t.agentType,
+      status: (t.status as AgentStatus) ?? "pending",
+      input: typeof t.input === "string" ? t.input : JSON.stringify(t.input) ?? "",
+      output: typeof t.output === "string" ? t.output : (t.output ? JSON.stringify(t.output) : null),
+      error: t.error ?? null,
+      parentId: t.parentTaskId ?? null,
+      sessionId: t.sessionId ?? null,
+      createdAt: t.createdAt ?? new Date().toISOString(),
+      completedAt: t.completedAt ?? null,
+      progress: [] as AgentProgressEntry[],
+    }));
   }
 
   // -----------------------------------------------------------------------
@@ -450,24 +467,28 @@ export class Orchestrator {
 
   /**
    * Trigger auto-dream asynchronously if conditions are met.
-   * Does not block the caller — runs in the background.
+   * Does not block the caller -- runs in the background.
    */
   private maybeTriggerAutoDream(sessionId?: string | null): void {
     if (!this.autoDream) return;
 
-    // Increment session count
-    this.autoDream.incrementSessionCount();
+    // Fire-and-forget the entire sequence
+    (async () => {
+      try {
+        // Increment session count
+        await this.autoDream!.incrementSessionCount();
 
-    // Check gates asynchronously
-    if (this.autoDream.shouldDream()) {
-      // Fire-and-forget — don't block the API response
-      this.autoDream.dream().catch((err) => {
+        // Check gates
+        if (await this.autoDream!.shouldDream()) {
+          await this.autoDream!.dream();
+        }
+      } catch (err) {
         console.warn(
           "[Orchestrator] Auto-dream failed:",
           err instanceof Error ? err.message : String(err),
         );
-      });
-    }
+      }
+    })();
   }
 
   // -----------------------------------------------------------------------
@@ -477,75 +498,34 @@ export class Orchestrator {
   /**
    * Insert a new task record into the agent_tasks table.
    */
-  private recordTask(task: {
+  private async recordTask(task: {
     id: string;
     agentType: string;
     status: AgentStatus;
     input: string;
     parentId: string | null;
     sessionId: string | null;
-  }): void {
-    const db = DB.getInstance().raw;
-
-    db.prepare(
-      `INSERT INTO agent_tasks (id, parent_task_id, session_id, agent_type, status, input, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    ).run(
-      task.id,
-      task.parentId,
-      task.sessionId,
-      task.agentType,
-      task.status,
-      task.input,
-    );
+  }): Promise<void> {
+    const repos = await getRepos();
+    await repos.agentTask.create({
+      agentType: task.agentType,
+      input: task.input,
+      parentTaskId: task.parentId,
+      sessionId: task.sessionId,
+    });
   }
 
   /**
    * Update the status, output, and error fields of an existing task.
    */
-  private updateTaskStatus(
+  private async updateTaskStatus(
     id: string,
     status: AgentStatus,
     output?: string,
     error?: string,
-  ): void {
-    const db = DB.getInstance().raw;
-
-    if (status === "completed" || status === "failed" || status === "cancelled") {
-      db.prepare(
-        `UPDATE agent_tasks
-         SET status = ?, output = ?, error = ?, completed_at = datetime('now')
-         WHERE id = ?`,
-      ).run(
-        status,
-        output ?? null,
-        error ?? null,
-        id,
-      );
-    } else {
-      db.prepare(
-        `UPDATE agent_tasks SET status = ? WHERE id = ?`,
-      ).run(status, id);
-    }
-  }
-
-  /**
-   * Convert a database row to an AgentTask object.
-   */
-  private rowToAgentTask(row: Record<string, unknown>): AgentTask {
-    return {
-      id: row.id as string,
-      agentType: row.agent_type as string,
-      status: (row.status as AgentStatus) ?? "pending",
-      input: (row.input as string) ?? "",
-      output: (row.output as string) ?? null,
-      error: (row.error as string) ?? null,
-      parentId: (row.parent_task_id as string) ?? null,
-      sessionId: (row.session_id as string) ?? null,
-      createdAt: (row.created_at as string) ?? new Date().toISOString(),
-      completedAt: (row.completed_at as string) ?? null,
-      progress: [],
-    };
+  ): Promise<void> {
+    const repos = await getRepos();
+    await repos.agentTask.updateStatus(id, status, output, error);
   }
 
   // -----------------------------------------------------------------------

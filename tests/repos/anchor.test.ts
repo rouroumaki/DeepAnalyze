@@ -2,7 +2,7 @@
 // DeepAnalyze - PgAnchorRepo Integration Tests
 // =============================================================================
 // Integration tests that verify anchor CRUD operations against a running
-// PostgreSQL instance. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -36,8 +36,8 @@ function makeAnchor(overrides: Partial<AnchorDef> & { id: string; doc_id: string
 describe.skipIf(!pgAvailable)('PgAnchorRepo', () => {
   let pool: pg.Pool;
   let repo: PgAnchorRepo;
-  const cleanupIds: { kbIds: string[]; docIds: string[]; anchorIds: string[] } = {
-    kbIds: [], docIds: [], anchorIds: [],
+  const cleanupIds: { kbIds: string[]; docIds: string[]; pageIds: string[]; anchorIds: string[] } = {
+    kbIds: [], docIds: [], pageIds: [], anchorIds: [],
   };
 
   beforeAll(async () => {
@@ -62,6 +62,9 @@ describe.skipIf(!pgAvailable)('PgAnchorRepo', () => {
     await pool.query('DELETE FROM anchors WHERE id = ANY($1)', [
       cleanupIds.anchorIds.length > 0 ? cleanupIds.anchorIds : ['__none__'],
     ]);
+    await pool.query('DELETE FROM wiki_pages WHERE id = ANY($1)', [
+      cleanupIds.pageIds.length > 0 ? cleanupIds.pageIds : ['__none__'],
+    ]);
     await pool.query('DELETE FROM documents WHERE id = ANY($1)', [
       cleanupIds.docIds.length > 0 ? cleanupIds.docIds : ['__none__'],
     ]);
@@ -70,6 +73,7 @@ describe.skipIf(!pgAvailable)('PgAnchorRepo', () => {
     ]);
     cleanupIds.kbIds = [];
     cleanupIds.docIds = [];
+    cleanupIds.pageIds = [];
     cleanupIds.anchorIds = [];
   });
 
@@ -132,7 +136,16 @@ describe.skipIf(!pgAvailable)('PgAnchorRepo', () => {
     const kbId = uid();
     const docId = uid();
     await insertPrerequisites(kbId, docId);
+
+    // Create a real wiki_page so the FK constraint on structure_page_id is satisfied
     const pageId = uid();
+    cleanupIds.pageIds.push(pageId);
+    await pool.query(
+      `INSERT INTO wiki_pages (id, kb_id, doc_id, page_type, title, file_path, content_hash, token_count)
+       VALUES ($1, $2, $3, 'structure', $4, $5, '', 0)`,
+      [pageId, kbId, docId, `Test Page ${pageId}`, `/test/${pageId}.md`],
+    );
+
     const a1 = uid();
     const a2 = uid();
     cleanupIds.anchorIds.push(a1, a2);
@@ -159,7 +172,15 @@ describe.skipIf(!pgAvailable)('PgAnchorRepo', () => {
       makeAnchor({ id: a2, doc_id: docId, kb_id: kbId, element_index: 1 }),
     ]);
 
+    // Create a real wiki_page so the FK constraint on structure_page_id is satisfied
     const pageId = uid();
+    cleanupIds.pageIds.push(pageId);
+    await pool.query(
+      `INSERT INTO wiki_pages (id, kb_id, doc_id, page_type, title, file_path, content_hash, token_count)
+       VALUES ($1, $2, $3, 'structure', $4, $5, '', 0)`,
+      [pageId, kbId, docId, `Test Page ${pageId}`, `/test/${pageId}.md`],
+    );
+
     await repo.updateStructurePageId([a1, a2], pageId);
     const results = await repo.getByStructurePageId(pageId);
     expect(results.length).toBe(2);

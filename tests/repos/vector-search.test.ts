@@ -2,7 +2,7 @@
 // DeepAnalyze - PgVectorSearchRepo Integration Tests
 // =============================================================================
 // Integration tests that verify vector search operations against a running
-// PostgreSQL instance with pgvector. Tests are skipped when PG_HOST is not set.
+// PostgreSQL instance with pgvector. Tests require a running PG instance.
 // =============================================================================
 
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -102,17 +102,20 @@ describe.skipIf(!pgAvailable)('PgVectorSearchRepo', () => {
 
     await pool.query(
       `INSERT INTO knowledge_bases (id, name, owner_id, visibility)
-       VALUES ($1, $2, 'test-owner', 'private')`,
+       VALUES ($1, $2, 'test-owner', 'private')
+       ON CONFLICT (id) DO NOTHING`,
       [kbId, `Test KB ${kbId}`],
     );
     await pool.query(
       `INSERT INTO documents (id, kb_id, filename, file_path, file_hash, file_size, file_type, status)
-       VALUES ($1, $2, $3, $4, $5, 0, 'pdf', 'uploaded')`,
+       VALUES ($1, $2, $3, $4, $5, 0, 'pdf', 'uploaded')
+       ON CONFLICT (id) DO NOTHING`,
       [docId, kbId, `test-doc-${docId}.pdf`, `/test/${docId}.pdf`, `hash-${docId}`],
     );
     await pool.query(
       `INSERT INTO wiki_pages (id, kb_id, doc_id, page_type, title, file_path, content_hash, token_count)
-       VALUES ($1, $2, $3, 'fulltext', $4, $5, '', 0)`,
+       VALUES ($1, $2, $3, 'fulltext', $4, $5, '', 0)
+       ON CONFLICT (id) DO NOTHING`,
       [pageId, kbId, docId, `Test Page ${pageId}`, `/test/${pageId}.md`],
     );
   }
@@ -123,7 +126,7 @@ describe.skipIf(!pgAvailable)('PgVectorSearchRepo', () => {
   test('upsertEmbedding + searchByVector returns top-K results sorted by similarity descending', async () => {
     const kbId = uid();
     const docId = uid();
-    const dim = 8; // Use small dimension for tests (not 1024)
+    const dim = 1024;
 
     // Create 5 pages with different vectors
     const pageIds: string[] = [];
@@ -189,7 +192,7 @@ describe.skipIf(!pgAvailable)('PgVectorSearchRepo', () => {
     const kbId2 = uid();
     const docId1 = uid();
     const docId2 = uid();
-    const dim = 8;
+    const dim = 1024;
 
     // Insert pages in two different knowledge bases
     const pageId1 = uid();
@@ -256,7 +259,7 @@ describe.skipIf(!pgAvailable)('PgVectorSearchRepo', () => {
   test('deleteByPageId removes vectors so they are no longer searchable', async () => {
     const kbId = uid();
     const docId = uid();
-    const dim = 8;
+    const dim = 1024;
 
     const pageId1 = uid();
     const pageId2 = uid();

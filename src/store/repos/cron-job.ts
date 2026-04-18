@@ -65,10 +65,10 @@ export class PgCronJobRepo implements CronJobRepo {
   private mapRow(row: any): CronJob {
     return {
       id: row.id, name: row.name, schedule: row.schedule, message: row.message,
-      enabled: row.enabled, channel: row.channel, chatId: row.chat_id,
-      deliverResponse: row.deliver_response, lastRun: row.last_run?.toISOString?.() ?? row.last_run ?? undefined,
-      nextRun: row.next_run?.toISOString?.() ?? row.next_run ?? undefined,
-      lastStatus: row.last_status, lastError: row.last_error,
+      enabled: row.enabled, channel: row.channel ?? null, chatId: row.chat_id ?? null,
+      deliverResponse: row.deliver_response ?? false, lastRun: row.last_run?.toISOString?.() ?? row.last_run ?? null,
+      nextRun: row.next_run?.toISOString?.() ?? row.next_run ?? null,
+      lastStatus: row.last_status ?? null, lastError: row.last_error ?? null,
       runCount: row.run_count ?? 0, errorCount: row.error_count ?? 0,
       createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
       updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),

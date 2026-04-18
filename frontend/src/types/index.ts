@@ -97,6 +97,10 @@ export interface ProviderConfig {
   maxTokens: number;
   supportsToolUse: boolean;
   enabled: boolean;
+  temperature?: number;
+  topP?: number;
+  contextWindow?: number;
+  dimension?: number;
 }
 
 export interface ProviderDefaults {
@@ -104,6 +108,10 @@ export interface ProviderDefaults {
   summarizer: string;
   embedding: string;
   vlm: string;
+  tts: string;
+  image_gen: string;
+  video_gen: string;
+  music_gen: string;
 }
 
 export interface ProviderSettings {
@@ -147,9 +155,46 @@ export interface ProviderTestResult {
 export interface ProviderMetadata {
   id: string;
   name: string;
-  defaultApiBase: string;
+  apiBase: string;
+  apiBaseCN?: string;
   defaultModel: string;
+  models: ModelMeta[];
   isLocal: boolean;
+  apiKeyEnvVar?: string;
+  recommendedMaxTokens: number;
+  contextWindow: number;
+  features: ProviderFeatures;
+}
+
+export interface ModelMeta {
+  id: string;
+  name: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  supportsToolUse: boolean;
+  supportsVision: boolean;
+  supportsStreaming: boolean;
+  recommendedTemperature?: { min: number; max: number; default: number };
+  recommendedTopP?: { min: number; max: number; default: number };
+  thinkingSupport?: 'native' | 'compat' | 'experimental' | 'unsupported';
+  thinkingConfig?: ThinkingConfig;
+}
+
+export interface ThinkingConfig {
+  type: 'extra_body' | 'top_level';
+  field: string;
+  values: { enabled: unknown; disabled: unknown };
+}
+
+export interface ProviderFeatures {
+  chat: boolean;
+  embeddings: boolean;
+  tts: boolean;
+  imageGeneration: boolean;
+  videoGeneration: boolean;
+  musicGeneration: boolean;
+  audioTranscription: boolean;
+  vision: boolean;
 }
 
 // --- Knowledge Base ---
@@ -494,6 +539,30 @@ export interface ChannelStatus {
   enabled: boolean;
   running: boolean;
   displayName: string;
+}
+
+// --- Docling Document Processing Config ---
+
+export interface DoclingConfig {
+  layout_model: string;
+  ocr_engine: "rapidocr" | "easyocr" | "tesseract";
+  ocr_backend: "torch" | "onnxruntime";
+  table_mode: "accurate" | "fast";
+  use_vlm: boolean;
+  vlm_model: string;
+}
+
+export interface DoclingModelEntry {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export interface DoclingModels {
+  layout: DoclingModelEntry[];
+  table: DoclingModelEntry[];
+  vlm: DoclingModelEntry[];
+  ocr: DoclingModelEntry[];
 }
 
 // --- UI State ---

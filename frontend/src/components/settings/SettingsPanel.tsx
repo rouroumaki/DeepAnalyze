@@ -11,6 +11,7 @@ import { ChannelsPanel } from "../channels/ChannelsPanel";
 import { useToast } from "../../hooks/useToast";
 import { useUIStore, type ThemeMode } from "../../store/ui";
 import { ModelsPanel } from "./ModelsPanel";
+import { Spinner } from "../ui/Spinner";
 import {
   CheckCircle2,
   XCircle,
@@ -78,11 +79,14 @@ export function SettingsPanel() {
   // Provider data (shared across sub-tabs)
   const [registry, setRegistry] = useState<ProviderMetadata[]>([]);
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiBase, setApiBase] = useState("");
   const [modelName, setModelName] = useState("");
   const [maxTokens, setMaxTokens] = useState(32768);
+  const [temperature, setTemperature] = useState(0.7);
+  const [contextWindow, setContextWindow] = useState(128000);
   const [enabled, setEnabled] = useState(true);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -97,6 +101,7 @@ export function SettingsPanel() {
 
   // Load data
   const loadData = useCallback(async () => {
+    setSettingsLoading(true);
     try {
       const [regData, settingsData] = await Promise.all([
         api.getProviderRegistry(),
@@ -106,6 +111,8 @@ export function SettingsPanel() {
       setSettings(settingsData);
     } catch (err) {
       console.error("Failed to load settings:", err);
+    } finally {
+      setSettingsLoading(false);
     }
   }, []);
 
@@ -122,12 +129,16 @@ export function SettingsPanel() {
       setApiBase(configured.endpoint);
       setModelName(configured.model);
       setMaxTokens(configured.maxTokens);
+      setTemperature(configured.temperature ?? 0.7);
+      setContextWindow(configured.contextWindow ?? 128000);
       setEnabled(configured.enabled);
     } else {
       setApiKey("");
-      setApiBase(meta?.defaultApiBase ?? "");
+      setApiBase(meta?.apiBase ?? "");
       setModelName(meta?.defaultModel ?? "");
-      setMaxTokens(32768);
+      setMaxTokens(meta?.recommendedMaxTokens ?? 32768);
+      setTemperature(0.7);
+      setContextWindow(meta?.contextWindow ?? 128000);
       setEnabled(true);
     }
     setTestResult(null);
@@ -172,6 +183,8 @@ export function SettingsPanel() {
         apiKey,
         model: modelName,
         maxTokens,
+        temperature,
+        contextWindow,
         supportsToolUse: true,
         enabled,
       };
@@ -307,7 +320,13 @@ export function SettingsPanel() {
           {/* Models Tab */}
           {/* ============================================================= */}
           {activeTab === "models" && (
-            <>
+            settingsLoading && !settings ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "var(--space-8)", gap: "var(--space-2)", color: "var(--text-tertiary)" }}>
+                <Spinner size="md" />
+                <span style={{ fontSize: "var(--text-sm)" }}>加载配置...</span>
+              </div>
+            ) : (
+              <>
               {/* Provider management section */}
               <div>
                 <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0, marginBottom: "var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
@@ -354,12 +373,26 @@ export function SettingsPanel() {
                       </div>
                       <div>
                         <label style={labelStyle}>API 地址</label>
-                        <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={currentMeta?.defaultApiBase || "https://..."} style={inputStyle} />
-                        {currentMeta?.defaultApiBase && <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: 0, marginTop: 2 }}>默认: {currentMeta.defaultApiBase}</p>}
+                        <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={currentMeta?.apiBase || "https://..."} style={inputStyle} />
+                        {currentMeta?.apiBase && <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: 0, marginTop: 2 }}>默认: {currentMeta.apiBase}</p>}
                       </div>
                       <div>
                         <label style={labelStyle}>最大 Tokens</label>
                         <input type="number" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value) || 32768)} style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>
+                          温度: <span style={{ color: "var(--interactive)", fontWeight: 600 }}>{temperature.toFixed(1)}</span>
+                        </label>
+                        <input type="range" min={0} max={2} step={0.1} value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))} style={{ width: "100%", accentColor: "var(--interactive)" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>
+                          <span>精确 (0)</span>
+                          <span>创意 (2)</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label style={labelStyle}>上下文窗口 (tokens)</label>
+                        <input type="number" value={contextWindow} onChange={(e) => setContextWindow(parseInt(e.target.value) || 128000)} style={inputStyle} />
                       </div>
                       <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer" }}>
                         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
@@ -451,9 +484,9 @@ export function SettingsPanel() {
                 />
               </div>
             </>
+          )
           )}
 
-          {/* ============================================================= */}
           {/* ============================================================= */}
           {/* Channels Tab */}
           {/* ============================================================= */}

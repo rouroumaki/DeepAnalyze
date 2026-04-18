@@ -681,7 +681,7 @@ export const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
 export interface ProviderConfig {
   id: string;
   name: string;
-  type: "openai-compatible" | "anthropic" | "ollama";
+  type: string;
   endpoint: string;
   apiKey: string;
   model: string;
@@ -692,6 +692,14 @@ export interface ProviderConfig {
   dimension?: number;
   temperature?: number;
   topP?: number;
+  // New fields
+  topK?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  apiBaseCN?: string;
+  supportedFeatures?: string[];
+  visionEnabled?: boolean;
+  thinkingEnabled?: boolean;
 }
 
 export interface ProviderDefaults {
@@ -703,6 +711,8 @@ export interface ProviderDefaults {
   image_gen: string;
   video_gen: string;
   music_gen: string;
+  audio_transcribe: string;
+  video_understand: string;
 }
 
 export interface ProviderSettings {

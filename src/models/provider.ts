@@ -20,9 +20,28 @@ export interface ToolCall {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Multimodal content types (OpenAI vision format)
+// ---------------------------------------------------------------------------
+
+export interface TextContentPart {
+  type: "text";
+  text: string;
+}
+
+export interface ImageContentPart {
+  type: "image_url";
+  image_url: {
+    url: string;  // URL or data:image/...;base64,...
+    detail?: "auto" | "low" | "high";
+  };
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | ContentPart[];
   toolCallId?: string;
   toolCalls?: ToolCall[];
 }
@@ -135,6 +154,24 @@ export const DefaultsConfigSchema = z.object({
 
   /** Name of the default vision-language model (optional). */
   vlm: z.string().optional(),
+
+  /** Name of the default TTS model (optional). */
+  tts: z.string().optional(),
+
+  /** Name of the default image generation model (optional). */
+  image_gen: z.string().optional(),
+
+  /** Name of the default video generation model (optional). */
+  video_gen: z.string().optional(),
+
+  /** Name of the default music generation model (optional). */
+  music_gen: z.string().optional(),
+
+  /** Name of the default audio transcription model (optional). */
+  audio_transcribe: z.string().optional(),
+
+  /** Name of the default video understanding model (optional). */
+  video_understand: z.string().optional(),
 });
 
 export type DefaultsConfig = z.infer<typeof DefaultsConfigSchema>;
@@ -151,4 +188,14 @@ export const AppConfigSchema = z.object({
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
 /** Role types for model selection. */
-export type ModelRole = "main" | "summarizer" | "embedding" | "vlm";
+export type ModelRole =
+  | "main"
+  | "summarizer"
+  | "embedding"
+  | "vlm"
+  | "tts"
+  | "image_gen"
+  | "video_gen"
+  | "music_gen"
+  | "audio_transcribe"
+  | "video_understand";

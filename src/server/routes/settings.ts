@@ -24,7 +24,9 @@ const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
 };
 
 const EMPTY_PROVIDER_DEFAULTS: ProviderDefaults = {
-  main: "", summarizer: "", embedding: "", vlm: "", tts: "", image_gen: "", video_gen: "", music_gen: "",
+  main: "", summarizer: "", embedding: "", vlm: "",
+  tts: "", image_gen: "", video_gen: "", music_gen: "",
+  audio_transcribe: "", video_understand: "",
 };
 
 export function createSettingsRoutes(): Hono {

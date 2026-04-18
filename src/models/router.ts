@@ -53,7 +53,7 @@ export class ModelRouter {
   /** Maps provider IDs to provider names for role resolution */
   private providerIdToName = new Map<string, string>();
   /** Default role assignments from DB settings */
-  private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string; tts: string; image_gen: string; video_gen: string; music_gen: string } | null = null;
+  private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string; tts: string; image_gen: string; video_gen: string; music_gen: string; audio_transcribe: string; video_understand: string } | null = null;
   /** Config version at the time of last initialization */
   private loadedVersion = -1;
 

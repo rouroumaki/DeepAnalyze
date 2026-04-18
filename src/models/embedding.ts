@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ModelRouter } from "./router.js";
+import { getProviderMetadata } from "./provider-registry.js";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -315,6 +316,12 @@ export class EmbeddingManager {
 
       await repos.embedding.markAllStale();
 
+      // Trigger background reindex for affected knowledge bases
+      console.info(`[EmbeddingManager] Triggering background reindex for stale embeddings...`);
+      this.triggerBackgroundReindex(repos).catch((err) => {
+        console.error("[EmbeddingManager] Background reindex failed:", err instanceof Error ? err.message : String(err));
+      });
+
       // Update stored dimension
       await repos.settings.set("embedding_dimension", String(currentDim));
     } catch (err) {
@@ -376,6 +383,56 @@ export class EmbeddingManager {
       return await repos.embedding.getStaleCount();
     } catch {
       return 0;
+    }
+  }
+
+  /** List all providers that can serve as embedding providers */
+  async listEmbeddingProviders(): Promise<Array<{
+    id: string;
+    name: string;
+    model: string;
+    dimension: number;
+    isAvailable: boolean;
+  }>> {
+    try {
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      const settings = await repos.settings.getProviderSettings();
+      const providers: Array<{ id: string; name: string; model: string; dimension: number; isAvailable: boolean }> = [];
+
+      for (const p of settings.providers) {
+        if (!p.enabled) continue;
+        // Check if provider has embedding capability
+        const meta = getProviderMetadata(p.id);
+        if (meta?.features.embeddings || p.id.toLowerCase().includes("embedding") || p.name.toLowerCase().includes("embedding") || p.dimension) {
+          providers.push({
+            id: p.id,
+            name: p.name,
+            model: p.model,
+            dimension: p.dimension ?? 1024,
+            isAvailable: true,
+          });
+        }
+      }
+
+      // Always include local hash fallback as an option
+      providers.push({
+        id: 'hash-fallback',
+        name: 'Hash Fallback (no semantic search)',
+        model: 'hash',
+        dimension: 256,
+        isAvailable: true,
+      });
+
+      return providers;
+    } catch {
+      return [{
+        id: 'hash-fallback',
+        name: 'Hash Fallback (no semantic search)',
+        model: 'hash',
+        dimension: 256,
+        isAvailable: true,
+      }];
     }
   }
 
@@ -501,6 +558,24 @@ export class EmbeddingManager {
       });
     } catch {
       return new HashEmbeddingProvider();
+    }
+  }
+
+  /** Fire-and-forget background reindex of all knowledge bases with stale embeddings */
+  private async triggerBackgroundReindex(repos: any): Promise<void> {
+    try {
+      // Find all knowledge bases and queue reindex tasks
+      const kbs = await repos.knowledgeBase.list();
+      for (const kb of kbs) {
+        const staleCount = await repos.embedding.countStaleByKnowledgeBase(kb.id);
+        if (staleCount > 0) {
+          console.info(`[EmbeddingManager] Queuing reindex for KB "${kb.name}" (${staleCount} stale embeddings)`);
+          // Mark for reindex - the processing queue will pick this up
+          await repos.knowledgeBase.update(kb.id, { status: "needs_reindex" } as any);
+        }
+      }
+    } catch (err) {
+      console.error("[EmbeddingManager] Background reindex error:", err instanceof Error ? err.message : String(err));
     }
   }
 }

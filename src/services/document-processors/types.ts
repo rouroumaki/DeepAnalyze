@@ -1,10 +1,12 @@
+import type { ImageRawData, AudioRawData, VideoRawData } from "./modality-types.js";
+
 export interface ParsedContent {
   text: string;
   metadata: Record<string, unknown>;
   success: boolean;
   error?: string;
-  /** Full DoclingDocument JSON from Docling parsing. */
-  raw?: Record<string, unknown>;
+  /** Raw structured data from processor (modality-specific). */
+  raw?: Record<string, unknown> | ImageRawData | AudioRawData | VideoRawData;
   /** DocTags text representation from Docling. */
   doctags?: string;
   /** Document modality type. */

@@ -21,7 +21,7 @@ export interface ExpandResult {
   /** The document ID this page belongs to. */
   docId: string | null;
   /** The current expansion level. */
-  level: "abstract" | "structure" | "fulltext" | "raw";
+  level: "L0" | "L1" | "L2" | "raw";
   /** The content at this level. */
   content: string;
   /** Title of the page. */

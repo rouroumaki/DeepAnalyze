@@ -42,6 +42,15 @@ export interface MusicGenResult {
   contentType: string;
 }
 
+export interface TranscriptionResult {
+  /** Transcribed text */
+  text: string;
+  /** Detected language */
+  language?: string;
+  /** Audio duration in seconds */
+  duration?: number;
+}
+
 // ---------------------------------------------------------------------------
 // CapabilityDispatcher
 // ---------------------------------------------------------------------------
@@ -62,13 +71,20 @@ export class CapabilityDispatcher {
     return provider ?? null;
   }
 
+  /** Detect the API protocol based on provider endpoint */
+  private detectProtocol(provider: ProviderConfig): 'minimax' | 'openai' {
+    const endpoint = provider.endpoint || '';
+    if (endpoint.includes('minimax')) return 'minimax';
+    return 'openai';
+  }
+
   // -----------------------------------------------------------------------
   // TTS (Text-to-Speech)
   // -----------------------------------------------------------------------
 
   /**
    * Generate speech from text using the configured TTS provider.
-   * Supports MiniMax TTS API format.
+   * Supports MiniMax TTS API format and OpenAI-compatible /audio/speech.
    */
   async textToSpeech(
     text: string,
@@ -81,12 +97,9 @@ export class CapabilityDispatcher {
     const provider = await this.resolveProvider("tts");
     if (!provider) throw new Error("No TTS provider configured. Set the 'tts' role default.");
 
+    const protocol = this.detectProtocol(provider);
     const endpoint = provider.endpoint.replace(/\/+$/, "");
     const model = options?.model ?? provider.model;
-
-    // MiniMax TTS API: POST /tts/text_to_speech
-    // Also supports OpenAI-compatible: POST /audio/speech
-    const url = `${endpoint}/tts/text_to_speech`;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -95,10 +108,39 @@ export class CapabilityDispatcher {
       headers["Authorization"] = `Bearer ${provider.apiKey}`;
     }
 
+    if (protocol === 'minimax') {
+      // MiniMax TTS API: POST /tts/text_to_speech
+      const url = `${endpoint}/tts/text_to_speech`;
+      const body = {
+        model,
+        text,
+        voice: options?.voice ?? "male-qn-qingse",
+        speed: options?.speed ?? 1.0,
+        response_format: "mp3",
+      };
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "unknown error");
+        throw new Error(`TTS API returned HTTP ${resp.status}: ${errorText}`);
+      }
+
+      const audio = await resp.arrayBuffer();
+      const contentType = resp.headers.get("content-type") ?? "audio/mp3";
+      return { audio, contentType };
+    }
+
+    // OpenAI-compatible: POST /audio/speech
+    const url = `${endpoint}/audio/speech`;
     const body = {
       model,
-      text,
-      voice: options?.voice ?? "male-qn-qingse",
+      input: text,
+      voice: options?.voice ?? "alloy",
       speed: options?.speed ?? 1.0,
       response_format: "mp3",
     };
@@ -116,7 +158,6 @@ export class CapabilityDispatcher {
 
     const audio = await resp.arrayBuffer();
     const contentType = resp.headers.get("content-type") ?? "audio/mp3";
-
     return { audio, contentType };
   }
 
@@ -126,7 +167,7 @@ export class CapabilityDispatcher {
 
   /**
    * Generate an image from a text prompt using the configured image_gen provider.
-   * Supports MiniMax image generation API format.
+   * Supports MiniMax and OpenAI-compatible image generation API formats.
    */
   async generateImage(
     prompt: string,
@@ -139,11 +180,9 @@ export class CapabilityDispatcher {
     const provider = await this.resolveProvider("image_gen");
     if (!provider) throw new Error("No image generation provider configured. Set the 'image_gen' role default.");
 
+    const protocol = this.detectProtocol(provider);
     const endpoint = provider.endpoint.replace(/\/+$/, "");
     const model = options?.model ?? provider.model;
-
-    // MiniMax Image Gen API: POST /image/generation
-    const url = `${endpoint}/image/generation`;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -152,12 +191,25 @@ export class CapabilityDispatcher {
       headers["Authorization"] = `Bearer ${provider.apiKey}`;
     }
 
-    const body: Record<string, unknown> = {
-      model,
-      prompt,
-    };
-    if (options?.width) body.width = options.width;
-    if (options?.height) body.height = options.height;
+    let url: string;
+    let body: Record<string, unknown>;
+
+    if (protocol === 'minimax') {
+      url = `${endpoint}/image/generation`;
+      body = { model, prompt };
+      if (options?.width) body.width = options.width;
+      if (options?.height) body.height = options.height;
+    } else {
+      // OpenAI-compatible: POST /images/generations
+      url = `${endpoint}/images/generations`;
+      body = {
+        model,
+        prompt,
+        n: 1,
+        size: `${options?.width ?? 1024}x${options?.height ?? 1024}`,
+        response_format: "b64_json",
+      };
+    }
 
     const resp = await fetch(url, {
       method: "POST",
@@ -172,7 +224,6 @@ export class CapabilityDispatcher {
 
     const data = await resp.json() as { data?: Array<{ url?: string; b64_json?: string }> };
 
-    // Response may contain URL or base64 data
     if (data.data?.[0]?.url) {
       const imgResp = await fetch(data.data[0].url);
       const image = await imgResp.arrayBuffer();
@@ -326,5 +377,67 @@ export class CapabilityDispatcher {
     }
 
     throw new Error("Music generation returned no audio data");
+  }
+
+  // -----------------------------------------------------------------------
+  // Audio Transcription (ASR)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Transcribe audio to text using the configured audio_transcribe provider.
+   * Uses Whisper-compatible API format (OpenAI /audio/transcriptions).
+   */
+  async transcribeAudio(
+    audioData: ArrayBuffer,
+    filename: string,
+    options?: {
+      language?: string;
+      model?: string;
+    },
+  ): Promise<{
+    text: string;
+    language?: string;
+    duration?: number;
+  }> {
+    const provider = await this.resolveProvider("audio_transcribe");
+    if (!provider) throw new Error("No audio transcription provider configured. Set the 'audio_transcribe' role default.");
+
+    const endpoint = provider.endpoint.replace(/\/+$/, "");
+    const model = options?.model ?? provider.model;
+
+    // Whisper-compatible: POST /audio/transcriptions (multipart/form-data)
+    const formData = new FormData();
+    formData.append("file", new Blob([audioData]), filename);
+    formData.append("model", model);
+    formData.append("response_format", "verbose_json");
+    if (options?.language) formData.append("language", options.language);
+
+    const headers: Record<string, string> = {};
+    if (provider.apiKey) {
+      headers["Authorization"] = `Bearer ${provider.apiKey}`;
+    }
+
+    const resp = await fetch(`${endpoint}/audio/transcriptions`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => "unknown error");
+      throw new Error(`ASR API returned HTTP ${resp.status}: ${errorText}`);
+    }
+
+    const data = await resp.json() as {
+      text?: string;
+      language?: string;
+      duration?: number;
+    };
+
+    return {
+      text: data.text ?? "",
+      language: data.language,
+      duration: data.duration,
+    };
   }
 }

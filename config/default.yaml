@@ -4,13 +4,15 @@
 # This file defines the LLM backends that DeepAnalyze will use.
 # Each entry under `models` creates a named provider instance.
 # The `defaults` section maps roles to model names.
+# API keys should be configured via environment variables or the settings UI,
+# not stored in this file.
 
 models:
   main:
     provider: openai-compatible
-    endpoint: http://localhost:11434/v1
-    model: qwen2.5-14b
-    maxTokens: 32768
+    endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: qwen3.5-plus
+    maxTokens: 8192
     supportsToolUse: true
 
   embedding:
@@ -20,24 +22,59 @@ models:
     dimension: 1024
     maxTokens: 8192
 
-  # Example: a smaller / faster model for summarisation tasks
-  # summarizer:
-  #   provider: openai-compatible
-  #   endpoint: http://localhost:11434/v1
-  #   model: qwen2.5-7b
-  #   maxTokens: 16384
-  #   supportsToolUse: false
+  # ================================================================
+  # MiniMax Models (requires MINIMAX_API_KEY env var or DB config)
+  # MiniMax API: https://api.minimaxi.com/v1
+  # ================================================================
+  minimax-text:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: M2.7
+    maxTokens: 131072
+    supportsToolUse: true
 
-  # Example: a vision-language model for image analysis
-  # vlm:
-  #   provider: openai-compatible
-  #   endpoint: http://localhost:11434/v1
-  #   model: llava
-  #   maxTokens: 8192
-  #   supportsToolUse: false
+  minimax-embedding:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: embo-01
+    dimension: 1024
+    maxTokens: 8192
+
+  minimax-tts:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: Speech-2.8
+    maxTokens: 4096
+
+  minimax-video:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: Hailuo-2.3-768p-6s
+    maxTokens: 2048
+
+  minimax-image:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: image-01
+    maxTokens: 4096
+
+  minimax-music:
+    provider: openai-compatible
+    endpoint: https://api.minimaxi.com/v1
+    model: Music-2.6
+    maxTokens: 4096
 
 defaults:
   main: main
-  # summarizer: summarizer
-  # vlm: vlm
   embedding: embedding
+  # ================================================================
+  # Role → Model Mappings (uncomment to enable MiniMax)
+  # ================================================================
+  # summarizer: minimax-text
+  # vlm: minimax-text
+  # tts: minimax-tts
+  # image_gen: minimax-image
+  # video_gen: minimax-video
+  # music_gen: minimax-music
+  # audio_transcribe:
+  # video_understand:

@@ -34,6 +34,8 @@ import type {
   ChannelsConfig,
   ChannelStatus,
   AnalysisScope,
+  DoclingConfig,
+  DoclingModels,
 } from "../types/index.js";
 
 const BASE_URL = "";
@@ -119,6 +121,9 @@ export const api = {
       const decoder = new TextDecoder();
       let buffer = "";
 
+      let currentEvent = "";
+      let currentData = "";
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -130,10 +135,10 @@ export const api = {
         // Keep the last incomplete line in the buffer
         buffer = lines.pop() || "";
 
-        let currentEvent = "";
-        let currentData = "";
+        for (const rawLine of lines) {
+          // Strip \r to handle both \n and \r\n line endings
+          const line = rawLine.replace(/\r$/, "");
 
-        for (const line of lines) {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
@@ -236,6 +241,23 @@ export const api = {
     request<void>(`/api/knowledge/kbs/${kbId}/documents/${docId}`, {
       method: "DELETE",
     }),
+
+  // --- Media file serving ---
+
+  /** Get the URL for a document's original file (supports Range requests for audio/video). */
+  getOriginalFileUrl(kbId: string, docId: string): string {
+    return `/api/knowledge/kbs/${kbId}/documents/${docId}/original`;
+  },
+
+  /** Get the URL for a document's image thumbnail. */
+  getThumbnailUrl(kbId: string, docId: string): string {
+    return `/api/knowledge/kbs/${kbId}/documents/${docId}/thumbnail`;
+  },
+
+  /** Get the URL for a video document's frame thumbnail by index. */
+  getFrameUrl(kbId: string, docId: string, index: number): string {
+    return `/api/knowledge/kbs/${kbId}/documents/${docId}/frames/${index}`;
+  },
 
   // --- Wiki ---
   searchWiki: (kbId: string, query: string, mode?: string, topK?: number) => {
@@ -432,6 +454,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(models),
     }),
+
+  // --- Docling Config ---
+  getDoclingConfig: () =>
+    request<DoclingConfig>("/api/settings/docling-config"),
+  saveDoclingConfig: (config: Partial<DoclingConfig>) =>
+    request<{ success: boolean; config: DoclingConfig }>("/api/settings/docling-config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  getDoclingModels: () =>
+    request<DoclingModels>("/api/settings/docling-models"),
 
   // --- Cron Jobs ---
   listCronJobs: () =>

@@ -491,9 +491,9 @@ export function createSettingsRoutes(): Hono {
       }
 
       // Set as default for its primary role if not already set
-      const roleKey = config.modelRole as keyof typeof settings.defaults;
-      if (!settings.defaults[roleKey]) {
-        (settings.defaults as unknown as Record<string, string>)[roleKey] = config.id;
+      const roleKey = config.modelRole as string;
+      if (!(settings.defaults as Record<string, string>)[roleKey]) {
+        (settings.defaults as Record<string, string>)[roleKey] = config.id;
       }
     }
 

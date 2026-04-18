@@ -1,13 +1,29 @@
 // =============================================================================
 // DeepAnalyze - Video Structure Compiler
 // Compiles video raw data into Structure pages grouped by scene boundaries.
-// Each page = one scene keyframe + related dialog turns within that time range.
+// When scenes are available (VLM video understanding), each page = one scene.
+// Falls back to keyframe-based pages when scenes are not present.
+// Each page includes related dialog turns within that time range.
 // =============================================================================
 
 import type { WikiPageRepo, AnchorRepo, FTSSearchRepo } from '../../store/repos/interfaces.js';
-import type { VideoRawData } from '../../services/document-processors/modality-types.js';
+import type { VideoRawData, VideoScene, VideoKeyframe } from '../../services/document-processors/modality-types.js';
 import { DocTagsFormatters, formatTime } from '../../services/document-processors/modality-types.js';
 import type { AnchorGenerator } from '../anchor-generator.js';
+
+/** Unified segment for iteration — either a VideoScene or a legacy VideoKeyframe. */
+interface VideoSegment {
+  /** Scene index (0-based). */
+  index: number;
+  /** Segment start time in seconds. */
+  startTime: number;
+  /** Segment end time in seconds. */
+  endTime: number;
+  /** The original scene object, if this segment comes from VideoScene data. */
+  scene?: VideoScene;
+  /** The original keyframe object, if this segment comes from keyframe data. */
+  keyframe?: VideoKeyframe;
+}
 
 export async function compileVideoStructure(
   params: {
@@ -31,22 +47,30 @@ export async function compileVideoStructure(
   const turnAnchors = anchors.filter(a => a.element_type === 'turn');
   const pageIds: string[] = [];
 
-  // 2. Create a Structure page per scene
-  for (let i = 0; i < raw.keyframes.length; i++) {
-    const kf = raw.keyframes[i];
-    const nextTime = i < raw.keyframes.length - 1 ? raw.keyframes[i + 1].time : raw.duration;
+  // 2. Build unified segments from scenes or keyframes
+  const segments = buildSegments(raw);
 
-    // Find dialog turns within this scene's time range
-    const sceneTurns = raw.transcript.turns.filter(
-      t => t.startTime >= kf.time && t.startTime < nextTime,
+  // 3. Create a Structure page per segment
+  for (const seg of segments) {
+    // Find dialog turns within this segment's time range
+    const segTurns = raw.transcript.turns.filter(
+      t => t.startTime >= seg.startTime && t.startTime < seg.endTime,
     );
-    const sceneTurnAnchors = sceneTurns.map(t => {
+    const segTurnAnchors = segTurns.map(t => {
       const turnIdx = raw.transcript.turns.indexOf(t);
       return turnAnchors.find(a => a.raw_json_path === `#/transcript/turns/${turnIdx}`);
     }).filter((a): a is NonNullable<typeof a> => !!a);
 
-    const title = `场景${i + 1} (${formatTime(kf.time)}-${formatTime(nextTime)})`;
-    const content = DocTagsFormatters.videoScene(kf, sceneTurns);
+    // Build title and content based on whether we have a scene or keyframe
+    const title = `场景${seg.index + 1} (${formatTime(seg.startTime)}-${formatTime(seg.endTime)})`;
+    const content = seg.scene
+      ? DocTagsFormatters.videoScene(seg.scene, segTurns)
+      : seg.keyframe
+        ? DocTagsFormatters.videoScene(seg.keyframe, segTurns)
+        : `[场景${seg.index + 1}]`;
+
+    // Determine description for metadata
+    const description = seg.scene?.description ?? seg.keyframe?.description ?? '';
 
     const page = await wikiPageRepo.create({
       kb_id: kbId,
@@ -54,22 +78,51 @@ export async function compileVideoStructure(
       page_type: 'structure',
       title,
       content,
-      file_path: `${kbId}/documents/${docId}/structure/scene_${i + 1}.md`,
+      file_path: `${kbId}/documents/${docId}/structure/scene_${seg.index + 1}.md`,
       metadata: {
-        anchorIds: [sceneAnchors[i]?.id, ...sceneTurnAnchors.map(a => a.id)].filter(Boolean),
+        anchorIds: [sceneAnchors[seg.index]?.id, ...segTurnAnchors.map(a => a.id)].filter(Boolean),
         modality: 'video',
-        elementTypes: ['scene', ...sceneTurns.map(() => 'turn')],
-        timeRange: `${kf.time}-${nextTime}`,
-        keyframeDescription: kf.description,
+        elementTypes: ['scene', ...segTurns.map(() => 'turn')],
+        timeRange: `${seg.startTime}-${seg.endTime}`,
+        keyframeDescription: description,
       },
     });
 
     // Update anchor associations
-    const anchorIds = [sceneAnchors[i]?.id, ...sceneTurnAnchors.map(a => a.id)].filter(Boolean) as string[];
+    const anchorIds = [sceneAnchors[seg.index]?.id, ...segTurnAnchors.map(a => a.id)].filter(Boolean) as string[];
     await anchorRepo.updateStructurePageId(anchorIds, page.id);
     await ftsRepo.upsertFTSEntry(page.id, title, content);
     pageIds.push(page.id);
   }
 
   return pageIds;
+}
+
+/**
+ * Build a unified list of VideoSegment objects from the raw data.
+ * When `raw.scenes` is present and non-empty, use scenes with their own
+ * time ranges. Otherwise, fall back to keyframes with time ranges derived
+ * from consecutive keyframe timestamps.
+ */
+function buildSegments(raw: VideoRawData): VideoSegment[] {
+  // Prefer scenes when available
+  if (raw.scenes && raw.scenes.length > 0) {
+    return raw.scenes.map((scene) => ({
+      index: scene.index,
+      startTime: scene.startTime,
+      endTime: scene.endTime,
+      scene,
+    }));
+  }
+
+  // Fallback: derive segments from keyframes
+  return raw.keyframes.map((kf, i) => {
+    const nextTime = i < raw.keyframes.length - 1 ? raw.keyframes[i + 1].time : raw.duration;
+    return {
+      index: i,
+      startTime: kf.time,
+      endTime: nextTime,
+      keyframe: kf,
+    };
+  });
 }

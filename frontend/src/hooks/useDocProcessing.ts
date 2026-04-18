@@ -21,6 +21,12 @@ export interface ProcessingState {
   error?: string;
 }
 
+export interface LevelReadiness {
+  L0: boolean;
+  L1: boolean;
+  L2: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -28,16 +34,36 @@ export interface ProcessingState {
 interface UseDocProcessingReturn {
   /** Map of docId -> current processing state for docs being processed. */
   processingDocs: Map<string, ProcessingState>;
+  /** Map of docId -> per-level readiness (L0/L1/L2) for compiled documents. */
+  levelReadiness: Map<string, LevelReadiness>;
   /** Whether the WebSocket connection is alive. */
   wsConnected: boolean;
 }
 
-export function useDocProcessing(kbId: string | null): UseDocProcessingReturn {
+/**
+ * @param kbId Knowledge base ID to subscribe to
+ * @param onDocComplete Called when a document finishes (doc_ready) or errors (doc_error).
+ *                      Used to trigger a refetch of the document list.
+ * @param onUploadComplete Called with docId when a document finishes or errors.
+ *                         Used to clean up the uploads tracking array.
+ */
+export function useDocProcessing(
+  kbId: string | null,
+  onDocComplete?: () => void,
+  onUploadComplete?: (docId: string) => void,
+): UseDocProcessingReturn {
   const [processingDocs, setProcessingDocs] = useState<Map<string, ProcessingState>>(
+    () => new Map(),
+  );
+  const [levelReadiness, setLevelReadiness] = useState<Map<string, LevelReadiness>>(
     () => new Map(),
   );
   const kbIdRef = useRef(kbId);
   kbIdRef.current = kbId;
+  const onDocCompleteRef = useRef(onDocComplete);
+  onDocCompleteRef.current = onDocComplete;
+  const onUploadCompleteRef = useRef(onUploadComplete);
+  onUploadCompleteRef.current = onUploadComplete;
 
   const handleMessage = useCallback((msg: WsServerMessage) => {
     // Only process messages for our KB
@@ -84,6 +110,10 @@ export function useDocProcessing(kbId: string | null): UseDocProcessingReturn {
           });
           return next;
         });
+        onDocCompleteRef.current?.();
+        if ("docId" in msg && typeof msg.docId === "string") {
+          onUploadCompleteRef.current?.(msg.docId);
+        }
         break;
       }
 
@@ -91,6 +121,29 @@ export function useDocProcessing(kbId: string | null): UseDocProcessingReturn {
         setProcessingDocs((prev) => {
           const next = new Map(prev);
           next.delete(msg.docId);
+          return next;
+        });
+        // Mark all levels as ready when document processing completes
+        setLevelReadiness((prev) => {
+          const next = new Map(prev);
+          if ("docId" in msg && typeof msg.docId === "string") {
+            next.set(msg.docId, { L0: true, L1: true, L2: true });
+          }
+          return next;
+        });
+        onDocCompleteRef.current?.();
+        if ("docId" in msg && typeof msg.docId === "string") {
+          onUploadCompleteRef.current?.(msg.docId);
+        }
+        break;
+      }
+
+      case "doc_level_ready": {
+        const { docId, level } = msg as { docId: string; level: "L0" | "L1" | "L2" };
+        setLevelReadiness((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(docId) ?? { L0: false, L1: false, L2: false };
+          next.set(docId, { ...existing, [level]: true });
           return next;
         });
         break;
@@ -112,8 +165,9 @@ export function useDocProcessing(kbId: string | null): UseDocProcessingReturn {
       unsubscribe([kbId]);
       // Clear processing state when switching KB
       setProcessingDocs(new Map());
+      setLevelReadiness(new Map());
     };
   }, [kbId, subscribe, unsubscribe]);
 
-  return { processingDocs, wsConnected: connected };
+  return { processingDocs, levelReadiness, wsConnected: connected };
 }

@@ -15,6 +15,7 @@ export type WsServerMessage =
   | { type: "doc_upload_progress"; kbId: string; docId: string; progress: number }
   | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
   | { type: "doc_ready"; kbId: string; docId: string; filename: string }
+  | { type: "doc_level_ready"; kbId: string; docId: string; level: "L0" | "L1" | "L2" }
   | { type: "doc_error"; kbId: string; docId: string; error: string }
   | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number; goal?: string }
   | { type: "workflow_agent_start"; workflowId: string; agentId: string; role: string; task: string }
@@ -75,6 +76,14 @@ const MAX_DELAY_MS = 30_000;
 
 let activeSocket: WebSocket | null = null;
 let activeRefCount = 0;
+
+/**
+ * Check if the WebSocket singleton is currently connected.
+ * Safe to call from any component without creating a new connection.
+ */
+export function isWsConnected(): boolean {
+  return activeSocket?.readyState === WebSocket.OPEN;
+}
 
 // ---------------------------------------------------------------------------
 // Workflow event dispatcher

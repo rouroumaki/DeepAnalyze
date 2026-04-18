@@ -349,13 +349,13 @@ export function createSettingsRoutes(): Hono {
       MINIMAX_API_KEY: {
         id: "minimax",
         modelRole: "main",
-        model: "MiniMax-M2.7-highspeed",
+        model: "M2.7",
         extraModels: [
           { id: "minimax-embedding", model: "embo-01", role: "embedding" },
-          { id: "minimax-tts", model: "speech-01-hd", role: "tts" },
+          { id: "minimax-tts", model: "Speech-2.8", role: "tts" },
           { id: "minimax-image", model: "image-01", role: "image_gen" },
-          { id: "minimax-video", model: "video-01", role: "video_gen" },
-          { id: "minimax-music", model: "music-2.6", role: "music_gen" },
+          { id: "minimax-video", model: "Hailuo-2.3-768p-6s", role: "video_gen" },
+          { id: "minimax-music", model: "Music-2.6", role: "music_gen" },
         ],
       },
       OPENAI_API_KEY: {
@@ -366,7 +366,7 @@ export function createSettingsRoutes(): Hono {
       ANTHROPIC_API_KEY: {
         id: "anthropic",
         modelRole: "main",
-        model: "claude-opus-4-6",
+        model: "claude-sonnet-4-20250514",
       },
       DEEPSEEK_API_KEY: {
         id: "deepseek",
@@ -376,12 +376,12 @@ export function createSettingsRoutes(): Hono {
       OPENROUTER_API_KEY: {
         id: "openrouter",
         modelRole: "main",
-        model: "anthropic/claude-opus-4-6",
+        model: "anthropic/claude-4.5-sonnet",
       },
       DASHSCOPE_API_KEY: {
         id: "qwen",
         modelRole: "main",
-        model: "qwen3.6-plus",
+        model: "qwen3.5-plus",
       },
       MOONSHOT_API_KEY: {
         id: "moonshot",
@@ -403,6 +403,11 @@ export function createSettingsRoutes(): Hono {
         modelRole: "main",
         model: "mistral-large-latest",
       },
+      GEMINI_API_KEY: {
+        id: "gemini",
+        modelRole: "main",
+        model: "gemini-2.5-pro",
+      },
     };
 
     const repos = await getRepos();
@@ -411,16 +416,17 @@ export function createSettingsRoutes(): Hono {
 
     // Per-provider recommended max output tokens
     const RECOMMENDED_MAX_TOKENS: Record<string, number> = {
-      openai: 128000,
-      anthropic: 128000,
-      deepseek: 32000,
+      openai: 32768,
+      anthropic: 64000,
+      deepseek: 8192,
       minimax: 131072,
-      qwen: 32000,
+      qwen: 8192,
       moonshot: 66000,
-      zhipu: 128000,
+      zhipu: 131072,
       openrouter: 128000,
       groq: 32000,
       mistral: 32000,
+      gemini: 65536,
     };
 
     for (const [envKey, config] of Object.entries(envToProvider)) {

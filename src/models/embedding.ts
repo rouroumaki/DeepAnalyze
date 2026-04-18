@@ -235,12 +235,14 @@ export function setEmbeddingManager(mgr: EmbeddingManager): void {
 /**
  * Manages embedding generation. Resolution priority:
  *   1. DB settings table (providers key, embedding default)
- *   2. YAML config file (config/default.yaml)
- *   3. Hash-based fallback
+ *   2. Provider with "embedding" in its name/id (auto-discovery)
+ *   3. YAML config file (config/default.yaml)
+ *   4. Hash-based fallback
  */
 export class EmbeddingManager {
   private provider: EmbeddingProvider | null = null;
   private initPromise: Promise<void> | null = null;
+  private loadedVersion = -1;
 
   constructor(private router: ModelRouter) {}
 
@@ -252,9 +254,35 @@ export class EmbeddingManager {
   }
 
   private async _initialize(): Promise<void> {
-    this.provider = await this.resolveProvider(this.router);
+    this.provider = await this.resolveProvider();
     setEmbeddingManager(this);
+    this.loadedVersion = 0; // Sync with router's initial version
     await this.checkDimensionChange();
+  }
+
+  /**
+   * Ensure the embedding provider is current. Re-resolves if the global
+   * config version has changed (triggered by settings API updates).
+   */
+  private async ensureCurrent(): Promise<void> {
+    // Import bumpConfigVersion's version counter to check staleness
+    try {
+      const router = this.router as any;
+      const currentVersion = router.loadedVersion;
+      // Router reloaded → we should also re-resolve
+      // We track our own version: if router's loadedVersion changed, re-resolve
+      if (this.loadedVersion >= 0 && currentVersion !== this.loadedVersion) {
+        const newProvider = await this.resolveProvider();
+        if (newProvider.name !== this.provider?.name || newProvider.dimension !== this.provider?.dimension) {
+          console.log(`[EmbeddingManager] Provider changed: "${this.provider?.name}" (${this.provider?.dimension}) → "${newProvider.name}" (${newProvider.dimension})`);
+          this.provider = newProvider;
+          await this.checkDimensionChange();
+        }
+        this.loadedVersion = currentVersion;
+      }
+    } catch {
+      // Non-critical, keep using existing provider
+    }
   }
 
   /**
@@ -301,6 +329,7 @@ export class EmbeddingManager {
   /** Generate an embedding for a single piece of text. */
   async embed(text: string): Promise<EmbeddingResult> {
     if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
+    await this.ensureCurrent();
     const results = await this.provider.embed([text]);
     return results[0];
   }
@@ -309,6 +338,7 @@ export class EmbeddingManager {
   async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
     if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
     if (texts.length === 0) return [];
+    await this.ensureCurrent();
 
     // Process in chunks of 64 to avoid overloading the API
     const batchSize = 64;
@@ -353,22 +383,60 @@ export class EmbeddingManager {
   // Private helpers
   // -----------------------------------------------------------------------
 
-  private async resolveProvider(router: ModelRouter): Promise<EmbeddingProvider> {
-    // Priority 1: DB settings table
+  private async resolveProvider(): Promise<EmbeddingProvider> {
+    // Priority 1: DB settings table (explicit embedding default)
     const fromDB = await this.tryCreateFromDBSettings();
     if (fromDB) return fromDB;
 
-    // Priority 2: YAML config via ModelRouter
+    // Priority 2: Auto-discover a provider with "embedding" in its name/id
+    const discovered = await this.tryDiscoverEmbeddingProvider();
+    if (discovered) return discovered;
+
+    // Priority 3: YAML config via ModelRouter
     try {
-      const modelName = router.getDefaultModel("embedding");
-      router.getProvider(modelName);
+      const modelName = this.router.getDefaultModel("embedding");
+      this.router.getProvider(modelName);
       return this.tryCreateFromConfig(modelName);
     } catch {
       // No embedding model configured or provider not found
     }
 
-    // Priority 3: Hash fallback
+    // Priority 4: Hash fallback
+    console.warn("[EmbeddingManager] No embedding provider found, using hash fallback (no semantic search)");
     return new HashEmbeddingProvider();
+  }
+
+  /**
+   * Try to find a provider that looks like an embedding provider by checking
+   * provider IDs and names for "embedding" keywords. This auto-discovers
+   * providers like "minimax-embedding" without requiring explicit defaults.
+   */
+  private async tryDiscoverEmbeddingProvider(): Promise<EmbeddingProvider | null> {
+    try {
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      const settings = await repos.settings.getProviderSettings();
+
+      // Look for a provider with "embedding" in its id or name
+      const embeddingProvider = settings.providers.find(
+        (p) => p.enabled && (p.id.toLowerCase().includes("embedding") || p.name.toLowerCase().includes("embedding")),
+      );
+
+      if (!embeddingProvider) return null;
+
+      const dimension = embeddingProvider.dimension ?? 1024;
+      console.log(`[EmbeddingManager] Auto-discovered embedding provider: "${embeddingProvider.id}" (${embeddingProvider.model}, dim=${dimension})`);
+
+      return new OpenAIEmbeddingProvider({
+        name: embeddingProvider.id,
+        endpoint: embeddingProvider.endpoint,
+        apiKey: embeddingProvider.apiKey || undefined,
+        model: embeddingProvider.model,
+        dimension,
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**

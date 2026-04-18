@@ -130,14 +130,23 @@ export function createSettingsRoutes(): Hono {
   /** Delete a provider */
   router.delete("/providers/:id", async (c) => {
     const repos = await getRepos();
+    const id = c.req.param("id");
     const settings = await repos.settings.getProviderSettings();
     const before = settings.providers.length;
-    settings.providers = settings.providers.filter((p: ProviderConfig) => p.id !== c.req.param("id"));
+    settings.providers = settings.providers.filter((p: ProviderConfig) => p.id !== id);
     if (settings.providers.length === before) {
       return c.json({ error: "Provider not found" }, 404);
     }
+    // Clear any defaults that reference the deleted provider
+    const defaults = settings.defaults as unknown as Record<string, string>;
+    for (const key of Object.keys(defaults)) {
+      if (defaults[key] === id) {
+        defaults[key] = "";
+      }
+    }
     await repos.settings.saveProviderSettings(settings);
     bumpConfigVersion();
+    console.log(`[Settings] Deleted provider "${id}", cleared stale default references`);
     return c.json({ success: true });
   });
 

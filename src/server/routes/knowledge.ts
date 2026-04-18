@@ -1199,6 +1199,116 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/download", async (c) => {
 });
 
 // =====================================================================
+// GET /kbs/:kbId/documents/:docId/original - Serve original file with Range request support
+// =====================================================================
+
+// Serve original file with Range request support (for audio/video seeking)
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+  const repos = await getRepos();
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const dataDir = process.env.DATA_DIR || "data";
+  const filePath = join(dataDir, "original", kbId, docId, doc.filename);
+
+  try {
+    const stat = statSync(filePath);
+    const ext = "." + (doc.filename.split(".").pop() || "").toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      ".mp4": "video/mp4", ".avi": "video/x-msvideo", ".mov": "video/quicktime",
+      ".mkv": "video/x-matroska", ".webm": "video/webm", ".flv": "video/x-flv",
+      ".wmv": "video/x-ms-wmv",
+      ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac",
+      ".aac": "audio/aac", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
+      ".wma": "audio/x-ms-wma",
+      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+      ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+      ".svg": "image/svg+xml",
+    };
+    const contentType = mimeTypes[ext] || "application/octet-stream";
+
+    const range = c.req.header("range");
+    if (range) {
+      const match = /bytes=(\d+)-(\d*)/.exec(range);
+      if (match) {
+        const start = parseInt(match[1]);
+        const end = match[2] ? parseInt(match[2]) : stat.size - 1;
+        const chunkSize = end - start + 1;
+
+        return new Response(createReadStream(filePath, { start, end }) as any, {
+          status: 206,
+          headers: {
+            "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+            "Accept-Ranges": "bytes",
+            "Content-Length": String(chunkSize),
+            "Content-Type": contentType,
+          },
+        });
+      }
+    }
+
+    return new Response(createReadStream(filePath) as any, {
+      headers: {
+        "Content-Length": String(stat.size),
+        "Content-Type": contentType,
+        "Accept-Ranges": "bytes",
+      },
+    });
+  } catch {
+    return c.json({ error: "File not found on disk" }, 404);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/documents/:docId/thumbnail - Serve image thumbnail
+// =====================================================================
+
+// Serve image thumbnail
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/thumbnail", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+
+  const dataDir = process.env.DATA_DIR || "data";
+  const thumbPath = join(dataDir, "wiki", kbId, "documents", docId, "thumb.webp");
+
+  try {
+    statSync(thumbPath);
+    return new Response(createReadStream(thumbPath) as any, {
+      headers: { "Content-Type": "image/webp" },
+    });
+  } catch {
+    return c.json({ error: "Thumbnail not found" }, 404);
+  }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/documents/:docId/frames/:index - Serve video frame thumbnail
+// =====================================================================
+
+// Serve video frame thumbnail
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/frames/:index", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+  const frameIndex = c.req.param("index");
+
+  const dataDir = process.env.DATA_DIR || "data";
+  const framePath = join(dataDir, "wiki", kbId, "documents", docId, "frames", `frame_${frameIndex}_thumb.jpg`);
+
+  try {
+    statSync(framePath);
+    return new Response(createReadStream(framePath) as any, {
+      headers: { "Content-Type": "image/jpeg" },
+    });
+  } catch {
+    return c.json({ error: "Frame not found" }, 404);
+  }
+});
+
+// =====================================================================
 // GET /kbs/:kbId/documents/:docId/export/:format - Multi-format export
 // format: "raw-json" | "doctags" | "markdown" | "structure-bundle"
 // =====================================================================

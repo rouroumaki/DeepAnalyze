@@ -39,11 +39,22 @@ export class PgAgentTaskRepo implements AgentTaskRepo {
     return {
       id: row.id, parentTaskId: row.parent_task_id, sessionId: row.session_id,
       agentType: row.agent_type, status: row.status,
-      input: typeof row.input === 'string' ? JSON.parse(row.input) : row.input,
-      output: typeof row.output === 'string' ? JSON.parse(row.output) : row.output,
+      input: this.safeParse(row.input),
+      output: this.safeParse(row.output),
       error: row.error,
       createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
       completedAt: row.completed_at?.toISOString?.() ?? row.completed_at ?? null,
     };
+  }
+
+  /** Parse JSON if possible, otherwise return the raw value. */
+  private safeParse(value: any): unknown {
+    if (value == null) return null;
+    if (typeof value !== 'string') return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
   }
 }

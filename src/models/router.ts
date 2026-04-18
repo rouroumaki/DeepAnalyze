@@ -264,6 +264,7 @@ export class ModelRouter {
       if (this.providers.size === 0) return false;
 
       this.dbDefaults = settings.defaults;
+      console.log(`[ModelRouter] Loaded defaults: main="${settings.defaults.main}", summarizer="${settings.defaults.summarizer}", embedding="${settings.defaults.embedding}"`);
       return true;
     } catch {
       return false;

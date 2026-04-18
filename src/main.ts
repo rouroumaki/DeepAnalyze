@@ -24,8 +24,9 @@ console.log("[PG] Initializing PostgreSQL...");
     const m004 = await import("./store/pg-migrations/004_reports_and_teams.ts");
     const m005 = await import("./store/pg-migrations/005_embedding_stale.ts");
     const m006 = await import("./store/pg-migrations/006_document_status_expand.ts");
+    const m007 = await import("./store/pg-migrations/007_provider_defaults_main.ts");
     await getPool();
-    await migratePG([m001.migration, m002.migration, m003.migration, m004.migration, m005.migration, m006.migration]);
+    await migratePG([m001.migration, m002.migration, m003.migration, m004.migration, m005.migration, m006.migration, m007.migration]);
     console.log("[PG] PostgreSQL ready with pgvector + zhparser");
   } catch (err) {
     console.error(

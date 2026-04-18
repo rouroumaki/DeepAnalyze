@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import fs from "node:fs";
 import path from "node:path";
 import { getRepos } from "../../store/repos/index.js";
-import type { ProviderConfig, ProviderDefaults, DoclingConfig } from "../../store/settings.js";
+import type { ProviderConfig, ProviderDefaults, DoclingConfig } from "../../store/repos/index.js";
 import { getAllProviders, getProviderMetadata, type ProviderMetadata } from "../../models/provider-registry.js";
 import { bumpConfigVersion } from "../../models/router.js";
 import { DEFAULT_AGENT_SETTINGS } from "../../services/agent/types.js";
@@ -114,10 +114,17 @@ export function createSettingsRoutes(): Hono {
     } else {
       settings.providers.push(body);
     }
+
+    // Auto-assign as default main provider if no default is set yet
+    if (!settings.defaults.main && body.enabled) {
+      console.log(`[Settings] Auto-assigning "${id}" as default main provider`);
+      settings.defaults.main = id;
+    }
+
     await repos.settings.saveProviderSettings(settings);
 
     bumpConfigVersion();
-    return c.json({ success: true, provider: body });
+    return c.json({ success: true, provider: body, defaults: settings.defaults });
   });
 
   /** Delete a provider */
@@ -151,6 +158,7 @@ export function createSettingsRoutes(): Hono {
     const repos = await getRepos();
     const settings = await repos.settings.getProviderSettings();
     settings.defaults = { ...settings.defaults, ...body };
+    console.log(`[Settings] Updating defaults:`, JSON.stringify(body), `→ main="${settings.defaults.main}"`);
     await repos.settings.saveProviderSettings(settings);
     bumpConfigVersion();
     return c.json({ success: true, defaults: settings.defaults });

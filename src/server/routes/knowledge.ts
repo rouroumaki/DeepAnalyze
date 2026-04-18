@@ -770,15 +770,38 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
 knowledgeRoutes.delete("/kbs/:kbId/documents/:docId", async (c) => {
   const kbId = c.req.param("kbId");
   const docId = c.req.param("docId");
-
   const repos = await getRepos();
-
-  // Verify document exists and belongs to this KB
   const doc = await repos.document.getById(docId);
   if (!doc || doc.kb_id !== kbId) {
     return c.json({ error: "Document not found" }, 404);
   }
 
+  // 1. Get all wiki pages for this document to clean up associated data
+  const pages = await repos.wikiPage.getByKbAndType(kbId);
+  const docPages = pages.filter(p => p.doc_id === docId);
+
+  // 2. Delete embeddings, vectors, and FTS for each page
+  for (const page of docPages) {
+    try { await repos.embedding.deleteByPageId(page.id); } catch {}
+    try { await repos.vectorSearch.deleteByPageId(page.id); } catch {}
+    try { await repos.ftsSearch.deleteByPageId(page.id); } catch {}
+  }
+
+  // 3. Delete anchors
+  try { await repos.anchor.deleteByDocId(docId); } catch {}
+
+  // 4. Delete wiki pages
+  try { await repos.wikiPage.deleteByDocId(docId); } catch {}
+
+  // 5. Delete disk files (wiki data + original uploads)
+  const { rm } = await import("node:fs/promises");
+  const dataDir = process.env.DATA_DIR || "data";
+  const wikiDocDir = join(dataDir, "wiki", kbId, "documents", docId);
+  const originalDir = join(dataDir, "original", kbId, docId);
+  await rm(wikiDocDir, { recursive: true, force: true }).catch(() => {});
+  await rm(originalDir, { recursive: true, force: true }).catch(() => {});
+
+  // 6. Delete document record
   await repos.document.deleteById(docId);
 
   return c.json({ id: docId, deleted: true });

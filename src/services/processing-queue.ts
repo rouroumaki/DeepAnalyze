@@ -22,20 +22,14 @@ export interface ProcessingJob {
   fileType: string;
 }
 
-interface ActiveJob {
-  job: ProcessingJob;
-  abortController: AbortController;
-}
-
 // ---------------------------------------------------------------------------
 // ProcessingQueue
 // ---------------------------------------------------------------------------
 
 export class ProcessingQueue {
   private queue: ProcessingJob[] = [];
-  private active: Map<string, ActiveJob> = new Map();
+  private active: Map<string, AbortController> = new Map();
   private concurrency: number;
-  private processing: boolean = false;
 
   constructor(concurrency: number = 1) {
     this.concurrency = concurrency;
@@ -65,7 +59,7 @@ export class ProcessingQueue {
     console.log(
       `[ProcessingQueue] Enqueued ${job.filename} (${job.docId}), queue depth=${this.queue.length}`,
     );
-    this.processNext();
+    this.scheduleNext();
   }
 
   /**
@@ -82,9 +76,9 @@ export class ProcessingQueue {
     }
 
     // Abort active job
-    const activeJob = this.active.get(docId);
-    if (activeJob) {
-      activeJob.abortController.abort();
+    const abortController = this.active.get(docId);
+    if (abortController) {
+      abortController.abort();
       this.active.delete(docId);
       console.log(`[ProcessingQueue] Aborted active job for ${docId}`);
 
@@ -101,13 +95,13 @@ export class ProcessingQueue {
   }
 
   /**
-   * Update the concurrency limit. If increasing, triggers processNext
+   * Update the concurrency limit. If increasing, triggers scheduleNext
    * to potentially start more jobs.
    */
   setConcurrency(n: number): void {
     this.concurrency = Math.max(1, n);
     console.log(`[ProcessingQueue] Concurrency set to ${this.concurrency}`);
-    this.processNext();
+    this.scheduleNext();
   }
 
   // -----------------------------------------------------------------------
@@ -115,46 +109,24 @@ export class ProcessingQueue {
   // -----------------------------------------------------------------------
 
   /**
-   * Process the next job in the queue if capacity allows.
-   * If already at the concurrency limit or no jobs available, returns immediately.
+   * Schedule jobs from the queue up to the concurrency limit.
+   * Uses a while-loop to fill all available slots in one call.
    */
-  private processNext(): void {
-    if (this.processing) {
-      return;
+  private scheduleNext(): void {
+    while (this.queue.length > 0 && this.active.size < this.concurrency) {
+      const job = this.queue.shift()!;
+      if (this.active.has(job.docId)) continue;
+      const abortController = new AbortController();
+      this.active.set(job.docId, abortController);
+      this.processJob(job, abortController)
+        .catch((err: unknown) => {
+          console.error(`[ProcessingQueue] Job ${job.docId} failed:`, err);
+        })
+        .finally(() => {
+          this.active.delete(job.docId);
+          this.scheduleNext();
+        });
     }
-
-    if (this.active.size >= this.concurrency) {
-      return;
-    }
-
-    if (this.queue.length === 0) {
-      return;
-    }
-
-    const job = this.queue.shift()!;
-    const abortController = new AbortController();
-
-    this.active.set(job.docId, { job, abortController });
-
-    // Fire-and-forget: processJob runs asynchronously
-    this.processJob(job, abortController)
-      .catch((err) => {
-        console.error(
-          `[ProcessingQueue] Unhandled error processing ${job.docId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      })
-      .finally(() => {
-        this.active.delete(job.docId);
-
-        // Mark that we are no longer in a synchronous processing gate,
-        // then try to process the next job.
-        this.processing = false;
-        this.processNext();
-      });
-
-    // Set processing flag to prevent re-entrant synchronous calls
-    this.processing = true;
   }
 
   // -----------------------------------------------------------------------

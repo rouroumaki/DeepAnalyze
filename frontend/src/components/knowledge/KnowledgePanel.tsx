@@ -1,49 +1,44 @@
 // =============================================================================
 // DeepAnalyze - KnowledgePanel Component
-// Knowledge base browser with search, document management, and wiki browsing
+// Unified single-page knowledge base browser with integrated search,
+// document management, and collapsible settings.
 // =============================================================================
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useParams } from "react-router-dom";
 import { api, uploadDocumentWithRetry, fetchDocumentStatus } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { useConfirm } from "../../hooks/useConfirm";
 import { selectFolder, openFileDialog } from "../../hooks/useFileUpload";
 import { useDocProcessing } from "../../hooks/useDocProcessing";
+import { useUIStore } from "../../store/ui";
 import type { KnowledgeBase, DocumentInfo } from "../../types/index";
-import { WikiBrowser } from "./WikiBrowser";
-import { KnowledgeGraph } from "./KnowledgeGraph";
+import { DocumentCard } from "./DocumentCard";
+import type { ProcessingInfo } from "./DocumentCard";
+import { KnowledgeSearchBar } from "./KnowledgeSearchBar";
+import type { SearchMode } from "./KnowledgeSearchBar";
 import { EntityPage } from "./EntityPage";
 import { DropZone } from "../ui/DropZone";
-import { UnifiedSearch } from "../search/UnifiedSearch";
-import { TeamManager } from "../teams/TeamManager";
 import {
   Database,
   Plus,
   Upload,
-  Search,
   Trash2,
-  FileText,
-  BookOpen,
-  CheckCircle,
-  AlertCircle,
-  Clock,
-  ChevronDown,
-  X,
   FolderOpen,
   Settings,
   Eye,
   Loader2,
-  Users,
   Play,
-  Share2,
+  ChevronDown,
+  X,
+  CheckCircle,
+  AlertCircle,
+  BookOpen,
 } from "lucide-react";
 
-interface KnowledgePanelProps {
-  kbId: string;
-  onKbIdChange: (id: string) => void;
-}
-
-type TabId = "documents" | "wiki" | "entities" | "graph" | "search" | "teams" | "settings";
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface HealthCheckResult {
   name: string;
@@ -60,66 +55,41 @@ interface UploadState {
   retrying?: boolean;
 }
 
-const STEP_LABELS: Record<string, string> = {
-  parsing: "解析中",
-  compiling: "编译中",
-  indexing: "索引中",
-  linking: "关联中",
-  uploading: "上传中",
-};
+interface SearchResult {
+  docId: string;
+  level: string;
+  content: string;
+  score: number;
+  metadata: Record<string, unknown>;
+}
 
-const STATUS_CONFIG: Record<
-  string,
-  { label: string; color: string; icon: React.ReactNode }
-> = {
-  uploaded: {
-    label: "已上传",
-    color: "var(--text-tertiary)",
-    icon: <Clock size={14} />,
-  },
-  parsing: {
-    label: "解析中",
-    color: "var(--warning)",
-    icon: <Loader2 size={14} className="animate-spin" />,
-  },
-  compiling: {
-    label: "编译中",
-    color: "var(--warning)",
-    icon: <Loader2 size={14} className="animate-spin" />,
-  },
-  indexing: {
-    label: "索引中",
-    color: "var(--warning)",
-    icon: <Loader2 size={14} className="animate-spin" />,
-  },
-  linking: {
-    label: "关联中",
-    color: "var(--warning)",
-    icon: <Loader2 size={14} className="animate-spin" />,
-  },
-  ready: {
-    label: "就绪",
-    color: "var(--success)",
-    icon: <CheckCircle size={14} />,
-  },
-  error: {
-    label: "错误",
-    color: "var(--error)",
-    icon: <AlertCircle size={14} />,
-  },
-};
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
-export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
+export function KnowledgePanel() {
+  // Get kbId from URL params, fall back to Zustand store
+  const params = useParams<{ kbId?: string }>();
+  const storeKbId = useUIStore((s) => s.currentKbId);
+  const setCurrentKbId = useUIStore((s) => s.setCurrentKbId);
+  // "_new" is a placeholder from sidebar navigation when no KB is selected yet
+  const effectiveParamKbId = params.kbId === "_new" ? undefined : params.kbId;
+  const kbId = effectiveParamKbId ?? storeKbId ?? "";
+  const onKbIdChange = useCallback((id: string) => {
+    setCurrentKbId(id);
+    if (id) {
+      window.location.hash = `#/knowledge/${id}`;
+    }
+  }, [setCurrentKbId]);
+
   const { success, error: toastError } = useToast();
   const confirm = useConfirm();
-  const { processingDocs, wsConnected } = useDocProcessing(kbId || null);
 
   // --- Data state ---
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
 
   // --- UI state ---
-  const [activeTab, setActiveTab] = useState<TabId>("documents");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKbName, setNewKbName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
@@ -128,13 +98,16 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingKbs, setIsLoadingKbs] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
 
   // --- Upload tracking state ---
   const [uploads, setUploads] = useState<UploadState[]>([]);
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
 
-  // --- Entities state ---
-  const [entities, setEntities] = useState<Array<{ name: string; type: string; mentions: number; docCount: number }>>([]);
+  // --- Search state ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   // --- Load knowledge bases ---
   const loadKnowledgeBases = useCallback(async () => {
@@ -171,13 +144,6 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       .catch(() => setDocuments([]));
   }, [kbId]);
 
-  // --- Load entities when entity tab is active ---
-  useEffect(() => {
-    if (activeTab === "entities" && kbId) {
-      api.getEntities(kbId).then(setEntities).catch(() => setEntities([]));
-    }
-  }, [activeTab, kbId]);
-
   // --- Handlers ---
 
   const refreshDocuments = useCallback(async () => {
@@ -189,6 +155,12 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       // silently refresh
     }
   }, [kbId]);
+
+  // Subscribe to real-time processing updates; refetch document list on completion/error
+  const clearUpload = useCallback((docId: string) => {
+    setUploads((prev) => prev.filter((u) => u.docId !== docId));
+  }, []);
+  const { processingDocs, levelReadiness, wsConnected } = useDocProcessing(kbId || null, refreshDocuments, clearUpload);
 
   const handleRetryProcess = useCallback(async (docId: string) => {
     if (!kbId) return;
@@ -412,17 +384,27 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
     }
   };
 
-  // --- Tabs config ---
-  const tabs: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
-    { id: "documents", label: "文档", icon: <FileText size={14} /> },
-    { id: "wiki", label: "Wiki", icon: <BookOpen size={14} /> },
-    { id: "entities", label: "实体", icon: <Users size={14} /> },
-    { id: "graph", label: "图谱", icon: <Share2 size={14} /> },
-    { id: "search", label: "搜索", icon: <Search size={14} /> },
-    { id: "teams", label: "团队", icon: <Users size={14} /> },
-    { id: "settings", label: "设置", icon: <Settings size={14} /> },
-  ];
+  // --- Search handler ---
+  const handleSearch = useCallback(async (query: string, mode: SearchMode, topK: number, _levels: string[]) => {
+    setSearchQuery(query);
+    if (!query || !kbId) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const result = await api.searchWiki(kbId, query, mode, topK);
+      setSearchResults(result.results ?? []);
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [kbId]);
 
+  // ======================================================================
+  // Render
+  // ======================================================================
   return (
     <div
       style={{
@@ -433,7 +415,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
       }}
     >
       {/* ================================================================== */}
-      {/* KB Selector Header                                                 */}
+      {/* Header row: KB selector + New KB + Settings toggle                 */}
       {/* ================================================================== */}
       <div
         style={{
@@ -443,8 +425,8 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
           backgroundColor: "var(--bg-secondary)",
         }}
       >
-        {/* Selector row */}
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+          {/* KB Selector */}
           <div
             style={{
               flex: 1,
@@ -496,6 +478,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             </select>
           </div>
 
+          {/* New KB button */}
           <button
             onClick={() => setShowCreateModal(true)}
             style={{
@@ -524,62 +507,63 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             <Plus size={14} />
             新建
           </button>
-        </div>
 
-        {/* Tab bar */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--space-1)",
-            marginTop: "var(--space-3)",
-          }}
-        >
-          {tabs.map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "var(--space-1) var(--space-3)",
-                  fontSize: "var(--text-xs)",
-                  fontWeight: "var(--font-medium)",
-                  borderRadius: "var(--radius-sm)",
-                  border: "none",
-                  cursor: "pointer",
-                  transition: "all var(--transition-fast)",
-                  backgroundColor: isActive
-                    ? "var(--interactive)"
-                    : "transparent",
-                  color: isActive ? "#fff" : "var(--text-tertiary)",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.color = "var(--text-secondary)";
-                    e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.color = "var(--text-tertiary)";
-                    e.currentTarget.style.backgroundColor = "transparent";
-                  }
-                }}
-              >
-                {tab.icon}
-                {tab.label}
-              </button>
-            );
-          })}
+          {/* Settings toggle */}
+          {kbId && (
+            <button
+              onClick={() => setShowSettings((v) => !v)}
+              title="知识库设置"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "var(--space-2)",
+                backgroundColor: showSettings ? "var(--bg-hover)" : "transparent",
+                color: showSettings ? "var(--interactive)" : "var(--text-tertiary)",
+                fontSize: "var(--text-sm)",
+                borderRadius: "var(--radius-md)",
+                border: "1px solid",
+                borderColor: showSettings ? "var(--interactive)" : "var(--border-primary)",
+                cursor: "pointer",
+                transition: "all var(--transition-fast)",
+              }}
+              onMouseEnter={(e) => {
+                if (!showSettings) {
+                  e.currentTarget.style.color = "var(--text-secondary)";
+                  e.currentTarget.style.backgroundColor = "var(--bg-hover)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!showSettings) {
+                  e.currentTarget.style.color = "var(--text-tertiary)";
+                  e.currentTarget.style.backgroundColor = "transparent";
+                }
+              }}
+            >
+              <Settings size={14} />
+            </button>
+          )}
         </div>
       </div>
 
       {/* ================================================================== */}
-      {/* Content area                                                       */}
+      {/* Search row: KnowledgeSearchBar                                      */}
+      {/* ================================================================== */}
+      {kbId && (
+        <div
+          style={{
+            flexShrink: 0,
+            padding: "var(--space-2) var(--space-4)",
+            borderBottom: "1px solid var(--border-primary)",
+            backgroundColor: "var(--bg-secondary)",
+          }}
+        >
+          <KnowledgeSearchBar onSearch={handleSearch} loading={isSearching} />
+        </div>
+      )}
+
+      {/* ================================================================== */}
+      {/* Scrollable content area                                             */}
       {/* ================================================================== */}
       <div
         style={{
@@ -681,13 +665,16 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
             onBack={() => setNavigatingEntity(null)}
             onNavigateEntity={(name) => setNavigatingEntity(name)}
           />
-        ) : activeTab === "documents" ? (
-          /* Documents Tab */
+        ) : (
+          /* ---- Main content ---- */
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            {/* Upload toolbar */}
+
+            {/* ============================================================ */}
+            {/* Action row: Upload buttons, batch ops                        */}
+            {/* ============================================================ */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                {documents.length > 0 && (
+                {documents.length > 0 && !searchQuery && (
                   <input
                     type="checkbox"
                     checked={selectedDocs.size === documents.length && documents.length > 0}
@@ -697,8 +684,11 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   />
                 )}
                 <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
-                  {documents.length > 0 ? `${documents.length} 个文档` : ""}
-                  {selectedDocs.size > 0 ? ` (已选 ${selectedDocs.size})` : ""}
+                  {searchQuery
+                    ? `${searchResults.length} 条搜索结果`
+                    : documents.length > 0
+                      ? `${documents.length} 个文档${selectedDocs.size > 0 ? ` (已选 ${selectedDocs.size})` : ""}`
+                      : ""}
                 </span>
                 {/* WS connection indicator */}
                 <span
@@ -715,7 +705,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
                 {/* Batch delete button */}
-                {selectedDocs.size > 0 && (
+                {selectedDocs.size > 0 && !searchQuery && (
                   <button
                     onClick={batchDelete}
                     style={{
@@ -807,7 +797,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   <Upload size={14} />
                   上传文档
                 </button>
-                {/* Manual processing trigger — shown when there are uploaded docs awaiting processing */}
+                {/* Manual processing trigger */}
                 {documents.some((d) => d.status === "uploaded" || d.status === "error") && (
                   <button
                     onClick={async () => {
@@ -841,7 +831,9 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               </div>
             </div>
 
-            {/* Upload progress indicators */}
+            {/* ============================================================ */}
+            {/* Upload progress indicators                                   */}
+            {/* ============================================================ */}
             {uploads.map((upload) => (
               <div
                 key={upload.docId}
@@ -908,8 +900,104 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               </div>
             ))}
 
-            {documents.length === 0 && uploads.length === 0 ? (
-              /* Empty state with DropZone */
+            {/* ============================================================ */}
+            {/* Content: search results OR document list OR empty state      */}
+            {/* ============================================================ */}
+            {searchQuery ? (
+              /* ---- Search Results ---- */
+              searchResults.length === 0 && !isSearching ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "var(--space-12) 0",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  <BookOpen
+                    size={40}
+                    style={{
+                      margin: "0 auto var(--space-3)",
+                      opacity: 0.4,
+                      display: "block",
+                    }}
+                  />
+                  <p style={{ fontSize: "var(--text-sm)", margin: 0 }}>
+                    未找到相关结果
+                  </p>
+                  <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                    尝试使用不同的关键词或搜索模式
+                  </p>
+                </div>
+              ) : (
+                searchResults.map((result, idx) => (
+                  <div
+                    key={`${result.docId}-${result.level}-${idx}`}
+                    style={{
+                      padding: "var(--space-3) var(--space-4)",
+                      backgroundColor: "var(--bg-tertiary)",
+                      border: "1px solid var(--border-primary)",
+                      borderRadius: "var(--radius-lg)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "var(--space-2)",
+                        marginBottom: "var(--space-2)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          padding: "var(--space-1) var(--space-2)",
+                          backgroundColor: "var(--interactive-light)",
+                          color: "var(--interactive)",
+                          fontSize: "var(--text-xs)",
+                          fontWeight: "var(--font-semibold)",
+                          borderRadius: "var(--radius-sm)",
+                        }}
+                      >
+                        {result.level}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-tertiary)",
+                        }}
+                      >
+                        相关度: {(result.score * 100).toFixed(1)}%
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-tertiary)",
+                          marginLeft: "auto",
+                        }}
+                      >
+                        {result.docId}
+                      </span>
+                    </div>
+                    <p
+                      style={{
+                        fontSize: "var(--text-sm)",
+                        color: "var(--text-secondary)",
+                        margin: 0,
+                        lineHeight: 1.6,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {result.content}
+                    </p>
+                  </div>
+                ))
+              )
+            ) : documents.length === 0 && uploads.length === 0 ? (
+              /* ---- Empty state with DropZone ---- */
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", alignItems: "center" }}>
                 <DropZone
                   onFiles={(files) => {
@@ -926,721 +1014,276 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                 </p>
               </div>
             ) : (
-              /* Document list */
+              /* ---- Document list using DocumentCard ---- */
               documents.map((doc) => {
                 const processing = processingDocs.get(doc.id);
-                // Determine the effective display status
-                let statusIcon: React.ReactNode;
-                let statusLabel: string;
-                let statusColor: string;
-                let showProgress = false;
-                let progressPct = 0;
-                let showError = false;
-                let errorMsg = "";
-
-                if (processing) {
-                  // Document is actively being processed via WebSocket
-                  const stepLabel = STEP_LABELS[processing.step] ?? processing.step;
-                  statusIcon = <Loader2 size={14} className="animate-spin" />;
-                  statusLabel = stepLabel;
-                  statusColor = "var(--warning)";
-                  showProgress = true;
-                  progressPct = processing.progress;
-                  if (processing.error) {
-                    showError = true;
-                    errorMsg = processing.error;
-                  }
-                } else if (doc.status === "error") {
-                  // Document errored out
-                  statusIcon = <AlertCircle size={14} />;
-                  statusLabel = "失败";
-                  statusColor = "var(--error)";
-                  showError = true;
-                  errorMsg = "";
-                } else if (doc.status === "ready") {
-                  statusIcon = <CheckCircle size={14} />;
-                  statusLabel = "就绪";
-                  statusColor = "var(--success)";
-                } else if (doc.status === "uploaded") {
-                  // Uploaded but not yet processing = queued
-                  statusIcon = <Clock size={14} />;
-                  statusLabel = "排队中";
-                  statusColor = "var(--text-tertiary)";
-                } else {
-                  // Fallback for other statuses (parsing, compiling, etc.)
-                  const statusCfg = STATUS_CONFIG[doc.status] ?? {
-                    label: doc.status,
-                    color: "var(--text-tertiary)",
-                    icon: <FileText size={14} />,
-                  };
-                  statusIcon = statusCfg.icon;
-                  statusLabel = statusCfg.label;
-                  statusColor = statusCfg.color;
-                }
+                // Adapt ProcessingState to ProcessingInfo for DocumentCard
+                const processingInfo: ProcessingInfo | null = processing
+                  ? { step: processing.step, progress: processing.progress, error: processing.error }
+                  : null;
 
                 return (
-                  <div
+                  <DocumentCard
                     key={doc.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-3)",
-                      padding: "var(--space-3) var(--space-4)",
-                      backgroundColor: showError ? "var(--error-light)" : selectedDocs.has(doc.id) ? "var(--interactive-light)" : "var(--bg-tertiary)",
-                      border: showError ? "1px solid var(--error)" : selectedDocs.has(doc.id) ? "1px solid var(--interactive)" : "1px solid var(--border-primary)",
-                      borderRadius: "var(--radius-lg)",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedDocs.has(doc.id)}
-                      onChange={() => toggleSelect(doc.id)}
-                      style={{ cursor: "pointer", accentColor: "var(--interactive)", flexShrink: 0 }}
-                    />
-                    <FileText
-                      size={18}
-                      style={{
-                        flexShrink: 0,
-                        color: "var(--text-tertiary)",
-                      }}
-                    />
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                      }}
-                    >
-                      <p
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-primary)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          margin: 0,
-                        }}
-                      >
-                        {doc.filename}
-                      </p>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "var(--space-2)",
-                          marginTop: "var(--space-1)",
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-tertiary)",
-                          }}
-                        >
-                          {doc.fileType}
-                        </span>
-                        <span
-                          style={{
-                            fontSize: "var(--text-xs)",
-                            color: "var(--text-tertiary)",
-                          }}
-                        >
-                          {(doc.fileSize / 1024).toFixed(1)} KB
-                        </span>
-                      </div>
-                      {/* Processing progress bar */}
-                      {showProgress && (
-                        <div style={{ marginTop: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                          <div style={{ flex: 1, height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
-                            <div style={{ width: `${progressPct}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
-                          </div>
-                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", flexShrink: 0 }}>
-                            {progressPct}%
-                          </span>
-                        </div>
-                      )}
-                      {/* Error message */}
-                      {showError && errorMsg && (
-                        <p style={{ fontSize: "var(--text-xs)", color: "var(--error)", margin: "var(--space-1) 0 0" }}>
-                          {errorMsg}
-                        </p>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--space-1)",
-                        color: statusColor,
-                        fontSize: "var(--text-xs)",
-                        fontWeight: "var(--font-medium)",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {statusIcon}
-                      {statusLabel}
-                    </div>
-                    {/* Retry button for error status */}
-                    {doc.status === "error" && (
-                      <button
-                        onClick={() => handleRetryProcess(doc.id)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          padding: "var(--space-1) var(--space-2)",
-                          border: "1px solid var(--interactive)",
-                          borderRadius: "var(--radius-sm)",
-                          cursor: "pointer",
-                          color: "var(--interactive)",
-                          backgroundColor: "transparent",
-                          fontSize: "var(--text-xs)",
-                          fontWeight: "var(--font-medium)",
-                          transition: "color var(--transition-fast), background-color var(--transition-fast)",
-                          flexShrink: 0,
-                          whiteSpace: "nowrap",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.color = "#fff";
-                          e.currentTarget.style.backgroundColor = "var(--interactive)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.color = "var(--interactive)";
-                          e.currentTarget.style.backgroundColor = "transparent";
-                        }}
-                        title="重新处理"
-                      >
-                        重试
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleDeleteDocument(doc.id)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        padding: "var(--space-1)",
-                        border: "none",
-                        borderRadius: "var(--radius-sm)",
-                        cursor: "pointer",
-                        color: "var(--text-tertiary)",
-                        backgroundColor: "transparent",
-                        transition: "color var(--transition-fast), background-color var(--transition-fast)",
-                        flexShrink: 0,
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = "var(--error)";
-                        e.currentTarget.style.backgroundColor =
-                          "var(--error-light)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = "var(--text-tertiary)";
-                        e.currentTarget.style.backgroundColor = "transparent";
-                      }}
-                      title="删除文档"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                    document={doc}
+                    levels={levelReadiness.get(doc.id) ?? { L0: false, L1: false, L2: false }}
+                    processing={processingInfo}
+                    selected={selectedDocs.has(doc.id)}
+                    onToggleSelect={() => toggleSelect(doc.id)}
+                    onDelete={() => handleDeleteDocument(doc.id)}
+                    onRetry={doc.status === "error" ? () => handleRetryProcess(doc.id) : undefined}
+                    kbId={kbId}
+                  />
                 );
               })
             )}
-          </div>
-        ) : activeTab === "wiki" ? (
-          /* Wiki Browser Tab */
-          <WikiBrowser
-            kbId={kbId}
-            onNavigateEntity={(name) => setNavigatingEntity(name)}
-          />
-        ) : activeTab === "entities" ? (
-          /* Entities Tab */
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)" }}>
-                {entities.length > 0 ? `${entities.length} 个实体` : ""}
-              </span>
-            </div>
-            {entities.length === 0 ? (
+
+            {/* ============================================================ */}
+            {/* Collapsible settings section                                 */}
+            {/* ============================================================ */}
+            {showSettings && kbId && (
               <div
                 style={{
-                  textAlign: "center",
-                  padding: "var(--space-12) 0",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                <Users
-                  size={40}
-                  style={{
-                    margin: "0 auto var(--space-3)",
-                    opacity: 0.4,
-                    display: "block",
-                  }}
-                />
-                <p style={{ fontSize: "var(--text-sm)", margin: 0 }}>
-                  暂无实体
-                </p>
-                <p style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
-                  处理文档后将自动提取实体
-                </p>
-              </div>
-            ) : (
-              /* Group entities by type */
-              (() => {
-                const grouped = entities.reduce<Record<string, typeof entities>>((acc, e) => {
-                  const key = e.type || "实体";
-                  if (!acc[key]) acc[key] = [];
-                  acc[key].push(e);
-                  return acc;
-                }, {});
-
-                return Object.entries(grouped).map(([type, items]) => (
-                  <div key={type}>
-                    <p
-                      style={{
-                        fontSize: "var(--text-xs)",
-                        fontWeight: "var(--font-semibold)",
-                        color: "var(--text-tertiary)",
-                        margin: "0 0 var(--space-2)",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.05em",
-                      }}
-                    >
-                      {type} ({items.length})
-                    </p>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "var(--space-1)",
-                      }}
-                    >
-                      {items.map((entity, i) => (
-                        <button
-                          key={`${entity.name}-${i}`}
-                          onClick={() => {
-                            setNavigatingEntity(entity.name);
-                          }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: "var(--space-3)",
-                            padding: "var(--space-2) var(--space-3)",
-                            backgroundColor: "var(--bg-tertiary)",
-                            border: "1px solid var(--border-primary)",
-                            borderRadius: "var(--radius-md)",
-                            cursor: "pointer",
-                            textAlign: "left",
-                            transition:
-                              "border-color var(--transition-fast), box-shadow var(--transition-fast)",
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.borderColor = "var(--interactive)";
-                            e.currentTarget.style.boxShadow =
-                              "0 0 0 1px var(--interactive-light)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.borderColor = "var(--border-primary)";
-                            e.currentTarget.style.boxShadow = "none";
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontSize: "var(--text-sm)",
-                              color: "var(--text-primary)",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {entity.name}
-                          </span>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "var(--space-2)",
-                              flexShrink: 0,
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontSize: "var(--text-xs)",
-                                color: "var(--text-tertiary)",
-                              }}
-                            >
-                              {entity.mentions} 引用
-                            </span>
-                            <span
-                              style={{
-                                fontSize: "var(--text-xs)",
-                                color: "var(--text-tertiary)",
-                              }}
-                            >
-                              {entity.docCount} 文档
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ));
-              })()
-            )}
-          </div>
-        ) : activeTab === "graph" ? (
-          /* Graph Tab */
-          <KnowledgeGraph kbId={kbId} />
-        ) : activeTab === "search" ? (
-          /* Unified Search Tab - replaces legacy search UI */
-          <UnifiedSearch
-            kbId={kbId}
-            onResultClick={(result) => {
-              // Navigate to wiki tab when a search result is clicked
-              if (result.docId) {
-                setActiveTab("wiki");
-              }
-            }}
-            onEntityClick={(entity) => {
-              // Navigate to the entity page
-              setNavigatingEntity(entity.name);
-            }}
-          />
-        ) : activeTab === "teams" ? (
-          /* Agent Teams Tab */
-          <TeamManager />
-        ) : activeTab === "settings" ? (
-          /* Settings Tab */
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-4)",
-            }}
-          >
-            {/* KB Info Section */}
-            <div
-              style={{
-                padding: "var(--space-4)",
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--border-primary)",
-                borderRadius: "var(--radius-lg)",
-              }}
-            >
-              <h4
-                style={{
-                  margin: "0 0 var(--space-3)",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
                   display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-2)",
+                  flexDirection: "column",
+                  gap: "var(--space-4)",
+                  marginTop: "var(--space-4)",
+                  paddingTop: "var(--space-4)",
+                  borderTop: "2px solid var(--border-primary)",
                 }}
               >
-                <Settings size={14} />
-                知识库信息
-              </h4>
-              {(() => {
-                const currentKb = knowledgeBases.find((kb) => kb.id === kbId);
-                return currentKb ? (
-                  <div
+                {/* KB Info */}
+                <div
+                  style={{
+                    padding: "var(--space-4)",
+                    backgroundColor: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-lg)",
+                  }}
+                >
+                  <h4
                     style={{
+                      margin: "0 0 var(--space-3)",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-semibold)",
+                      color: "var(--text-primary)",
                       display: "flex",
-                      flexDirection: "column",
+                      alignItems: "center",
                       gap: "var(--space-2)",
                     }}
                   >
-                    <div>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        名称
-                      </span>
-                      <p
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-primary)",
-                          margin: 0,
-                        }}
-                      >
-                        {currentKb.name}
+                    <Settings size={14} />
+                    知识库信息
+                  </h4>
+                  {(() => {
+                    const currentKb = knowledgeBases.find((kb) => kb.id === kbId);
+                    return currentKb ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                        <div>
+                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>名称</span>
+                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", margin: 0 }}>
+                            {currentKb.name}
+                          </p>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>描述</span>
+                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
+                            {currentKb.description || "暂无描述"}
+                          </p>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>文档数量</span>
+                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
+                            {currentKb.documentCount ?? documents.length} 个文档
+                          </p>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>创建时间</span>
+                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
+                            {new Date(currentKb.createdAt).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)", margin: 0 }}>
+                        无法加载知识库信息
                       </p>
-                    </div>
-                    <div>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        描述
-                      </span>
-                      <p
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-secondary)",
-                          margin: 0,
-                        }}
-                      >
-                        {currentKb.description || "暂无描述"}
-                      </p>
-                    </div>
-                    <div>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        文档数量
-                      </span>
-                      <p
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-secondary)",
-                          margin: 0,
-                        }}
-                      >
-                        {currentKb.documentCount ?? documents.length} 个文档
-                      </p>
-                    </div>
-                    <div>
-                      <span
-                        style={{
-                          fontSize: "var(--text-xs)",
-                          color: "var(--text-tertiary)",
-                        }}
-                      >
-                        创建时间
-                      </span>
-                      <p
-                        style={{
-                          fontSize: "var(--text-sm)",
-                          color: "var(--text-secondary)",
-                          margin: 0,
-                        }}
-                      >
-                        {new Date(currentKb.createdAt).toLocaleString()}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <p
+                    );
+                  })()}
+                </div>
+
+                {/* Health Check */}
+                <div
+                  style={{
+                    padding: "var(--space-4)",
+                    backgroundColor: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-primary)",
+                    borderRadius: "var(--radius-lg)",
+                  }}
+                >
+                  <h4
                     style={{
+                      margin: "0 0 var(--space-3)",
                       fontSize: "var(--text-sm)",
-                      color: "var(--text-tertiary)",
-                      margin: 0,
+                      fontWeight: "var(--font-semibold)",
+                      color: "var(--text-primary)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-2)",
                     }}
                   >
-                    无法加载知识库信息
-                  </p>
-                );
-              })()}
-            </div>
-
-            {/* Wiki Health Check Section */}
-            <div
-              style={{
-                padding: "var(--space-4)",
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--border-primary)",
-                borderRadius: "var(--radius-lg)",
-              }}
-            >
-              <h4
-                style={{
-                  margin: "0 0 var(--space-3)",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--text-primary)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-2)",
-                }}
-              >
-                <Eye size={14} />
-                健康检查
-              </h4>
-              <button
-                onClick={handleHealthCheck}
-                disabled={isHealthChecking}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "var(--space-2) var(--space-3)",
-                  backgroundColor: "var(--interactive)",
-                  color: "#fff",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)",
-                  borderRadius: "var(--radius-md)",
-                  border: "none",
-                  cursor: isHealthChecking ? "not-allowed" : "pointer",
-                  opacity: isHealthChecking ? 0.7 : 1,
-                  transition:
-                    "background-color var(--transition-fast), opacity var(--transition-fast)",
-                  marginBottom: "var(--space-3)",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isHealthChecking)
-                    e.currentTarget.style.backgroundColor =
-                      "var(--interactive-hover)";
-                }}
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.backgroundColor =
-                    "var(--interactive)")
-                }
-              >
-                {isHealthChecking ? "检查中..." : "运行健康检查"}
-              </button>
-
-              {isHealthChecking && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-2)",
-                    fontSize: "var(--text-sm)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  <div
+                    <Eye size={14} />
+                    健康检查
+                  </h4>
+                  <button
+                    onClick={handleHealthCheck}
+                    disabled={isHealthChecking}
                     style={{
-                      width: 16,
-                      height: 16,
-                      border: "2px solid var(--border-primary)",
-                      borderTopColor: "var(--interactive)",
-                      borderRadius: "var(--radius-full)",
-                      animation: "spin 0.6s linear infinite",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-2) var(--space-3)",
+                      backgroundColor: "var(--interactive)",
+                      color: "#fff",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      borderRadius: "var(--radius-md)",
+                      border: "none",
+                      cursor: isHealthChecking ? "not-allowed" : "pointer",
+                      opacity: isHealthChecking ? 0.7 : 1,
+                      transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
+                      marginBottom: "var(--space-3)",
                     }}
-                  />
-                  正在检查...
-                </div>
-              )}
+                    onMouseEnter={(e) => {
+                      if (!isHealthChecking)
+                        e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
+                    }}
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.backgroundColor = "var(--interactive)")
+                    }
+                  >
+                    {isHealthChecking ? "检查中..." : "运行健康检查"}
+                  </button>
 
-              {healthResults.length > 0 && (
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "var(--space-2)",
-                  }}
-                >
-                  {healthResults.map((item, i) => (
+                  {isHealthChecking && (
                     <div
-                      key={i}
                       style={{
                         display: "flex",
                         alignItems: "center",
                         gap: "var(--space-2)",
-                        padding: "var(--space-2) var(--space-3)",
-                        backgroundColor: "var(--bg-secondary)",
-                        borderRadius: "var(--radius-md)",
                         fontSize: "var(--text-sm)",
+                        color: "var(--text-tertiary)",
                       }}
                     >
-                      {item.status === "ok" ? (
-                        <CheckCircle
-                          size={14}
-                          style={{ color: "var(--success)", flexShrink: 0 }}
-                        />
-                      ) : item.status === "warning" ? (
-                        <AlertCircle
-                          size={14}
-                          style={{ color: "var(--warning)", flexShrink: 0 }}
-                        />
-                      ) : (
-                        <AlertCircle
-                          size={14}
-                          style={{ color: "var(--error)", flexShrink: 0 }}
-                        />
-                      )}
-                      <span
+                      <div
                         style={{
-                          fontWeight: "var(--font-medium)",
-                          color: "var(--text-primary)",
-                          flexShrink: 0,
+                          width: 16,
+                          height: 16,
+                          border: "2px solid var(--border-primary)",
+                          borderTopColor: "var(--interactive)",
+                          borderRadius: "var(--radius-full)",
+                          animation: "spin 0.6s linear infinite",
                         }}
-                      >
-                        {item.name}
-                      </span>
-                      <span
-                        style={{
-                          color: "var(--text-tertiary)",
-                          fontSize: "var(--text-xs)",
-                        }}
-                      >
-                        {item.message}
-                      </span>
+                      />
+                      正在检查...
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  )}
 
-            {/* Danger Zone */}
-            <div
-              style={{
-                padding: "var(--space-4)",
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--error)",
-                borderRadius: "var(--radius-lg)",
-              }}
-            >
-              <h4
-                style={{
-                  margin: "0 0 var(--space-2)",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-semibold)",
-                  color: "var(--error)",
-                }}
-              >
-                危险操作
-              </h4>
-              <p
-                style={{
-                  fontSize: "var(--text-xs)",
-                  color: "var(--text-tertiary)",
-                  margin: "0 0 var(--space-3)",
-                }}
-              >
-                删除知识库将永久移除所有文档和数据，此操作不可撤销。
-              </p>
-              <button
-                onClick={handleDeleteKb}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "var(--space-1)",
-                  padding: "var(--space-2) var(--space-3)",
-                  backgroundColor: "transparent",
-                  color: "var(--error)",
-                  fontSize: "var(--text-sm)",
-                  fontWeight: "var(--font-medium)",
-                  borderRadius: "var(--radius-md)",
-                  border: "1px solid var(--error)",
-                  cursor: "pointer",
-                  transition:
-                    "background-color var(--transition-fast), color var(--transition-fast)",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "var(--error)";
-                  e.currentTarget.style.color = "#fff";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "transparent";
-                  e.currentTarget.style.color = "var(--error)";
-                }}
-              >
-                <Trash2 size={14} />
-                删除知识库
-              </button>
-            </div>
+                  {healthResults.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                      {healthResults.map((item) => (
+                        <div
+                          key={item.name}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "var(--space-2)",
+                            padding: "var(--space-2) var(--space-3)",
+                            backgroundColor: "var(--bg-secondary)",
+                            borderRadius: "var(--radius-md)",
+                            fontSize: "var(--text-sm)",
+                          }}
+                        >
+                          {item.status === "ok" ? (
+                            <CheckCircle size={14} style={{ color: "var(--success)", flexShrink: 0 }} />
+                          ) : item.status === "warning" ? (
+                            <AlertCircle size={14} style={{ color: "var(--warning)", flexShrink: 0 }} />
+                          ) : (
+                            <AlertCircle size={14} style={{ color: "var(--error)", flexShrink: 0 }} />
+                          )}
+                          <span style={{ fontWeight: "var(--font-medium)", color: "var(--text-primary)", flexShrink: 0 }}>
+                            {item.name}
+                          </span>
+                          <span style={{ color: "var(--text-tertiary)", fontSize: "var(--text-xs)" }}>
+                            {item.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Danger Zone */}
+                <div
+                  style={{
+                    padding: "var(--space-4)",
+                    backgroundColor: "var(--bg-tertiary)",
+                    border: "1px solid var(--error)",
+                    borderRadius: "var(--radius-lg)",
+                  }}
+                >
+                  <h4
+                    style={{
+                      margin: "0 0 var(--space-2)",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-semibold)",
+                      color: "var(--error)",
+                    }}
+                  >
+                    危险操作
+                  </h4>
+                  <p
+                    style={{
+                      fontSize: "var(--text-xs)",
+                      color: "var(--text-tertiary)",
+                      margin: "0 0 var(--space-3)",
+                    }}
+                  >
+                    删除知识库将永久移除所有文档和数据，此操作不可撤销。
+                  </p>
+                  <button
+                    onClick={handleDeleteKb}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-2) var(--space-3)",
+                      backgroundColor: "transparent",
+                      color: "var(--error)",
+                      fontSize: "var(--text-sm)",
+                      fontWeight: "var(--font-medium)",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid var(--error)",
+                      cursor: "pointer",
+                      transition: "background-color var(--transition-fast), color var(--transition-fast)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "var(--error)";
+                      e.currentTarget.style.color = "#fff";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "transparent";
+                      e.currentTarget.style.color = "var(--error)";
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    删除知识库
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        ) : null}
+        )}
       </div>
 
       {/* ================================================================== */}
@@ -1720,8 +1363,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   cursor: "pointer",
                   color: "var(--text-tertiary)",
                   backgroundColor: "transparent",
-                  transition:
-                    "color var(--transition-fast), background-color var(--transition-fast)",
+                  transition: "color var(--transition-fast), background-color var(--transition-fast)",
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.color = "var(--text-primary)";
@@ -1760,8 +1402,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
               }}
               onFocus={(e) => {
                 e.currentTarget.style.borderColor = "var(--interactive)";
-                e.currentTarget.style.boxShadow =
-                  "0 0 0 2px var(--interactive-light)";
+                e.currentTarget.style.boxShadow = "0 0 0 2px var(--interactive-light)";
               }}
               onBlur={(e) => {
                 e.currentTarget.style.borderColor = "var(--border-primary)";
@@ -1791,8 +1432,7 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                   border: "1px solid var(--border-primary)",
                   borderRadius: "var(--radius-md)",
                   cursor: "pointer",
-                  transition:
-                    "background-color var(--transition-fast), color var(--transition-fast)",
+                  transition: "background-color var(--transition-fast), color var(--transition-fast)",
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.backgroundColor = "var(--bg-hover)";
@@ -1827,18 +1467,15 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
                       ? "not-allowed"
                       : "pointer",
                   opacity: isCreating ? 0.7 : 1,
-                  transition:
-                    "background-color var(--transition-fast), opacity var(--transition-fast)",
+                  transition: "background-color var(--transition-fast), opacity var(--transition-fast)",
                 }}
                 onMouseEnter={(e) => {
                   if (newKbName.trim() && !isCreating)
-                    e.currentTarget.style.backgroundColor =
-                      "var(--interactive-hover)";
+                    e.currentTarget.style.backgroundColor = "var(--interactive-hover)";
                 }}
                 onMouseLeave={(e) => {
                   if (newKbName.trim() && !isCreating)
-                    e.currentTarget.style.backgroundColor =
-                      "var(--interactive)";
+                    e.currentTarget.style.backgroundColor = "var(--interactive)";
                 }}
               >
                 <Plus size={14} />
@@ -1848,7 +1485,6 @@ export function KnowledgePanel({ kbId, onKbIdChange }: KnowledgePanelProps) {
           </div>
         </div>
       )}
-
     </div>
   );
 }

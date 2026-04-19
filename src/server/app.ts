@@ -509,6 +509,28 @@ export function createApp(): Hono {
 
   app.get("/api/health", (c) => c.json({ status: "ok", version: "0.1.0" }));
 
+  // System capabilities — derived from configured providers
+  app.get("/api/capabilities", async (c) => {
+    try {
+      const { CapabilityDispatcher } = await import("../models/capability-dispatcher.js");
+      const dispatcher = new CapabilityDispatcher();
+      const capabilities = await dispatcher.getSystemCapabilities();
+      return c.json(capabilities);
+    } catch (err) {
+      return c.json({
+        text: false,
+        vision: false,
+        tts: false,
+        audioTranscription: false,
+        imageGeneration: false,
+        videoGeneration: false,
+        musicGeneration: false,
+        embedding: false,
+        webSearch: false,
+      }, 200);
+    }
+  });
+
   app.get("/api/documents", (c) => c.json({
     message: "Documents are scoped to a knowledge base",
     hint: "Use GET /api/knowledge/kbs to list knowledge bases, then GET /api/knowledge/kbs/:kbId/documents",

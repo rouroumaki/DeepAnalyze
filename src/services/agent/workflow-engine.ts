@@ -269,11 +269,9 @@ export class WorkflowEngine {
     try {
       const { getRepos } = await import("../store/repos/index.js");
       const repos = await getRepos();
-      await repos.agentTask.update(this.input.workflowId, {
-        status: result.status === "completed" ? "completed" : "failed",
-        output: typeof result.synthesis === "string" ? result.synthesis : JSON.stringify(result),
-        completedAt: new Date().toISOString(),
-      });
+      const status = result.status === "completed" ? "completed" : "failed";
+      const output = typeof result.synthesis === "string" ? result.synthesis : JSON.stringify(result);
+      await repos.agentTask.updateStatus(this.input.workflowId, status, output);
     } catch (err) {
       console.error("[WorkflowEngine] Failed to persist result:", err);
     }

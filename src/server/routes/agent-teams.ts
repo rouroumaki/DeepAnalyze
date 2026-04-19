@@ -169,7 +169,6 @@ export function createAgentTeamRoutes(): Hono {
       id: workflowId,
       agentType: `workflow_${team.mode}`,
       input: JSON.stringify({ goal, teamId: team.id, mode: team.mode }),
-      status: "running",
     });
 
     // Execute asynchronously — do NOT await
@@ -177,11 +176,9 @@ export function createAgentTeamRoutes(): Hono {
       .then(async (result) => {
         try {
           const repos = await getRepos();
-          await repos.agentTask.update(workflowId, {
-            status: result.status === "completed" ? "completed" : "failed",
-            output: result.synthesis ?? JSON.stringify(result),
-            completedAt: new Date().toISOString(),
-          });
+          const status = result.status === "completed" ? "completed" : "failed";
+          const output = result.synthesis ?? JSON.stringify(result);
+          await repos.agentTask.updateStatus(workflowId, status, output);
         } catch (err) {
           console.error("[AgentTeams] Failed to persist workflow result:", err);
         }
@@ -190,11 +187,8 @@ export function createAgentTeamRoutes(): Hono {
         console.error(`[WorkflowEngine] Workflow ${workflowId} failed:`, err);
         try {
           const repos = await getRepos();
-          await repos.agentTask.update(workflowId, {
-            status: "failed",
-            output: err instanceof Error ? err.message : String(err),
-            completedAt: new Date().toISOString(),
-          });
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          await repos.agentTask.updateStatus(workflowId, "failed", undefined, errorMsg);
         } catch {}
         globalThis.__workflowEvents?.emit("workflow", {
           type: "workflow_complete",

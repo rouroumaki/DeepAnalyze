@@ -13,7 +13,7 @@ import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
-import { getCompounder, getPluginManager } from "../../services/agent/agent-system.js";
+import { getPluginManager } from "../../services/agent/agent-system.js";
 import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
@@ -25,8 +25,6 @@ interface RunRequest {
   input: string;
   agentType?: string;
   maxTurns?: number;
-  /** Optional knowledge base ID for auto-compounding the result. */
-  kbId?: string;
 }
 
 interface RunCoordinatedRequest {
@@ -40,8 +38,6 @@ interface RunSkillRequest {
   variables: Record<string, string>;
   /** Optional user input to append to the resolved prompt. */
   input?: string;
-  /** Optional knowledge base ID for auto-compounding the result. */
-  kbId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,32 +98,12 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         );
       }
 
-      // Auto-compound the result into the knowledge base if kbId was provided
-      let compoundedPageId: string | null = null;
-      if (body.kbId && result.output) {
-        try {
-          const compounder = await getCompounder();
-          compoundedPageId = compounder.compoundAgentResult(
-            body.kbId,
-            body.agentType || "general",
-            body.input,
-            result.output,
-          );
-        } catch (compoundingErr) {
-          console.warn(
-            "[Agents] Knowledge compounding failed:",
-            compoundingErr instanceof Error ? compoundingErr.message : String(compoundingErr),
-          );
-        }
-      }
-
       return c.json({
         taskId: result.taskId,
         status: "completed",
         output: result.output,
         turnsUsed: result.turnsUsed,
         usage: result.usage,
-        compoundedPageId,
         compactionEvents: result.compactionEvents,
       });
     } catch (err) {
@@ -286,21 +262,6 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
           await repos.message.create(body.sessionId, "assistant", savedContent);
         }
 
-        // Auto-compound if kbId provided
-        if (body.kbId && savedContent && !agentFailed) {
-          try {
-            const compounder = await getCompounder();
-            compounder.compoundAgentResult(
-              body.kbId,
-              body.agentType || "general",
-              body.input,
-              savedContent,
-            );
-          } catch {
-            // Non-critical
-          }
-        }
-
         // Send done event with final metadata
         // If agent failed, include the error output so the frontend can display it
         sendEvent("done", {
@@ -431,25 +392,6 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         );
       }
 
-      // Auto-compound the result into the knowledge base if kbId was provided
-      let compoundedPageId: string | null = null;
-      if (body.kbId && result.output) {
-        try {
-          const compounder = await getCompounder();
-          compoundedPageId = compounder.compoundAgentResult(
-            body.kbId,
-            `skill:${skill.name}`,
-            userInput,
-            result.output,
-          );
-        } catch (compoundingErr) {
-          console.warn(
-            "[Agents] Knowledge compounding failed:",
-            compoundingErr instanceof Error ? compoundingErr.message : String(compoundingErr),
-          );
-        }
-      }
-
       return c.json({
         taskId: result.taskId,
         status: "completed",
@@ -457,7 +399,6 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         turnsUsed: result.turnsUsed,
         usage: result.usage,
         skillName: skill.name,
-        compoundedPageId,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -475,10 +416,10 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
   // -----------------------------------------------------------------------
   // GET /tasks/:sessionId - List agent tasks for a session
   // -----------------------------------------------------------------------
-  router.get("/tasks/:sessionId", (c) => {
+  router.get("/tasks/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
 
-    const tasks = orchestrator.listSessionTasks(sessionId);
+    const tasks = await orchestrator.listSessionTasks(sessionId);
 
     return c.json(tasks.map(taskToResponse));
   });
@@ -486,10 +427,10 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
   // -----------------------------------------------------------------------
   // GET /task/:taskId - Get a single task status
   // -----------------------------------------------------------------------
-  router.get("/task/:taskId", (c) => {
+  router.get("/task/:taskId", async (c) => {
     const taskId = c.req.param("taskId");
 
-    const task = orchestrator.getTaskStatus(taskId);
+    const task = await orchestrator.getTaskStatus(taskId);
     if (!task) {
       return c.json({ error: "Task not found" }, 404);
     }
@@ -533,7 +474,7 @@ function taskToResponse(task: AgentTask) {
     input: task.input,
     output: task.output,
     error: task.error,
-    parentId: task.parentTaskId,
+    parentId: task.parentId,
     sessionId: task.sessionId,
     createdAt: task.createdAt,
     completedAt: task.completedAt,
@@ -574,7 +515,7 @@ async function startCoordinatedRun(
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   // Look up the latest coordinator task for this session.
-  const tasks = orchestrator.listSessionTasks(sessionId);
+  const tasks = await orchestrator.listSessionTasks(sessionId);
   const coordinatorTask = tasks.find(
     (t) => t.agentType === "coordinator" && t.status === "running",
   );

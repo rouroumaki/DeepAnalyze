@@ -12,6 +12,7 @@ export interface TeamMember {
   tools: string[];
   dependsOn: string[];
   perspective?: string;
+  systemPrompt?: string;
 }
 
 export interface TeamInfo {

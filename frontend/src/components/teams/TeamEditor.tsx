@@ -8,6 +8,15 @@ import { agentTeamsApi, type TeamInfo, type TeamMember } from "../../api/agentTe
 import { X, Plus, Trash2, Loader2, AlertCircle } from "lucide-react";
 
 // ---------------------------------------------------------------------------
+// Extended member type with UI-only fields
+// ---------------------------------------------------------------------------
+
+interface MemberFormData extends TeamMember {
+  /** UI-only: whether the systemPrompt textarea is expanded */
+  showSystemPrompt?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -40,13 +49,14 @@ function nextMemberId(): string {
   return `member-${Date.now()}-${++memberSeq}`;
 }
 
-function emptyMember(): TeamMember {
+function emptyMember(): MemberFormData {
   return {
     id: nextMemberId(),
     role: "",
     task: "",
     tools: [],
     dependsOn: [],
+    showSystemPrompt: false,
   };
 }
 
@@ -61,8 +71,8 @@ export function TeamEditor({ team, onClose, onSaved }: TeamEditorProps) {
   const [name, setName] = useState(team?.name ?? "");
   const [description, setDescription] = useState(team?.description ?? "");
   const [mode, setMode] = useState<TeamInfo["mode"]>(team?.mode ?? "pipeline");
-  const [members, setMembers] = useState<TeamMember[]>(
-    team?.members?.length ? team.members.map((m) => ({ ...m })) : [emptyMember()],
+  const [members, setMembers] = useState<MemberFormData[]>(
+    team?.members?.length ? team.members.map((m) => ({ ...m, showSystemPrompt: false })) : [emptyMember()],
   );
 
   const [saving, setSaving] = useState(false);
@@ -71,7 +81,7 @@ export function TeamEditor({ team, onClose, onSaved }: TeamEditorProps) {
   // ---- Member mutation helpers ----
 
   const updateMember = useCallback(
-    (index: number, patch: Partial<TeamMember>) => {
+    (index: number, patch: Partial<MemberFormData>) => {
       setMembers((prev) =>
         prev.map((m, i) => (i === index ? { ...m, ...patch } : m)),
       );
@@ -86,6 +96,28 @@ export function TeamEditor({ team, onClose, onSaved }: TeamEditorProps) {
   const removeMember = useCallback((index: number) => {
     setMembers((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const ALL_TOOLS = ["kb_search", "wiki_browse", "expand", "web_search", "bash", "read_file", "grep"] as const;
+
+  const toggleTool = useCallback(
+    (memberIndex: number, tool: string) => {
+      setMembers((prev) => {
+        const member = prev[memberIndex];
+        const currentTools =
+          member.tools?.[0] === "*"
+            ? [...ALL_TOOLS]
+            : (member.tools ?? []);
+        const newTools = currentTools.includes(tool)
+          ? currentTools.filter((t) => t !== tool)
+          : [...currentTools, tool];
+        const updated = newTools.length === ALL_TOOLS.length ? ["*"] : newTools;
+        return prev.map((m, i) =>
+          i === memberIndex ? { ...m, tools: updated } : m,
+        );
+      });
+    },
+    [],
+  );
 
   // ---- Save ----
 
@@ -110,7 +142,7 @@ export function TeamEditor({ team, onClose, onSaved }: TeamEditorProps) {
         name: name.trim(),
         description: description.trim(),
         mode,
-        members: validMembers,
+        members: validMembers.map(({ showSystemPrompt: _sp, ...rest }) => rest),
         isActive: true,
         crossReview: false,
       };
@@ -484,6 +516,119 @@ export function TeamEditor({ team, onClose, onSaved }: TeamEditorProps) {
                     e.currentTarget.style.borderColor = "var(--border-primary)";
                   }}
                 />
+
+                {/* Tools - always shown */}
+                <div style={{ marginTop: "var(--space-2)" }}>
+                  <label style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>工具</label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)" }}>
+                    {ALL_TOOLS.map((tool) => {
+                      const selected = (member.tools ?? ["*"])[0] === "*" || (member.tools ?? []).includes(tool);
+                      return (
+                        <button key={tool} onClick={() => toggleTool(index, tool)} style={{
+                          padding: "1px var(--space-2)",
+                          fontSize: "var(--text-xs)",
+                          border: `1px solid ${selected ? "var(--interactive)" : "var(--border-primary)"}`,
+                          borderRadius: "var(--radius-sm)",
+                          backgroundColor: selected ? "var(--interactive-light)" : "transparent",
+                          color: selected ? "var(--interactive)" : "var(--text-secondary)",
+                          cursor: "pointer",
+                        }}>
+                          {tool}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* dependsOn - only in graph mode */}
+                {mode === "graph" && (
+                  <div style={{ marginTop: "var(--space-2)" }}>
+                    <label style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>依赖</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)" }}>
+                      {members.filter((_, j) => j !== index && members[j].role).map((other) => (
+                        <button key={other.id} onClick={() => {
+                          const deps = member.dependsOn ?? [];
+                          const newDeps = deps.includes(other.role)
+                            ? deps.filter((d) => d !== other.role)
+                            : [...deps, other.role];
+                          updateMember(index, { dependsOn: newDeps });
+                        }} style={{
+                          padding: "1px var(--space-2)",
+                          fontSize: "var(--text-xs)",
+                          border: `1px solid ${(member.dependsOn ?? []).includes(other.role) ? "var(--success)" : "var(--border-primary)"}`,
+                          borderRadius: "var(--radius-sm)",
+                          backgroundColor: (member.dependsOn ?? []).includes(other.role) ? "var(--success-light, #dcfce7)" : "transparent",
+                          color: (member.dependsOn ?? []).includes(other.role) ? "var(--success)" : "var(--text-secondary)",
+                          cursor: "pointer",
+                        }}>
+                          {other.role}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* perspective - only in council mode */}
+                {mode === "council" && (
+                  <div style={{ marginTop: "var(--space-2)" }}>
+                    <label style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>分析视角</label>
+                    <input
+                      type="text"
+                      value={member.perspective ?? ""}
+                      onChange={(e) => updateMember(index, { perspective: e.target.value })}
+                      placeholder="从...角度分析"
+                      style={{
+                        width: "100%",
+                        padding: "var(--space-2) var(--space-3)",
+                        border: "1px solid var(--border-primary)",
+                        borderRadius: "var(--radius-md)",
+                        fontSize: "var(--text-sm)",
+                        backgroundColor: "var(--bg-tertiary)",
+                        color: "var(--text-primary)",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+                )}
+
+                {/* System Prompt - collapsible */}
+                {member.showSystemPrompt && (
+                  <div style={{ marginTop: "var(--space-2)" }}>
+                    <label style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>系统提示词（可选）</label>
+                    <textarea
+                      value={member.systemPrompt ?? ""}
+                      onChange={(e) => updateMember(index, { systemPrompt: e.target.value })}
+                      placeholder="自定义系统提示词..."
+                      rows={2}
+                      style={{
+                        width: "100%",
+                        padding: "var(--space-2) var(--space-3)",
+                        border: "1px solid var(--border-primary)",
+                        borderRadius: "var(--radius-md)",
+                        fontSize: "var(--text-sm)",
+                        backgroundColor: "var(--bg-tertiary)",
+                        color: "var(--text-primary)",
+                        outline: "none",
+                        resize: "vertical",
+                        fontFamily: "inherit",
+                      }}
+                    />
+                  </div>
+                )}
+                <button
+                  onClick={() => updateMember(index, { showSystemPrompt: !member.showSystemPrompt })}
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    color: "var(--interactive)",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: "2px 0",
+                    textAlign: "left" as const,
+                  }}
+                >
+                  {member.showSystemPrompt ? "收起" : "系统提示词"}
+                </button>
               </div>
             ))}
           </div>

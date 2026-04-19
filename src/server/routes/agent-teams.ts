@@ -9,6 +9,7 @@ import { getTeamManager, getRunner, getToolRegistry } from "../../services/agent
 import { WorkflowEngine } from "../../services/agent/workflow-engine.js";
 import type { WorkflowAgent, WorkflowEvent } from "../../services/agent/workflow-engine.js";
 import type { CreateTeamData, UpdateTeamData } from "../../store/repos/index.js";
+import { getRepos } from "../../store/repos/index.js";
 
 export function createAgentTeamRoutes(): Hono {
   const router = new Hono();
@@ -31,14 +32,14 @@ export function createAgentTeamRoutes(): Hono {
   /** List all teams */
   router.get("/", async (c) => {
     const manager = await getTeamManager();
-    const teams = manager.listTeams();
+    const teams = await manager.listTeams();
     return c.json(teams);
   });
 
   /** Get a single team by ID (with members) */
   router.get("/:id", async (c) => {
     const manager = await getTeamManager();
-    const team = manager.getTeam(c.req.param("id"));
+    const team = await manager.getTeam(c.req.param("id"));
     if (!team) return c.json({ error: "Team not found" }, 404);
     return c.json(team);
   });
@@ -59,7 +60,7 @@ export function createAgentTeamRoutes(): Hono {
 
     try {
       const manager = await getTeamManager();
-      const team = manager.createTeam(body);
+      const team = await manager.createTeam(body);
       return c.json(team, 201);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "Failed to create team" }, 400);
@@ -72,7 +73,7 @@ export function createAgentTeamRoutes(): Hono {
 
     try {
       const manager = await getTeamManager();
-      const team = manager.updateTeam(c.req.param("id"), body);
+      const team = await manager.updateTeam(c.req.param("id"), body);
       if (!team) return c.json({ error: "Team not found" }, 404);
       return c.json(team);
     } catch (err) {
@@ -83,7 +84,7 @@ export function createAgentTeamRoutes(): Hono {
   /** Delete a team */
   router.delete("/:id", async (c) => {
     const manager = await getTeamManager();
-    const ok = manager.deleteTeam(c.req.param("id"));
+    const ok = await manager.deleteTeam(c.req.param("id"));
     if (!ok) return c.json({ error: "Team not found" }, 404);
     return c.json({ success: true });
   });
@@ -115,7 +116,7 @@ export function createAgentTeamRoutes(): Hono {
     }
 
     const manager = await getTeamManager();
-    const team = manager.getTeam(teamId);
+    const team = await manager.getTeam(teamId);
     if (!team) {
       return c.json({ error: "Team not found" }, 404);
     }
@@ -162,17 +163,47 @@ export function createAgentTeamRoutes(): Hono {
       onEvent,
     );
 
-    // Execute asynchronously — do NOT await
-    engine.execute().catch((err) => {
-      console.error(`[WorkflowEngine] Workflow ${workflowId} failed:`, err);
-      globalThis.__workflowEvents?.emit("workflow", {
-        type: "workflow_complete",
-        workflowId,
-        status: "failed",
-        totalDuration: 0,
-        resultCount: 0,
-      });
+    // Persist task record before starting async execution
+    const repos = await getRepos();
+    await repos.agentTask.create({
+      id: workflowId,
+      agentType: `workflow_${team.mode}`,
+      input: JSON.stringify({ goal, teamId: team.id, mode: team.mode }),
+      status: "running",
     });
+
+    // Execute asynchronously — do NOT await
+    engine.execute()
+      .then(async (result) => {
+        try {
+          const repos = await getRepos();
+          await repos.agentTask.update(workflowId, {
+            status: result.status === "completed" ? "completed" : "failed",
+            output: result.synthesis ?? JSON.stringify(result),
+            completedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.error("[AgentTeams] Failed to persist workflow result:", err);
+        }
+      })
+      .catch(async (err) => {
+        console.error(`[WorkflowEngine] Workflow ${workflowId} failed:`, err);
+        try {
+          const repos = await getRepos();
+          await repos.agentTask.update(workflowId, {
+            status: "failed",
+            output: err instanceof Error ? err.message : String(err),
+            completedAt: new Date().toISOString(),
+          });
+        } catch {}
+        globalThis.__workflowEvents?.emit("workflow", {
+          type: "workflow_complete",
+          workflowId,
+          status: "failed",
+          totalDuration: 0,
+          resultCount: 0,
+        });
+      });
 
     return c.json({
       workflowId,

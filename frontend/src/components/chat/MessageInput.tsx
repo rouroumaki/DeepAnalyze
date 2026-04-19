@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useChatStore } from "../../store/chat";
 import { useFileUpload } from "../../hooks/useFileUpload";
 import { FilePreview } from "../ui/FilePreview";
+import { api } from "../../api/client";
 import { Send, Square, Paperclip, Loader2 } from "lucide-react";
 
 export function MessageInput() {
@@ -25,14 +26,42 @@ export function MessageInput() {
     }
   }, [text]);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!canSend) return;
     const content = text.trim();
     setText("");
-    // Send via HTTP API - backend /api/agents/run handles message save + agent execution
+
+    // Handle pending file uploads
+    if (hasPending && currentSessionId) {
+      try {
+        // Find or create a KB for this session
+        const kbs = await api.listKnowledgeBases();
+        let sessionKb = kbs.find((kb) => kb.name === `session-${currentSessionId}`);
+        let kbId = sessionKb?.id;
+        if (!kbId) {
+          const newKb = await api.createKnowledgeBase(`session-${currentSessionId}`);
+          kbId = (newKb as { id: string }).id;
+        }
+
+        // Upload pending files
+        const pendingUploads = uploads.filter((u) => u.status === "pending");
+        for (const upload of pendingUploads) {
+          try {
+            await api.uploadDocument(kbId, upload.file);
+            removeUpload(upload.id);
+          } catch (err) {
+            console.error(`Failed to upload ${upload.file.name}:`, err);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to set up session knowledge base:", err);
+      }
+    }
+
+    // Send via HTTP API
     sendMessage(content);
     textareaRef.current?.focus();
-  }, [canSend, text, sendMessage]);
+  }, [canSend, text, sendMessage, hasPending, uploads, removeUpload, currentSessionId]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -147,11 +176,11 @@ export function MessageInput() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            border: "none",
+            border: canSend || isStreaming ? "none" : "1px solid var(--border-primary)",
             borderRadius: "var(--radius-lg)",
-            background: canSend || isStreaming ? "var(--brand-primary)" : "var(--bg-tertiary)",
-            color: canSend || isStreaming ? "var(--brand-foreground)" : "var(--text-disabled)",
-            cursor: canSend || isStreaming ? "pointer" : "not-allowed",
+            background: canSend || isStreaming ? "var(--brand-primary)" : "var(--surface-primary)",
+            color: canSend || isStreaming ? "var(--brand-foreground)" : "var(--text-tertiary)",
+            cursor: canSend || isStreaming ? "pointer" : "default",
             transition: "all var(--transition-fast)",
           }}
         >

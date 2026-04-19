@@ -404,6 +404,7 @@ export interface AgentTask {
 
 /** Data to create an agent task. */
 export interface NewAgentTask {
+  id?: string;
   parentTaskId?: string;
   sessionId?: string;
   agentType: string;

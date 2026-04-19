@@ -6,7 +6,8 @@ export class PgAgentTaskRepo implements AgentTaskRepo {
   constructor(private pool: pg.Pool) {}
 
   async create(data: NewAgentTask): Promise<AgentTask> {
-    const id = randomUUID();
+    // If an ID was provided, use it; otherwise generate one
+    const id = data.id ?? randomUUID();
     const { rows } = await this.pool.query(
       `INSERT INTO agent_tasks (id, parent_task_id, session_id, agent_type, status, input) VALUES ($1, $2, $3, $4, 'pending', $5) RETURNING *`,
       [id, data.parentTaskId ?? null, data.sessionId ?? null, data.agentType, data.input ? JSON.stringify(data.input) : null],

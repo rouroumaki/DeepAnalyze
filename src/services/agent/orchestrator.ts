@@ -508,6 +508,7 @@ export class Orchestrator {
   }): Promise<void> {
     const repos = await getRepos();
     await repos.agentTask.create({
+      id: task.id,
       agentType: task.agentType,
       input: task.input,
       parentTaskId: task.parentId,

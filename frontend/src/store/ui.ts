@@ -3,7 +3,7 @@ import { storage } from '../utils/storage';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type ViewId = 'chat' | 'knowledge' | 'reports' | 'tasks';
-export type PanelContentType = 'sessions' | 'plugins' | 'skills' | 'cron' | 'settings';
+export type PanelContentType = 'sessions' | 'plugins' | 'skills' | 'cron' | 'settings' | 'teams';
 
 interface ToastItem {
   id: string;

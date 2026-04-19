@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search, Sun, Moon, Settings,
-  History, Puzzle, Zap, Clock,
+  History, Puzzle, Zap, Clock, Users,
 } from 'lucide-react';
 import { useTheme } from '../../hooks/useTheme';
 import { useUIStore, type PanelContentType } from '../../store/ui';
@@ -9,6 +9,7 @@ import { useChatStore } from '../../store/chat';
 import { api } from '../../api/client';
 import type { SessionInfo, KnowledgeBase } from '../../types/index';
 import { useKeyboard } from '../../hooks/useKeyboard';
+import { isWsConnected } from '../../hooks/useWebSocket';
 
 // ---------------------------------------------------------------------------
 // Search result types
@@ -27,6 +28,7 @@ const headerActions: { id: PanelContentType; icon: typeof History; title: string
   { id: 'sessions', icon: History, title: '会话历史' },
   { id: 'plugins', icon: Puzzle, title: '插件管理' },
   { id: 'skills', icon: Zap, title: '技能库' },
+  { id: 'teams', icon: Users, title: '团队管理' },
   { id: 'cron', icon: Clock, title: '定时任务' },
   { id: 'settings', icon: Settings, title: '设置' },
 ];
@@ -59,6 +61,17 @@ export function Header() {
     };
     check();
     const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // WebSocket connection status
+  const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
+  useEffect(() => {
+    const check = () => {
+      setWsStatus(isWsConnected() ? "connected" : "disconnected");
+    };
+    check();
+    const interval = setInterval(check, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -297,12 +310,23 @@ export function Header() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexShrink: 0 }}>
         {/* Health dot */}
         <div
-          title={healthStatus === "ok" ? "模型正常" : healthStatus === "error" ? "模型异常" : "连接中..."}
+          title={healthStatus === "ok" ? "API 正常" : healthStatus === "error" ? "API 异常" : "连接中..."}
           style={{
             width: 7,
             height: 7,
             borderRadius: '50%',
             background: healthColor,
+            flexShrink: 0,
+          }}
+        />
+        {/* WS status dot */}
+        <div
+          title={wsStatus === "connected" ? "实时连接正常" : "实时连接断开"}
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: wsStatus === "connected" ? "var(--success)" : "var(--warning)",
             flexShrink: 0,
           }}
         />

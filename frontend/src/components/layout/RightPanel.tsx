@@ -28,6 +28,9 @@ const SettingsPanel = lazy(() =>
 const CronManager = lazy(() =>
   import("../cron/CronManager").then((m) => ({ default: m.CronManager }))
 );
+const TeamManager = lazy(() =>
+  import("../teams/TeamManager").then((m) => ({ default: m.TeamManager }))
+);
 
 // ---------------------------------------------------------------------------
 // Panel configuration
@@ -39,6 +42,7 @@ const PANEL_TITLES: Record<PanelContentType, string> = {
   skills: "技能库",
   cron: "定时任务",
   settings: "设置",
+  teams: "团队管理",
 };
 
 const PANEL_WIDTHS: Record<PanelContentType, number> = {
@@ -47,6 +51,7 @@ const PANEL_WIDTHS: Record<PanelContentType, number> = {
   skills: 480,
   cron: 560,
   settings: 640,
+  teams: 560,
 };
 
 // ---------------------------------------------------------------------------
@@ -74,6 +79,8 @@ function PanelContent({ type }: { type: PanelContentType }) {
             return <CronManager />;
           case "settings":
             return <SettingsPanel />;
+          case "teams":
+            return <TeamManager />;
         }
       })()}
     </Suspense>
@@ -126,7 +133,7 @@ export function RightPanel() {
           position: "fixed",
           inset: 0,
           backgroundColor: "rgba(0, 0, 0, 0.5)",
-          zIndex: "var(--z-overlay)" as unknown as number,
+          zIndex: 1200,
           animation: "rightPanelFadeIn var(--transition-base) ease-out",
         }}
       />
@@ -143,7 +150,7 @@ export function RightPanel() {
           backgroundColor: "var(--bg-primary)",
           borderLeft: "1px solid var(--border-primary)",
           boxShadow: "var(--shadow-2xl)",
-          zIndex: "var(--z-modal)" as unknown as number,
+          zIndex: 1300,
           display: "flex",
           flexDirection: "column",
           animation: "rightPanelSlideIn var(--transition-slow) ease-out",

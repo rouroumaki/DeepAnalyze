@@ -575,4 +575,5 @@ export type RightPanelId =
   | "plugins"
   | "cron"
   | "settings"
+  | "teams"
   | null;

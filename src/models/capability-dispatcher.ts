@@ -9,6 +9,7 @@
 import { getRepos } from "../store/repos/index.js";
 import type { ProviderConfig } from "../store/repos/index.js";
 import type { ModelRole } from "./provider.js";
+import { getProviderMetadata } from "./provider-registry.js";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -51,6 +52,19 @@ export interface TranscriptionResult {
   duration?: number;
 }
 
+/** Runtime system capabilities derived from configured providers. */
+export interface SystemCapabilities {
+  text: boolean;
+  vision: boolean;
+  tts: boolean;
+  audioTranscription: boolean;
+  imageGeneration: boolean;
+  videoGeneration: boolean;
+  musicGeneration: boolean;
+  embedding: boolean;
+  webSearch: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // CapabilityDispatcher
 // ---------------------------------------------------------------------------
@@ -69,6 +83,57 @@ export class CapabilityDispatcher {
       (p) => p.id === defaultId && p.enabled,
     );
     return provider ?? null;
+  }
+
+  /**
+   * Detect system capabilities by inspecting configured providers.
+   * For each capability, check if a provider is configured for the
+   * corresponding role AND that provider's ProviderFeatures include it.
+   */
+  async getSystemCapabilities(): Promise<SystemCapabilities> {
+    const repos = await getRepos();
+    const settings = await repos.settings.getProviderSettings();
+
+    // Build a map of role -> provider config
+    const roleProviders: Partial<Record<string, ProviderConfig>> = {};
+    for (const [role, providerId] of Object.entries(settings.defaults)) {
+      if (!providerId) continue;
+      const config = settings.providers.find(
+        (p) => p.id === providerId && p.enabled,
+      );
+      if (config) {
+        roleProviders[role] = config;
+      }
+    }
+
+    // Check web search availability (env-based)
+    const webSearch = !!(process.env.SEARCH_BACKEND === "serper"
+      ? process.env.SERPER_API_KEY
+      : true); // SearXNG default, always available if running
+
+    // Derive capabilities from provider features
+    const checkFeature = (
+      role: string,
+      feature: "chat" | "embeddings" | "tts" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "audioTranscription" | "vision",
+    ): boolean => {
+      const config = roleProviders[role];
+      if (!config) return false;
+      const meta = getProviderMetadata(config.id);
+      if (!meta) return true; // Unknown provider — assume capable
+      return meta.features[feature];
+    };
+
+    return {
+      text: !!roleProviders.main,
+      vision: checkFeature("vlm", "vision"),
+      tts: checkFeature("tts", "tts"),
+      audioTranscription: checkFeature("audio_transcribe", "audioTranscription"),
+      imageGeneration: checkFeature("image_gen", "imageGeneration"),
+      videoGeneration: checkFeature("video_gen", "videoGeneration"),
+      musicGeneration: checkFeature("music_gen", "musicGeneration"),
+      embedding: !!roleProviders.embedding,
+      webSearch,
+    };
   }
 
   /** Detect the API protocol based on provider endpoint */

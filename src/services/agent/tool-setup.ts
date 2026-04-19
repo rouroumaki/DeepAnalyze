@@ -686,17 +686,73 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       required: ["query"],
     },
     async execute(input: Record<string, unknown>) {
-      const query = input.query as string;
+      const args = input as { query: string; maxResults?: number };
+      const backend = process.env.SEARCH_BACKEND ?? "searxng";
+      const maxResults = args.maxResults ?? 10;
 
       try {
-        return {
-          query,
-          message: "Web search is available but requires a search API endpoint to be configured. " +
-            "For now, you can suggest the user check external sources.",
-          suggestion: `Search query: "${query}"`,
-        };
+        if (backend === "serper") {
+          const apiKey = process.env.SERPER_API_KEY;
+          if (!apiKey) {
+            return "Web search (Serper) is not configured. Set SERPER_API_KEY environment variable.";
+          }
+
+          const resp = await fetch("https://google.serper.dev/search", {
+            method: "POST",
+            headers: {
+              "X-API-KEY": apiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              q: args.query,
+              num: maxResults,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (!resp.ok) {
+            return `Search request failed: HTTP ${resp.status}`;
+          }
+
+          const data = await resp.json() as {
+            organic?: Array<{ title: string; link: string; snippet: string }>;
+          };
+
+          const results = (data.organic ?? []).slice(0, maxResults);
+          if (results.length === 0) return `No results found for "${args.query}".`;
+
+          return results
+            .map((r, i) => `[${i + 1}] ${r.title}\n    ${r.link}\n    ${r.snippet}`)
+            .join("\n\n");
+        } else {
+          // SearXNG (self-hosted)
+          const searxngUrl = process.env.SEARXNG_URL ?? "http://localhost:8888";
+          const url = `${searxngUrl}/search?q=${encodeURIComponent(args.query)}&format=json&categories=general`;
+
+          const resp = await fetch(url, {
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (!resp.ok) {
+            return `Search request failed: HTTP ${resp.status}. Check SearXNG at ${searxngUrl}`;
+          }
+
+          const data = await resp.json() as {
+            results?: Array<{ title: string; url: string; content: string }>;
+          };
+
+          const results = (data.results ?? []).slice(0, maxResults);
+          if (results.length === 0) return `No results found for "${args.query}".`;
+
+          return results
+            .map((r, i) => `[${i + 1}] ${r.title}\n    ${r.url}\n    ${r.content}`)
+            .join("\n\n");
+        }
       } catch (err) {
-        return { error: `Web search failed: ${err instanceof Error ? err.message : String(err)}` };
+        if (err instanceof Error && err.name === "TimeoutError") {
+          return `Search request timed out for "${args.query}".`;
+        }
+        return `Search failed: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
   });

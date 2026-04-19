@@ -23,7 +23,7 @@ export function KnowledgeSearchBar({ onSearch, loading, className }: KnowledgeSe
   const [topK, setTopK] = useState(10);
   const [levels, setLevels] = useState<string[]>(["L1"]);
   const [showControls, setShowControls] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const handleChange = useCallback((value: string) => {
     setQuery(value);

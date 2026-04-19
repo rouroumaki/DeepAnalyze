@@ -72,7 +72,7 @@ export interface WorkflowAgentResult {
 /** Overall workflow result. */
 export interface WorkflowResult {
   workflowId: string;
-  status: "completed" | "partial" | "failed";
+  status: "completed" | "partial" | "failed" | "cancelled";
   agentResults: WorkflowAgentResult[];
   synthesis: string;
   totalDuration: number;
@@ -186,6 +186,7 @@ export class WorkflowEngine {
   private readonly toolRegistry: ToolRegistry;
   private readonly onEvent: ((event: WorkflowEvent) => void) | undefined;
   private readonly input: WorkflowInput;
+  private abortController = new AbortController();
 
   constructor(
     input: WorkflowInput,
@@ -202,6 +203,11 @@ export class WorkflowEngine {
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------
+
+  /** Cancel the running workflow. */
+  cancel(): void {
+    this.abortController.abort();
+  }
 
   /**
    * Execute the workflow according to its mode and return the aggregated
@@ -251,13 +257,28 @@ export class WorkflowEngine {
       totalDuration,
     });
 
-    return {
+    const result: WorkflowResult = {
       workflowId: this.input.workflowId,
       status,
       agentResults,
       synthesis,
       totalDuration,
     };
+
+    // Persist workflow result to agent_tasks table
+    try {
+      const { getRepos } = await import("../store/repos/index.js");
+      const repos = await getRepos();
+      await repos.agentTask.update(this.input.workflowId, {
+        status: result.status === "completed" ? "completed" : "failed",
+        output: typeof result.synthesis === "string" ? result.synthesis : JSON.stringify(result),
+        completedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("[WorkflowEngine] Failed to persist result:", err);
+    }
+
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -269,6 +290,10 @@ export class WorkflowEngine {
    * prior outputs. Stops on the first failure.
    */
   private async executePipeline(): Promise<WorkflowAgentResult[]> {
+    if (this.abortController.signal.aborted) {
+      return this.buildCancelledResult().agentResults;
+    }
+
     const results: WorkflowAgentResult[] = [];
     const accumulatedContext: string[] = [];
 
@@ -306,6 +331,10 @@ export class WorkflowEngine {
    * Skips nodes whose dependencies failed.
    */
   private async executeGraph(): Promise<WorkflowAgentResult[]> {
+    if (this.abortController.signal.aborted) {
+      return this.buildCancelledResult().agentResults;
+    }
+
     const agents = this.input.agents;
 
     // Cycle detection
@@ -457,6 +486,10 @@ export class WorkflowEngine {
    * and refines their own.
    */
   private async executeCouncil(): Promise<WorkflowAgentResult[]> {
+    if (this.abortController.signal.aborted) {
+      return this.buildCancelledResult().agentResults;
+    }
+
     const agents = this.input.agents;
 
     // Round 1: parallel analysis
@@ -495,8 +528,13 @@ export class WorkflowEngine {
       return round1Results;
     }
 
-    // Round 2: cross-review
-    const round2Results: WorkflowAgentResult[] = [];
+    // Round 2: cross-review (parallel)
+    // Build per-agent inputs first, then run all reviews concurrently.
+    const round2Inputs: Array<{
+      agent: WorkflowAgent;
+      round1Result: WorkflowAgentResult;
+      contextMessages: Array<{ role: "user" | "assistant"; content: string }> | null;
+    }> = [];
 
     for (let i = 0; i < agents.length; i++) {
       const agent = agents[i];
@@ -504,7 +542,7 @@ export class WorkflowEngine {
 
       // Skip agents that failed in round 1
       if (round1Result.status !== "completed") {
-        round2Results.push(round1Result);
+        round2Inputs.push({ agent, round1Result, contextMessages: null });
         continue;
       }
 
@@ -519,7 +557,7 @@ export class WorkflowEngine {
 
       if (!otherOutputs.trim()) {
         // No other outputs to review — keep round 1 result
-        round2Results.push(round1Result);
+        round2Inputs.push({ agent, round1Result, contextMessages: null });
         continue;
       }
 
@@ -538,9 +576,38 @@ export class WorkflowEngine {
         },
       ];
 
-      const result = await this.runAgent(agent, contextMessages);
-      round2Results.push(result);
+      round2Inputs.push({ agent, round1Result, contextMessages });
     }
+
+    // Run all Round 2 reviews in parallel
+    const round2Promises = round2Inputs.map((input) => {
+      if (!input.contextMessages) {
+        // No review needed — carry forward the round 1 result
+        return Promise.resolve(input.round1Result);
+      }
+      return this.runAgent(input.agent, input.contextMessages);
+    });
+
+    const round2Settled = await Promise.allSettled(round2Promises);
+    const round2Results: WorkflowAgentResult[] = round2Settled.map(
+      (outcome, i) => {
+        if (outcome.status === "fulfilled") {
+          return outcome.value;
+        }
+        const errorMsg =
+          outcome.reason instanceof Error
+            ? outcome.reason.message
+            : String(outcome.reason);
+        return {
+          agentId: round2Inputs[i].agent.id,
+          role: round2Inputs[i].agent.role,
+          status: "failed",
+          output: "",
+          duration: 0,
+          error: errorMsg,
+        };
+      },
+    );
 
     return round2Results;
   }
@@ -553,6 +620,10 @@ export class WorkflowEngine {
    * All agents run in parallel. Results are synthesized.
    */
   private async executeParallel(): Promise<WorkflowAgentResult[]> {
+    if (this.abortController.signal.aborted) {
+      return this.buildCancelledResult().agentResults;
+    }
+
     const agents = this.input.agents;
 
     const runPromises = agents.map((agent) => this.runAgent(agent));
@@ -607,6 +678,7 @@ export class WorkflowEngine {
         systemPromptOverride: agent.systemPrompt,
         toolsOverride: agent.tools,
         contextMessages,
+        signal: this.abortController.signal,
         onEvent: (event) => this.forwardAgentEvent(agent.id, event),
       });
 
@@ -824,6 +896,16 @@ export class WorkflowEngine {
   // -----------------------------------------------------------------------
   // Result helpers
   // -----------------------------------------------------------------------
+
+  private buildCancelledResult(): WorkflowResult {
+    return {
+      workflowId: this.input.workflowId,
+      status: "cancelled",
+      agentResults: [],
+      synthesis: "Workflow was cancelled.",
+      totalDuration: 0,
+    };
+  }
 
   /**
    * Compute the overall workflow status from individual agent results.

@@ -453,12 +453,12 @@ export class Retriever {
    * highlights and are grouped by level.
    *
    * @param query   - The search query string
-   * @param kbId    - The knowledge base ID to search within
+   * @param kbIds   - The knowledge base IDs to search across
    * @param options - Optional overrides for topK per level and entity search toggle
    */
   async searchByLevels(
     query: string,
-    kbId: string,
+    kbIds: string[],
     options?: {
       topK?: number;
       includeEntities?: boolean;
@@ -490,10 +490,10 @@ export class Retriever {
     const searchL2 = requestedLevels.includes("L2");
 
     const [l0Results, l1Results, l2Results, entityResults] = await Promise.all([
-      searchL0 ? this.searchLevel(query, kbId, levelMap.L0, "L0", keywords, topK, docId) : Promise.resolve([]),
-      searchL1 ? this.searchLevel(query, kbId, levelMap.L1, "L1", keywords, topK, docId) : Promise.resolve([]),
-      searchL2 ? this.searchLevel(query, kbId, levelMap.L2, "L2", keywords, topK, docId) : Promise.resolve([]),
-      includeEntities ? this.searchEntities(query, kbId, topK) : Promise.resolve([]),
+      searchL0 ? this.searchLevel(query, kbIds, levelMap.L0, "L0", keywords, topK, docId) : Promise.resolve([]),
+      searchL1 ? this.searchLevel(query, kbIds, levelMap.L1, "L1", keywords, topK, docId) : Promise.resolve([]),
+      searchL2 ? this.searchLevel(query, kbIds, levelMap.L2, "L2", keywords, topK, docId) : Promise.resolve([]),
+      includeEntities ? this.searchEntities(query, kbIds, topK) : Promise.resolve([]),
     ]);
 
     return {
@@ -509,7 +509,7 @@ export class Retriever {
    */
   private async searchLevel(
     query: string,
-    kbId: string,
+    kbIds: string[],
     pageTypes: string[],
     level: "L0" | "L1" | "L2",
     keywords: string[],
@@ -518,7 +518,7 @@ export class Retriever {
   ): Promise<LeveledSearchResult[]> {
     // Delegate to the unified search and filter by page type
     const opts: SearchOptions = {
-      kbIds: [kbId],
+      kbIds,
       topK,
       pageTypes,
     };
@@ -552,37 +552,38 @@ export class Retriever {
    */
   private async searchEntities(
     query: string,
-    kbId: string,
+    kbIds: string[],
     topK: number,
   ): Promise<EntitySearchResult[]> {
     const repos = await getRepos();
     const lowerQuery = query.toLowerCase();
 
     try {
-      // Get entity pages matching the query
-      const entityPages = await repos.wikiPage.getByKbAndType(kbId, "entity");
-      const matchingEntities = entityPages.filter(p =>
-        p.title.toLowerCase().includes(lowerQuery)
-      ).slice(0, topK);
-
       const results: EntitySearchResult[] = [];
 
-      for (const page of matchingEntities) {
-        // Get incoming entity_ref links to count mentions
-        const incomingLinks = await repos.wikiLink.getIncoming(page.id);
-        const entityRefLinks = incomingLinks.filter(l => l.linkType === "entity_ref");
+      for (const kbId of kbIds) {
+        const entityPages = await repos.wikiPage.getByKbAndType(kbId, "entity");
+        const matchingEntities = entityPages.filter(p =>
+          p.title.toLowerCase().includes(lowerQuery)
+        ).slice(0, topK);
 
-        // Extract entity type from title (format: "Type: Name")
-        const parts = page.title.split(": ");
-        const type = parts.length > 1 ? parts[0] : "entity";
-        const name = parts.length > 1 ? parts.slice(1).join(": ") : page.title;
+        for (const page of matchingEntities) {
+          // Get incoming entity_ref links to count mentions
+          const incomingLinks = await repos.wikiLink.getIncoming(page.id);
+          const entityRefLinks = incomingLinks.filter(l => l.linkType === "entity_ref");
 
-        results.push({
-          name,
-          type,
-          count: entityRefLinks.length,
-          relatedPages: entityRefLinks.map(l => l.sourcePageId).slice(0, 10),
-        });
+          // Extract entity type from title (format: "Type: Name")
+          const parts = page.title.split(": ");
+          const type = parts.length > 1 ? parts[0] : "entity";
+          const name = parts.length > 1 ? parts.slice(1).join(": ") : page.title;
+
+          results.push({
+            name,
+            type,
+            count: entityRefLinks.length,
+            relatedPages: entityRefLinks.map(l => l.sourcePageId).slice(0, 10),
+          });
+        }
       }
 
       // Sort by mention count descending

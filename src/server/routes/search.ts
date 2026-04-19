@@ -57,7 +57,7 @@ export function createSearchRoutes(
         ? levelsParam.split(",").map((l) => l.trim())
         : ["L0", "L1", "L2"];
 
-      const result = await retriever.searchByLevels(query, kbId, {
+      const result = await retriever.searchByLevels(query, [kbId], {
         topK,
         includeEntities,
         docId,

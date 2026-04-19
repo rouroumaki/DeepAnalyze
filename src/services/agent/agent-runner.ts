@@ -31,6 +31,8 @@ import type {
   ChatMessage,
   ChatResponse,
   ToolCall,
+  ToolDefinition,
+  ModelRole,
 } from "../../models/provider.js";
 
 // ---------------------------------------------------------------------------
@@ -128,7 +130,16 @@ export class AgentRunner {
     const isUnlimited = advisoryLimit === -1;
     const hardLimit = isUnlimited ? Infinity : advisoryLimit * 3;
 
-    const modelRole = options.modelRole ?? definition.modelRole ?? "main";
+    // --- Main/Sub model split ---
+    // Primary agents (general, report) use 'main' model
+    // Sub agents (explore, compile, verify, coordinator) use 'summarizer' model
+    const effectiveAgentType = options.agentType ?? definition.agentType ?? "general";
+    const SUB_AGENT_TYPES = new Set(["explore", "compile", "verify", "coordinator"]);
+    const isSubAgent = SUB_AGENT_TYPES.has(effectiveAgentType);
+    const modelRole = options.modelRole ?? definition.modelRole ?? (isSubAgent ? "summarizer" : "main");
+    const fallbackRole: ModelRole = modelRole === "main" ? "summarizer" : "main";
+    let usingFallback = false;
+
     let modelId: string;
     try {
       // Ensure the router has the latest provider config before resolving
@@ -189,7 +200,7 @@ export class AgentRunner {
     let sessionMemory: SessionMemoryManager | null = null;
     if (options.sessionId) {
       sessionMemory = new SessionMemoryManager(this.modelRouter, options.sessionId, agentSettings);
-      const memory = sessionMemory.load();
+      const memory = await sessionMemory.load();
       if (memory) {
         messages[0].content += "\n\n" + sessionMemory.buildPromptInjection(memory);
       }
@@ -234,14 +245,15 @@ export class AgentRunner {
         });
       }
 
-      // 4. Call the LLM
+      // 4. Call the LLM (with automatic model fallback)
       let response: ChatResponse;
       try {
-        response = await this.modelRouter.chat(messages, {
-          model: modelId,
-          tools: toolDefs.length > 0 ? toolDefs : undefined,
-          signal: options.signal,
-        });
+        response = await this.chatWithFallback(
+          messages, toolDefs, options,
+          modelId, modelRole, fallbackRole,
+          usingFallback,
+          (newModelId: string) => { modelId = newModelId; usingFallback = true; },
+        );
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
 
@@ -372,7 +384,7 @@ export class AgentRunner {
       if (sessionMemory && messages.length > 0) {
         const totalTokens = totalInputTokens + totalOutputTokens;
         try {
-          const memory = sessionMemory.load();
+          const memory = await sessionMemory.load();
           if (!memory && sessionMemory.shouldInitialize(totalTokens)) {
             const newMemory = await sessionMemory.initialize(messages, options.signal);
             // Set lastTokenPosition to actual session tokens
@@ -465,6 +477,52 @@ export class AgentRunner {
     }
 
     return result;
+  }
+
+  // -----------------------------------------------------------------------
+  // Chat with automatic model fallback
+  // -----------------------------------------------------------------------
+
+  /**
+   * Call the LLM with automatic fallback to the alternate model role
+   * if the primary model fails. On fallback success, updates the caller's
+   * modelId and usingFallback via the onFallback callback so subsequent
+   * turns use the fallback model directly.
+   */
+  private async chatWithFallback(
+    messages: ChatMessage[],
+    toolDefs: ToolDefinition[],
+    options: AgentRunOptions,
+    modelId: string,
+    modelRole: string,
+    fallbackRole: ModelRole,
+    usingFallback: boolean,
+    onFallback: (newModelId: string) => void,
+  ): Promise<ChatResponse> {
+    try {
+      return await this.modelRouter.chat(messages, {
+        model: modelId,
+        tools: toolDefs.length > 0 ? toolDefs : undefined,
+        signal: options.signal,
+      });
+    } catch (primaryError) {
+      // Try fallback model if not already using it
+      if (!usingFallback) {
+        try {
+          const fallbackModelId = this.modelRouter.getDefaultModel(fallbackRole);
+          console.warn(`[AgentRunner] Primary model (${modelRole}: ${modelId}) failed, switching to fallback (${fallbackRole}: ${fallbackModelId})`);
+          onFallback(fallbackModelId);
+          return await this.modelRouter.chat(messages, {
+            model: fallbackModelId,
+            tools: toolDefs.length > 0 ? toolDefs : undefined,
+            signal: options.signal,
+          });
+        } catch {
+          throw primaryError;
+        }
+      }
+      throw primaryError;
+    }
   }
 
   // -----------------------------------------------------------------------

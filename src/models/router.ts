@@ -45,6 +45,68 @@ export function bumpConfigVersion(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Circuit Breaker
+// ---------------------------------------------------------------------------
+
+interface CircuitBreakerState {
+  failures: number;
+  lastFailure: number;
+  state: "closed" | "open" | "half-open";
+  resetTimeout: number; // ms, default 60000
+}
+
+class CircuitBreaker {
+  private circuits = new Map<string, CircuitBreakerState>();
+
+  /** Check if the circuit for a provider is open (should be skipped). */
+  isOpen(providerId: string): boolean {
+    const circuit = this.circuits.get(providerId);
+    if (!circuit) return false;
+
+    if (circuit.state === "open") {
+      // Check if reset timeout has elapsed
+      if (Date.now() - circuit.lastFailure > circuit.resetTimeout) {
+        circuit.state = "half-open";
+        console.log(`[CircuitBreaker] ${providerId} entering half-open state`);
+        return false;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  /** Record a successful call — reset the circuit. */
+  recordSuccess(providerId: string): void {
+    const circuit = this.circuits.get(providerId);
+    if (circuit) {
+      circuit.failures = 0;
+      circuit.state = "closed";
+    }
+  }
+
+  /** Record a failed call — open the circuit if threshold reached. */
+  recordFailure(providerId: string): void {
+    let circuit = this.circuits.get(providerId);
+    if (!circuit) {
+      circuit = { failures: 0, lastFailure: 0, state: "closed", resetTimeout: 60000 };
+      this.circuits.set(providerId, circuit);
+    }
+
+    circuit.failures++;
+    circuit.lastFailure = Date.now();
+
+    if (circuit.state === "half-open") {
+      circuit.state = "open";
+      console.warn(`[CircuitBreaker] ${providerId} half-open test failed, re-opening circuit`);
+    } else if (circuit.failures >= 3) {
+      circuit.state = "open";
+      console.warn(`[CircuitBreaker] ${providerId} circuit opened after ${circuit.failures} failures`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ModelRouter
 // ---------------------------------------------------------------------------
 
@@ -57,6 +119,7 @@ export class ModelRouter {
   private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string; tts: string; image_gen: string; video_gen: string; music_gen: string; audio_transcribe: string; video_understand: string } | null = null;
   /** Config version at the time of last initialization */
   private loadedVersion = -1;
+  private circuitBreaker = new CircuitBreaker();
 
   // -----------------------------------------------------------------------
   // Initialization
@@ -111,39 +174,44 @@ export class ModelRouter {
 
   /**
    * Return a provider by its config name, or the default main provider
-   * if no name is given.
+   * if no name is given. Skips providers with open circuits.
    */
   getProvider(name?: string): ModelProvider {
-    if (!this.config && this.dbDefaults) {
-      // Using database config - resolve by ID or default
-      let providerId = name ?? this.dbDefaults.main;
-      // If no default configured, fall back to first available provider
-      if (!providerId && this.providers.size > 0) {
-        providerId = this.providers.keys().next().value;
-      }
-      const provider = this.providers.get(providerId);
-      if (!provider) {
-        const available = [...this.providers.keys()].join(", ");
-        throw new Error(
-          `ModelRouter: provider "${providerId}" not found. Available: ${available}`,
-        );
-      }
-      return provider;
+    const targetId = name ?? this.getDefaultProviderId();
+
+    // If the target provider is not open-circuited, use it
+    if (!this.circuitBreaker.isOpen(targetId)) {
+      const provider = this.providers.get(targetId);
+      if (provider) return provider;
     }
 
+    // Try to find an alternate provider that isn't open-circuited
+    for (const [id, provider] of this.providers) {
+      if (id !== targetId && !this.circuitBreaker.isOpen(id)) {
+        console.warn(`[ModelRouter] Provider "${targetId}" unavailable, falling back to "${id}"`);
+        return provider;
+      }
+    }
+
+    // All alternatives exhausted — try the original anyway
+    const provider = this.providers.get(targetId);
+    if (provider) return provider;
+
+    const available = [...this.providers.keys()].join(", ");
+    throw new Error(
+      `ModelRouter: provider "${targetId}" not found. Available: ${available}`,
+    );
+  }
+
+  /** Get the default provider ID from either DB or YAML config. */
+  private getDefaultProviderId(): string {
+    if (this.dbDefaults) {
+      return this.dbDefaults.main || this.providers.keys().next().value || "";
+    }
     if (!this.config) {
       throw new Error("ModelRouter: not initialized. Call initialize() first.");
     }
-
-    const providerName = name ?? this.config.defaults.main;
-    const provider = this.providers.get(providerName);
-    if (!provider) {
-      const available = [...this.providers.keys()].join(", ");
-      throw new Error(
-        `ModelRouter: provider "${providerName}" not found. Available: ${available}`,
-      );
-    }
-    return provider;
+    return this.config.defaults.main;
   }
 
   // -----------------------------------------------------------------------
@@ -155,10 +223,18 @@ export class ModelRouter {
     options: ChatOptions = {},
   ): Promise<ChatResponse> {
     await this.ensureCurrent();
-    // options.model is a provider lookup key (e.g. "minimax"), NOT the API model name.
-    // Strip it before forwarding to the provider so the provider uses its own defaultModel.
     const { model: _providerKey, ...providerOptions } = options;
-    return this.getProvider(options.model).chat(messages, providerOptions);
+    const providerId = this.resolveProviderId(options.model);
+    const provider = this.getProvider(options.model);
+
+    try {
+      const result = await provider.chat(messages, providerOptions);
+      this.circuitBreaker.recordSuccess(providerId);
+      return result;
+    } catch (err) {
+      this.circuitBreaker.recordFailure(providerId);
+      throw err;
+    }
   }
 
   async *chatStream(
@@ -167,8 +243,29 @@ export class ModelRouter {
   ): AsyncGenerator<StreamChunk> {
     await this.ensureCurrent();
     const { model: _providerKey, ...providerOptions } = options;
+    const providerId = this.resolveProviderId(options.model);
     const provider = this.getProvider(options.model);
-    yield* provider.chatStream(messages, providerOptions);
+
+    let firstChunk = true;
+    try {
+      for await (const chunk of provider.chatStream(messages, providerOptions)) {
+        if (firstChunk) {
+          this.circuitBreaker.recordSuccess(providerId);
+          firstChunk = false;
+        }
+        yield chunk;
+      }
+    } catch (err) {
+      if (firstChunk) {
+        this.circuitBreaker.recordFailure(providerId);
+      }
+      throw err;
+    }
+  }
+
+  /** Resolve the actual provider ID from an options.model value. */
+  private resolveProviderId(model?: string): string {
+    return model ?? this.getDefaultProviderId();
   }
 
   estimateTokens(text: string): number {

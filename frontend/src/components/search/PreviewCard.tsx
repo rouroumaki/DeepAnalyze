@@ -5,6 +5,7 @@
 // =============================================================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import DOMPurify from "dompurify";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -199,7 +200,7 @@ export const PreviewCard: React.FC<PreviewCardProps> = ({
           <div
             className="text-xs text-gray-700 dark:text-gray-300 line-clamp-[12] whitespace-pre-wrap"
             dangerouslySetInnerHTML={{
-              __html: highlightKeywords(data.snippet, keywords),
+              __html: DOMPurify.sanitize(highlightKeywords(data.snippet, keywords)),
             }}
           />
         </>

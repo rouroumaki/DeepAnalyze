@@ -8,24 +8,10 @@
 
 import { randomUUID } from "node:crypto";
 import { ModelRouter } from "../../models/router.js";
-import { DB } from "../../store/database.js";
+import { getRepos } from "../../store/repos/index.js";
 import type { ChatMessage } from "../../models/provider.js";
 import type { SessionMemoryNote, AgentSettings } from "./types.js";
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// DB row type
-// ---------------------------------------------------------------------------
-
-interface SessionMemoryRow {
-  id: string;
-  session_id: string;
-  content: string;
-  token_count: number;
-  last_token_position: number;
-  created_at: string;
-  updated_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Unique injection markers (avoiding common Markdown patterns)
@@ -65,40 +51,33 @@ export class SessionMemoryManager {
    * Load the session memory note from the database.
    * Returns null if no memory exists for this session.
    */
-  load(): SessionMemoryNote | null {
-    const db = DB.getInstance().raw;
-    const row = db
-      .prepare("SELECT * FROM session_memory WHERE session_id = ?")
-      .get(this.sessionId) as SessionMemoryRow | undefined;
+  async load(): Promise<SessionMemoryNote | null> {
+    const repos = await getRepos();
+    const row = await repos.sessionMemory.load(this.sessionId);
 
     if (!row) return null;
 
     return {
       id: row.id,
-      sessionId: row.session_id,
+      sessionId: row.sessionId,
       content: row.content,
-      tokenCount: row.token_count,
-      lastTokenPosition: row.last_token_position,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      tokenCount: row.tokenCount,
+      lastTokenPosition: row.lastTokenPosition,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
   }
 
   /**
    * Save (upsert) a session memory note.
    */
-  save(note: SessionMemoryNote): void {
-    const db = DB.getInstance().raw;
-    db.prepare(
-      `INSERT OR REPLACE INTO session_memory (id, session_id, content, token_count, last_token_position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    ).run(
-      note.id,
+  async save(note: SessionMemoryNote): Promise<void> {
+    const repos = await getRepos();
+    await repos.sessionMemory.save(
       note.sessionId,
       note.content,
       note.tokenCount,
       note.lastTokenPosition,
-      note.createdAt,
     );
   }
 
@@ -148,7 +127,7 @@ export class SessionMemoryManager {
       updatedAt: new Date().toISOString(),
     };
 
-    this.save(note);
+    await this.save(note);
     return note;
   }
 
@@ -183,7 +162,7 @@ export class SessionMemoryManager {
       updatedAt: new Date().toISOString(),
     };
 
-    this.save(updated);
+    await this.save(updated);
     return updated;
   }
 
@@ -199,7 +178,7 @@ export class SessionMemoryManager {
     return [
       "",
       MEMORY_START_MARKER,
-      "## Session Memory (Auto-Extracted Context)",
+      "## 会话记忆（自动提取的上下文）",
       "",
       note.content,
       "",
@@ -218,21 +197,32 @@ export class SessionMemoryManager {
   ): Promise<string> {
     const summarizerModel = this.modelRouter.getDefaultModel("summarizer");
 
-    const extractionPrompt = `You are a session memory extractor. Analyze the conversation below and extract a structured summary in Markdown format with these sections:
+    // [ORIGINAL ENGLISH] You are a session memory extractor. Analyze the conversation below and extract a structured summary...
+    const extractionPrompt = `你是一个会话记忆提取器。分析下面的对话并提取结构化摘要，使用以下 Markdown 章节：
 
-## Key Findings
-- List the most important facts and discoveries
+## 关键信息
+- 最重要的事实、数据点、标识符和发现
+- 用 [关键] 标记真正关键的项目，用 [重要] 标记重要的项目
 
-## Documents Analyzed
-- List any documents, files, or data sources mentioned
+## 已执行的工作
+- 已采取的行动、已执行的分析及其结果
+- 每个工作项的当前状态
 
-## Current Task
-- Describe what the user is currently working on
+## 当前任务
+- 精确描述用户当前正在处理什么
+- 包含恢复工作所需的具体数据
 
-## Decisions Made
-- List any conclusions or decisions reached
+## 决策和结论
+- 已达成的结论、选择的方法及其原因
 
-Keep the summary concise (under 500 words). Focus on information that would be useful for continuing the conversation later.`;
+## 待处理任务
+- 任何已明确请求但尚未完成的任务
+
+规则：
+- 用 [关键]（关键）、[重要]（重要）标记项目，或不予标记（背景信息）
+- 简洁但完整——包含具体的数值、名称和标识符
+- 控制在 500 字以内
+- 专注于对后续继续任务有用的信息`;
 
     const extractionMessages: ChatMessage[] = [
       { role: "system", content: extractionPrompt },
@@ -258,20 +248,22 @@ Keep the summary concise (under 500 words). Focus on information that would be u
   ): Promise<string> {
     const summarizerModel = this.modelRouter.getDefaultModel("summarizer");
 
-    const updatePrompt = `You are a session memory updater. You have an existing session memory summary and new conversation messages. Update the summary by incorporating new information.
+    // [ORIGINAL ENGLISH] You are a session memory updater. You have an existing session memory summary and new conversation messages...
+    const updatePrompt = `你是一个会话记忆更新器。你已有现有的会话记忆摘要和新的对话消息。通过整合新信息来更新摘要。
 
-Rules:
-- Keep the same Markdown section structure (Key Findings, Documents Analyzed, Current Task, Decisions Made)
-- Add new information, don't repeat what's already there
-- Remove outdated information
-- Keep the total under 500 words
-- If no significant new information, return the existing summary unchanged`;
+规则：
+- 保持相同的 Markdown 章节结构（关键信息、已执行的工作、当前任务、决策和结论、待处理任务）
+- 添加新信息，不要重复已有内容
+- 移除过时或已被取代的信息
+- 保留所有 [关键] 和 [重要] 重要性标记
+- 总字数控制在 500 字以内
+- 如果没有显著的新信息，返回原有摘要不做更改`;
 
     const updateMessages: ChatMessage[] = [
       { role: "system", content: updatePrompt },
       {
         role: "user",
-        content: `## Existing Session Memory\n\n${existingContent}\n\n## New Messages\n\n${this.serializeMessages(messages)}`,
+        content: `## 现有会话记忆\n\n${existingContent}\n\n## 新消息\n\n${this.serializeMessages(messages)}`,
       },
     ];
 
@@ -289,17 +281,32 @@ Rules:
 
   /**
    * Serialize messages to a readable format for the summarizer.
+   * Uses token-aware truncation: walks backward and truncates messages
+   * when the serialized content would exceed the token budget.
    * Tool results get more space (3000 chars) since they carry important data.
    */
   private serializeMessages(messages: ChatMessage[]): string {
-    const recent = messages.slice(-30);
-    return recent
-      .map((m) => {
-        const content = m.content ?? "";
-        const limit = m.role === "tool" ? 3000 : 1000;
-        return `[${m.role}]: ${content.slice(0, limit)}`;
-      })
-      .join("\n\n");
+    // Target ~6000 tokens for serialized content (~18000 chars)
+    const maxChars = 18_000;
+    const serialized: string[] = [];
+    let totalChars = 0;
+
+    // Walk backward from the most recent messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      const content = m.content ?? "";
+      const limit = m.role === "tool" ? 3000 : 1000;
+      const entry = `[${m.role}]: ${content.slice(0, limit)}`;
+
+      if (totalChars + entry.length + 2 > maxChars) {
+        break;
+      }
+
+      serialized.unshift(entry);
+      totalChars += entry.length + 2; // +2 for \n\n separator
+    }
+
+    return serialized.join("\n\n");
   }
 
   /**
@@ -310,27 +317,28 @@ Rules:
     const assistantMessages = messages.filter((m) => m.role === "assistant");
 
     const sections: string[] = [
-      "## Key Findings",
-      "- (Session memory extraction was unavailable)",
+      "## 关键信息",
+      "- （会话记忆提取不可用）",
       "",
-      "## Documents Analyzed",
-      "- (not yet tracked)",
+      "## 已执行的工作",
+      "- （尚未跟踪）",
       "",
-      "## Current Task",
+      "## 当前任务",
     ];
 
     if (userMessages.length > 0) {
       const lastUser = userMessages[userMessages.length - 1];
       sections.push(`- ${(lastUser.content ?? "").slice(0, 200)}`);
     } else {
-      sections.push("- (no user messages yet)");
+      sections.push("- （尚无用户消息）");
     }
 
-    sections.push("", "## Decisions Made", "- (not yet tracked)");
+    sections.push("", "## 决策和结论", "- （尚未跟踪）");
+    sections.push("", "## 待处理任务", "- （尚未跟踪）");
 
     sections.push(
       "",
-      `> Session contains ${userMessages.length} user messages and ${assistantMessages.length} assistant responses.`,
+      `> 会话包含 ${userMessages.length} 条用户消息和 ${assistantMessages.length} 条助手回复。`,
     );
 
     return sections.join("\n");

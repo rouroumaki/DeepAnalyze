@@ -162,6 +162,8 @@ export interface AgentRunOptions {
   continuous?: boolean;
   /** Knowledge base ID for auto-compounding results after task completion. */
   kbId?: string;
+  /** Analysis scope to constrain agent to specific knowledge bases or documents. */
+  scope?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,31 @@ export interface AgentRunOptions {
 
 export type { ToolCall } from "../../models/provider.js";
 export type { ChatMessage, ChatResponse } from "../../models/provider.js";
+
+// ---------------------------------------------------------------------------
+// Compact Boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * Metadata stored in a compact boundary message.
+ * Compact boundaries mark where context was compressed, allowing the
+ * context loader to skip pre-boundary messages on subsequent requests.
+ */
+export interface CompactBoundaryMeta {
+  type: "compact_boundary";
+  method: "sm-compact" | "legacy-compact" | "emergency-sm-compact" | "emergency-legacy-compact";
+  preCompactTokens: number;
+  turnNumber: number;
+  timestamp: string;
+}
+
+/** SM-compact token budget configuration */
+export interface SMCompactConfig {
+  /** Minimum tokens of recent context to keep. Default: 10_000 */
+  minTokens: number;
+  /** Maximum tokens of recent context to keep. Default: 40_000 */
+  maxTokens: number;
+}
 
 // ---------------------------------------------------------------------------
 // Session Memory
@@ -201,9 +228,9 @@ export interface SessionMemoryNote {
  * Stored in the settings table under the 'agent_settings' key.
  */
 export interface AgentSettings {
-  /** Maximum turns per agent task. -1 = unlimited. Default: 50 */
+  /** Maximum turns per agent task. -1 = unlimited (default). */
   maxTurns: number;
-  /** Context window size in tokens. Default: 128000 */
+  /** Context window size in tokens. Default: 200000 */
   contextWindow: number;
   /** Compaction buffer in tokens. Default: 13000 */
   compactionBuffer: number;
@@ -217,15 +244,30 @@ export interface AgentSettings {
   autoDreamIntervalHours: number;
   /** Minimum sessions before auto-dream triggers. Default: 5 */
   autoDreamSessionThreshold: number;
+  /** Maximum fraction of context window usable for loaded history. Default: 0.5 */
+  contextLoadRatio: number;
+  /** Maximum tokens per individual tool result in context. Default: 4000 */
+  toolResultMaxTokens: number;
+  /** Number of recent tool results to keep at full size. Default: 5 */
+  toolResultKeepRecent: number;
+  /** SM-compact minimum tokens of recent context to keep. Default: 10000 */
+  smCompactMinTokens: number;
+  /** SM-compact maximum tokens of recent context to keep. Default: 40000 */
+  smCompactMaxTokens: number;
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
-  maxTurns: 50,
-  contextWindow: 128_000,
+  maxTurns: -1,
+  contextWindow: 200_000,
   compactionBuffer: 13_000,
   sessionMemoryInitThreshold: 10_000,
   sessionMemoryUpdateInterval: 5_000,
   microcompactKeepTurns: 10,
   autoDreamIntervalHours: 24,
   autoDreamSessionThreshold: 5,
+  contextLoadRatio: 0.5,
+  toolResultMaxTokens: 4_000,
+  toolResultKeepRecent: 5,
+  smCompactMinTokens: 10_000,
+  smCompactMaxTokens: 40_000,
 };

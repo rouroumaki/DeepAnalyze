@@ -138,7 +138,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
  */
 export class HashEmbeddingProvider implements EmbeddingProvider {
   readonly name = "hash-fallback";
-  readonly dimension = 256;
+  readonly dimension: number;
+
+  constructor(dimension: number = 256) {
+    this.dimension = dimension;
+  }
 
   async embed(texts: string[]): Promise<EmbeddingResult[]> {
     return texts.map((text) => ({
@@ -244,6 +248,12 @@ export class EmbeddingManager {
   private provider: EmbeddingProvider | null = null;
   private initPromise: Promise<void> | null = null;
   private loadedVersion = -1;
+  /** Timestamp when we last fell back to hash due to connection failure. */
+  private degradedAt = 0;
+  /** Original provider before degradation (to retry later). */
+  private originalProvider: EmbeddingProvider | null = null;
+  /** How long (ms) to stay degraded before retrying the real provider. */
+  private static readonly DEGRADATION_COOLDOWN = 60_000; // 1 minute
 
   constructor(private router: ModelRouter) {}
 
@@ -337,8 +347,17 @@ export class EmbeddingManager {
   async embed(text: string): Promise<EmbeddingResult> {
     if (!this.provider) throw new Error("EmbeddingManager not initialized. Call initialize() first.");
     await this.ensureCurrent();
-    const results = await this.provider.embed([text]);
-    return results[0];
+    try {
+      const results = await this.provider.embed([text]);
+      // Success — clear degradation if we were degraded
+      if (this.degradedAt > 0) {
+        console.log("[EmbeddingManager] Provider recovered, clearing degradation");
+        this.degradedAt = 0;
+      }
+      return results[0];
+    } catch (err) {
+      return this.handleEmbeddingFailure(err, [text]).then(r => r[0]);
+    }
   }
 
   /** Generate embeddings for a batch of texts. */
@@ -353,8 +372,18 @@ export class EmbeddingManager {
 
     for (let i = 0; i < texts.length; i += batchSize) {
       const chunk = texts.slice(i, i + batchSize);
-      const results = await this.provider.embed(chunk);
-      allResults.push(...results);
+      try {
+        const results = await this.provider.embed(chunk);
+        // Success — clear degradation if we were degraded
+        if (this.degradedAt > 0) {
+          console.log("[EmbeddingManager] Provider recovered, clearing degradation");
+          this.degradedAt = 0;
+        }
+        allResults.push(...results);
+      } catch (err) {
+        const fallbackResults = await this.handleEmbeddingFailure(err, chunk);
+        allResults.push(...fallbackResults);
+      }
     }
 
     return allResults;
@@ -439,6 +468,30 @@ export class EmbeddingManager {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Handle an embedding provider failure by falling back to hash embeddings.
+   * After DEGRADATION_COOLDOWN ms, the real provider will be retried.
+   */
+  private async handleEmbeddingFailure(err: unknown, texts: string[]): Promise<EmbeddingResult[]> {
+    const now = Date.now();
+
+    // Check if we should retry the real provider
+    if (this.degradedAt > 0 && now - this.degradedAt < EmbeddingManager.DEGRADATION_COOLDOWN) {
+      // Still in cooldown — use hash fallback silently (match parent dimension)
+      return new HashEmbeddingProvider(this.provider?.dimension ?? 256).embed(texts);
+    }
+
+    // First failure or cooldown expired — log warning and degrade
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[EmbeddingManager] Embedding provider "${this.provider?.name}" failed: ${errMsg}. ` +
+      `Falling back to hash embeddings for ${EmbeddingManager.DEGRADATION_COOLDOWN / 1000}s.`,
+    );
+
+    this.degradedAt = now;
+    return new HashEmbeddingProvider(this.provider?.dimension ?? 256).embed(texts);
+  }
 
   private async resolveProvider(): Promise<EmbeddingProvider> {
     // Priority 1: DB settings table (explicit embedding default)

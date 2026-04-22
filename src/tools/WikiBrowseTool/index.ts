@@ -63,9 +63,9 @@ export interface WikiBrowseOutput {
 export class WikiBrowseTool {
   readonly name = "wiki_browse";
   readonly description =
-    "Browse wiki pages by ID or list pages in a knowledge base. " +
-    "Follow links between related documents to discover connected content. " +
-    "Supports viewing page content and traversing the link graph.";
+    "通过 ID 浏览 Wiki 页面或列出知识库中的页面。" +
+    "跟踪相关文档之间的链接以发现关联内容。" +
+    "支持查看页面内容和遍历链接图谱。";
 
   private linker: Linker;
   private pageManager: PageManager;

@@ -1,8 +1,7 @@
 // =============================================================================
 // DeepAnalyze - PG Migration 001: Initial Schema
 // =============================================================================
-// Consolidated PostgreSQL schema covering all tables from SQLite migrations
-// 001-007, translated to PG syntax with pgvector + zhparser support.
+// Consolidated PostgreSQL schema with pgvector + zhparser support.
 // =============================================================================
 
 import type { PGMigration } from '../pg';
@@ -14,8 +13,10 @@ export const migration: PGMigration = {
   sql: `
 -- =============================================================================
 -- Full-Text Search Configuration (zhparser for Chinese)
+-- Use DROP + CREATE to ensure idempotency (migration may re-run after failure).
 -- =============================================================================
-CREATE TEXT SEARCH CONFIGURATION IF NOT EXISTS chinese (PARSER = zhparser);
+DROP TEXT SEARCH CONFIGURATION IF EXISTS chinese CASCADE;
+CREATE TEXT SEARCH CONFIGURATION chinese (PARSER = zhparser);
 ALTER TEXT SEARCH CONFIGURATION chinese ADD MAPPING FOR n,v,a,i,e,l WITH simple;
 
 -- =============================================================================
@@ -367,11 +368,12 @@ CREATE OR REPLACE FUNCTION wiki_pages_fts_trigger() RETURNS trigger AS $$
 BEGIN
   NEW.fts_vector :=
     setweight(to_tsvector('chinese', COALESCE(NEW.title, '')), 'A') ||
-    setweight(to_tsvector('chinese', COALESCE(NEW.content, '')), 'B');
+    setweight(to_tsvector('chinese', COALESCE(substring(NEW.content from 1 for 500000), '')), 'B');
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_wiki_pages_fts ON wiki_pages;
 CREATE TRIGGER trg_wiki_pages_fts
   BEFORE INSERT OR UPDATE OF title, content ON wiki_pages
   FOR EACH ROW
@@ -382,24 +384,16 @@ CREATE TRIGGER trg_wiki_pages_fts
 -- =============================================================================
 INSERT INTO settings (key, value)
 VALUES ('providers', '{
-  "providers": [
-    {
-      "id": "default",
-      "name": "Default (OpenAI-Compatible)",
-      "type": "openai-compatible",
-      "endpoint": "http://localhost:11434/v1",
-      "apiKey": "",
-      "model": "qwen2.5-14b",
-      "maxTokens": 32768,
-      "supportsToolUse": true,
-      "enabled": true
-    }
-  ],
+  "providers": [],
   "defaults": {
-    "main": "default",
+    "main": "",
     "summarizer": "",
     "embedding": "",
-    "vlm": ""
+    "vlm": "",
+    "tts": "",
+    "image_gen": "",
+    "video_gen": "",
+    "music_gen": ""
   }
 }'::jsonb)
 ON CONFLICT (key) DO NOTHING;

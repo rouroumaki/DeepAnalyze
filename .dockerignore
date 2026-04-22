@@ -8,3 +8,5 @@ dist
 .env
 data/
 .claude/
+pip-wheels/
+node_modules/

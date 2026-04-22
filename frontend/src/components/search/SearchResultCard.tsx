@@ -1,4 +1,5 @@
 import React from "react";
+import DOMPurify from "dompurify";
 
 export interface SearchResultCardProps {
   pageId: string;
@@ -31,7 +32,7 @@ export const SearchResultCard: React.FC<SearchResultCardProps> = ({
         <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 flex-1 truncate">{title}</h4>
         <span className="text-xs text-gray-400">{(score * 100).toFixed(0)}%</span>
       </div>
-      <div className="text-xs text-gray-600 dark:text-gray-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: snippet }} />
+      <div className="text-xs text-gray-600 dark:text-gray-400 line-clamp-3" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(snippet) }} />
     </div>
   );
 };

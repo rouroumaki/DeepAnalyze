@@ -232,9 +232,9 @@ export function SubAgentSlot({
             borderTop: "1px solid var(--border-primary)",
           }}
         >
-          {lastMessages.map((msg, i) => (
+          {lastMessages.map((msg) => (
             <div
-              key={i}
+              key={`${msg.type}-${msg.content?.slice(0, 32)}`}
               style={{
                 fontSize: 10,
                 lineHeight: 1.4,

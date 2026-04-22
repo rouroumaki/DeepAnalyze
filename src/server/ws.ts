@@ -26,6 +26,7 @@ if (!globalThis.__workflowEvents) {
 export type WsServerMessage =
   | { type: "doc_upload_progress"; kbId: string; docId: string; progress: number }
   | { type: "doc_processing_step"; kbId: string; docId: string; step: string; progress: number }
+  | { type: "doc_level_ready"; kbId: string; docId: string; level: "L0" | "L1" | "L2" }
   | { type: "doc_ready"; kbId: string; docId: string; filename: string }
   | { type: "doc_error"; kbId: string; docId: string; error: string }
   | { type: "workflow_start"; workflowId: string; teamName: string; mode: string; agentCount: number }

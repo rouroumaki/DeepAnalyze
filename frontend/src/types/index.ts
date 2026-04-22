@@ -94,7 +94,7 @@ export interface ProviderConfig {
   endpoint: string;
   apiKey: string;
   model: string;
-  maxTokens: number;
+  maxTokens?: number;
   supportsToolUse: boolean;
   enabled: boolean;
   temperature?: number;
@@ -428,6 +428,7 @@ export interface CronJob {
   name: string;
   schedule: string;
   message: string;
+  action: string | null;
   enabled: boolean;
   channel: string | null;
   chatId: string | null;
@@ -445,7 +446,8 @@ export interface CronJob {
 export interface CreateCronJobRequest {
   name: string;
   schedule: string;
-  message: string;
+  message?: string;
+  action?: string | null;
   enabled?: boolean;
   channel?: string | null;
   chatId?: string | null;

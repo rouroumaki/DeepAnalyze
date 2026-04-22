@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { ModelRouter } from "../../models/router.js";
-import { DB } from "../../store/database.js";
+import { getRepos } from "../../store/repos/index.js";
 import type { KnowledgeCompounder } from "../../wiki/knowledge-compound.js";
 import type { Linker } from "../../wiki/linker.js";
 import type { AgentSettings } from "./types.js";
@@ -58,8 +58,8 @@ export class AutoDreamManager {
    * Check whether auto-dream should be triggered based on time and session
    * count gates.
    */
-  shouldDream(): boolean {
-    const state = this.loadState();
+  async shouldDream(): Promise<boolean> {
+    const state = await this.loadState();
     const intervalMs = this.settings.autoDreamIntervalHours * 60 * 60 * 1000;
 
     // Time gate
@@ -83,35 +83,37 @@ export class AutoDreamManager {
   // -----------------------------------------------------------------------
 
   /**
-   * Increment the session counter atomically using SQL.
+   * Increment the session counter atomically using PG repos.
    * Called after each completed agent run.
    */
-  incrementSessionCount(): void {
-    const db = DB.getInstance().raw;
+  async incrementSessionCount(): Promise<void> {
+    const repos = await getRepos();
+    const settings = repos.settings;
 
-    // Ensure state exists first
-    const existing = db
-      .prepare("SELECT value FROM settings WHERE key = ?")
-      .get(AUTO_DREAM_STATE_KEY) as { value: string } | undefined;
+    const raw = await settings.get(AUTO_DREAM_STATE_KEY);
 
-    if (!existing) {
+    if (!raw) {
       const initialState: AutoDreamState = {
         lastDreamAt: null,
         sessionsSinceLastDream: 1,
       };
-      db.prepare(
-        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-      ).run(AUTO_DREAM_STATE_KEY, JSON.stringify(initialState));
+      await settings.set(AUTO_DREAM_STATE_KEY, JSON.stringify(initialState));
       return;
     }
 
-    // Atomic increment using json_set + json_extract
-    db.prepare(
-      `UPDATE settings
-       SET value = json_set(value, '$.sessionsSinceLastDream', json_extract(value, '$.sessionsSinceLastDream') + 1),
-           updated_at = datetime('now')
-       WHERE key = ?`,
-    ).run(AUTO_DREAM_STATE_KEY);
+    // Read, modify, write back
+    try {
+      const state = JSON.parse(raw) as AutoDreamState;
+      state.sessionsSinceLastDream = (state.sessionsSinceLastDream ?? 0) + 1;
+      await settings.set(AUTO_DREAM_STATE_KEY, JSON.stringify(state));
+    } catch {
+      // Corrupted state, reset
+      const initialState: AutoDreamState = {
+        lastDreamAt: null,
+        sessionsSinceLastDream: 1,
+      };
+      await settings.set(AUTO_DREAM_STATE_KEY, JSON.stringify(initialState));
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -127,7 +129,7 @@ export class AutoDreamManager {
   async dream(): Promise<void> {
     console.log("[AutoDream] Starting cross-session knowledge integration...");
 
-    const memories = this.loadRecentMemories();
+    const memories = await this.loadRecentMemories();
     if (memories.length === 0) {
       console.log("[AutoDream] No session memories found, skipping.");
       return;
@@ -140,7 +142,7 @@ export class AutoDreamManager {
       return;
     }
 
-    const kbId = this.findDreamKb();
+    const kbId = await this.findDreamKb();
     if (!kbId) {
       console.log("[AutoDream] No knowledge base available for write-back.");
       return;
@@ -157,14 +159,13 @@ export class AutoDreamManager {
       );
     }
 
-    // Update state atomically
-    const db = DB.getInstance().raw;
-    db.prepare(
-      `UPDATE settings
-       SET value = json_set(json_set(value, '$.lastDreamAt', ?), '$.sessionsSinceLastDream', 0),
-           updated_at = datetime('now')
-       WHERE key = ?`,
-    ).run(new Date().toISOString(), AUTO_DREAM_STATE_KEY);
+    // Update state: set lastDreamAt to now, reset session counter
+    const repos = await getRepos();
+    const updatedState: AutoDreamState = {
+      lastDreamAt: new Date().toISOString(),
+      sessionsSinceLastDream: 0,
+    };
+    await repos.settings.set(AUTO_DREAM_STATE_KEY, JSON.stringify(updatedState));
 
     console.log("[AutoDream] Cross-session knowledge integration complete.");
   }
@@ -173,15 +174,13 @@ export class AutoDreamManager {
   // State persistence
   // -----------------------------------------------------------------------
 
-  private loadState(): AutoDreamState {
-    const db = DB.getInstance().raw;
-    const row = db
-      .prepare("SELECT value FROM settings WHERE key = ?")
-      .get(AUTO_DREAM_STATE_KEY) as { value: string } | undefined;
+  private async loadState(): Promise<AutoDreamState> {
+    const repos = await getRepos();
+    const raw = await repos.settings.get(AUTO_DREAM_STATE_KEY);
 
-    if (row) {
+    if (raw) {
       try {
-        return JSON.parse(row.value) as AutoDreamState;
+        return JSON.parse(raw) as AutoDreamState;
       } catch {
         // Corrupted state, reset
       }
@@ -197,14 +196,9 @@ export class AutoDreamManager {
   // Data loading (limited)
   // -----------------------------------------------------------------------
 
-  private loadRecentMemories(): Array<{ sessionId: string; content: string }> {
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare(
-        "SELECT session_id, content FROM session_memory ORDER BY updated_at DESC LIMIT ?",
-      )
-      .all(MAX_SESSIONS_FOR_SYNTHESIS) as Array<{ session_id: string; content: string }>;
-    return rows.map((r) => ({ sessionId: r.session_id, content: r.content }));
+  private async loadRecentMemories(): Promise<Array<{ sessionId: string; content: string }>> {
+    const repos = await getRepos();
+    return repos.sessionMemory.listRecent(MAX_SESSIONS_FOR_SYNTHESIS);
   }
 
   // -----------------------------------------------------------------------
@@ -214,16 +208,17 @@ export class AutoDreamManager {
   private async synthesizeMemories(
     memories: Array<{ sessionId: string; content: string }>,
   ): Promise<string | null> {
-    const summarizerModel = this.modelRouter.getDefaultModel("summarizer");
+    const summarizerModel = this.modelRouter.getDefaultModel("main");
 
-    const prompt = `You are a knowledge integration engine. Analyze the following session memory notes from multiple analysis sessions and produce a synthesized report that:
+    // [ORIGINAL ENGLISH] You are a knowledge integration engine. Analyze the following session memory notes...
+    const prompt = `你是一个知识整合引擎。分析以下来自多个分析会话的会话记忆笔记，生成一份综合报告：
 
-1. Identifies recurring themes and patterns across sessions
-2. Highlights the most important cross-session findings
-3. Notes any contradictions or complementary insights
-4. Lists key entities and their relationships across sessions
+1. 识别跨会话的重复主题和模式
+2. 突出最重要的跨会话发现
+3. 记录任何矛盾或互补的见解
+4. 列出关键实体及其跨会话关系
 
-Format the output as a well-structured Markdown document.`;
+将输出格式化为结构良好的 Markdown 文档。`;
 
     // Build content with total size limit (~50K chars)
     const MAX_SYNTHESIS_INPUT = 50_000;
@@ -271,12 +266,9 @@ Format the output as a well-structured Markdown document.`;
   // KB resolution
   // -----------------------------------------------------------------------
 
-  private findDreamKb(): string | null {
-    const db = DB.getInstance().raw;
-    const existing = db
-      .prepare("SELECT id FROM knowledge_bases LIMIT 1")
-      .get() as { id: string } | undefined;
-
-    return existing?.id ?? null;
+  private async findDreamKb(): Promise<string | null> {
+    const repos = await getRepos();
+    const id = await repos.knowledgeBase.getAnyId();
+    return id ?? null;
   }
 }

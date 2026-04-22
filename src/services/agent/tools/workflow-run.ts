@@ -80,9 +80,9 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
     name: "workflow_run",
 
     description:
-      "Run a multi-agent workflow. Provide a teamName to use a saved team, " +
-      "or provide an inline agents array. The workflow runs in the specified " +
-      "mode (pipeline | graph | council | parallel) and returns aggregated results.",
+      "运行多 Agent 工作流。提供 teamName 使用已保存的团队，" +
+      "或提供内联 Agent 数组。工作流以指定模式运行" +
+      "（pipeline | graph | council | parallel）并返回汇总结果。",
 
     inputSchema: {
       type: "object",
@@ -90,38 +90,38 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
         teamName: {
           type: "string",
           description:
-            "Name of a saved team to load. If provided, the agents field is ignored.",
+            "要加载的已保存团队名称。如果提供，agents 字段将被忽略。",
         },
         mode: {
           type: "string",
           enum: ["pipeline", "graph", "council", "parallel"],
-          description: "Workflow scheduling mode.",
+          description: "工作流调度模式。",
         },
         goal: {
           type: "string",
-          description: "High-level goal or question for the workflow.",
+          description: "工作流的高层目标或问题。",
         },
         crossReview: {
           type: "boolean",
           description:
-            "Whether to run a cross-review round (council mode only). Default: false.",
+            "是否运行交叉审查轮（仅 council 模式）。默认：false。",
         },
         agents: {
           type: "array",
           description:
-            "Inline agent definitions. Ignored when teamName is provided.",
+            "内联 Agent 定义。提供 teamName 时忽略此字段。",
           items: {
             type: "object",
             properties: {
-              id: { type: "string", description: "Unique agent identifier within the workflow." },
-              role: { type: "string", description: "Role name." },
-              systemPrompt: { type: "string", description: "Optional system prompt override." },
-              task: { type: "string", description: "Task instruction." },
-              perspective: { type: "string", description: "Perspective hint (council mode)." },
+              id: { type: "string", description: "工作流内的唯一 Agent 标识符。" },
+              role: { type: "string", description: "角色名称。" },
+              systemPrompt: { type: "string", description: "可选的系统提示词覆盖。" },
+              task: { type: "string", description: "任务指令。" },
+              perspective: { type: "string", description: "视角提示（council 模式）。" },
               dependsOn: {
                 type: "array",
                 items: { type: "string" },
-                description: "IDs of agents this one depends on (graph mode).",
+                description: "此 Agent 依赖的 Agent ID 列表（graph 模式）。",
               },
               condition: {
                 type: "object",
@@ -130,12 +130,12 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
                   node: { type: "string" },
                   text: { type: "string" },
                 },
-                description: "Conditional execution (graph mode).",
+                description: "条件执行（graph 模式）。",
               },
               tools: {
                 type: "array",
                 items: { type: "string" },
-                description: "Tool names. Use ['*'] for all tools.",
+                description: "工具名称列表。使用 ['*'] 表示所有工具。",
               },
             },
             required: ["id", "role", "task"],
@@ -161,7 +161,7 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
 
       if (teamName) {
         // Load team from the store
-        const team = teamManager.getTeamByName(teamName);
+        const team = await teamManager.getTeamByName(teamName);
         if (!team) {
           throw new Error(`Team not found: "${teamName}"`);
         }

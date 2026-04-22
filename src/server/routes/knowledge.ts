@@ -8,6 +8,7 @@ import { getRepos } from "../../store/repos/index.js";
 import type { WikiPage, WikiPageCreate } from "../../store/repos/index.js";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync, createReadStream } from "node:fs";
 import { copyFileSync } from "node:fs";
+import { dirname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -22,28 +23,48 @@ import { getProcessingQueue } from "../../services/processing-queue.js";
 
 function detectFileType(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  // Return short extension names that match processor HANDLED_TYPES sets.
+  // Processors (TextProcessor, ImageProcessor, etc.) match against short names
+  // like "markdown", "pdf", "xlsx" — not MIME types like "text/markdown".
   const typeMap: Record<string, string> = {
-    pdf: "application/pdf",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    doc: "application/msword",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    xls: "application/vnd.ms-excel",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ppt: "application/vnd.ms-powerpoint",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-    json: "application/json",
-    html: "text/html",
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    mp4: "video/mp4",
+    pdf: "pdf",
+    docx: "docx",
+    doc: "doc",
+    xlsx: "xlsx",
+    xls: "xls",
+    pptx: "pptx",
+    ppt: "ppt",
+    txt: "txt",
+    md: "markdown",
+    csv: "csv",
+    json: "json",
+    html: "html",
+    xml: "xml",
+    rtf: "rtf",
+    odt: "odt",
+    epub: "epub",
+    png: "png",
+    jpg: "jpg",
+    jpeg: "jpeg",
+    gif: "gif",
+    bmp: "bmp",
+    tiff: "tiff",
+    tif: "tif",
+    webp: "webp",
+    svg: "svg",
+    mp3: "mp3",
+    wav: "wav",
+    m4a: "m4a",
+    flac: "flac",
+    ogg: "ogg",
+    aac: "aac",
+    mp4: "mp4",
+    avi: "avi",
+    mov: "mov",
+    mkv: "mkv",
+    webm: "webm",
   };
-  return typeMap[ext] ?? "application/octet-stream";
+  return typeMap[ext] ?? ext;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +111,9 @@ async function generateEmbeddingsAndIndex(kbId: string, docId: string): Promise<
  * plus forward/backward links.
  */
 async function extractEntitiesAndLinks(kbId: string, docId: string, filename: string): Promise<void> {
+  // DISABLED: Entity extraction disabled per design decision
+  return;
+  // Code preserved below for potential future re-enablement
   try {
     const { ModelRouter } = await import("../../models/router.js");
     const { EntityExtractor } = await import("../../wiki/entity-extractor.js");
@@ -313,20 +337,19 @@ knowledgeRoutes.put("/kbs/:kbId", async (c) => {
 knowledgeRoutes.delete("/kbs/:kbId", async (c) => {
   const kbId = c.req.param("kbId");
 
-  // Try to remove the data directories for this KB
-  const originalDir = join(DEEPANALYZE_CONFIG.dataDir, "original", kbId);
-  const wikiDir = join(DEEPANALYZE_CONFIG.dataDir, "wiki", kbId);
+  // Try to remove all data directories for this KB
+  const dirsToClean = [
+    join(DEEPANALYZE_CONFIG.dataDir, "original", kbId),
+    join(DEEPANALYZE_CONFIG.dataDir, "wiki", kbId),
+    join(DEEPANALYZE_CONFIG.dataDir, "generated", kbId),
+  ];
 
-  try {
-    rmSync(originalDir, { recursive: true, force: true });
-  } catch {
-    // Directory may not exist, ignore
-  }
-
-  try {
-    rmSync(wikiDir, { recursive: true, force: true });
-  } catch {
-    // Directory may not exist, ignore
+  for (const dir of dirsToClean) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Directory may not exist, ignore
+    }
   }
 
   const repos = await getRepos();
@@ -422,6 +445,8 @@ const PAGE_TYPE_TO_LEVEL: Record<string, "L0" | "L1" | "L2"> = {
   abstract: "L0",
   overview: "L1",
   structure: "L1",
+  structure_md: "L1",
+  structure_dt: "L1",
   fulltext: "L2",
 };
 
@@ -449,10 +474,17 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId", async (c) => {
     // Determine which page type to return
     // If levelParam or pageTypeParam is given, try to find the sibling page at that level
     let targetPage = page;
-    const requestedPageType = pageTypeParam ?? (levelParam ? LEVEL_TO_PAGE_TYPE[levelParam] : undefined);
+    let requestedPageType = pageTypeParam ?? (levelParam ? LEVEL_TO_PAGE_TYPE[levelParam] : undefined);
 
     if (requestedPageType && requestedPageType !== page.page_type && page.doc_id) {
-      const sibling = await repos.wikiPage.getByDocAndType(page.doc_id, requestedPageType);
+      let sibling = await repos.wikiPage.getByDocAndType(page.doc_id, requestedPageType);
+      // For L1, fallback through all structure page types
+      if (!sibling && requestedPageType === "overview" && page.doc_id) {
+        for (const fallbackType of ["structure_md", "structure_dt", "structure"]) {
+          sibling = await repos.wikiPage.getByDocAndType(page.doc_id, fallbackType);
+          if (sibling) break;
+        }
+      }
       if (sibling) {
         targetPage = sibling;
       }
@@ -464,9 +496,12 @@ knowledgeRoutes.get("/kbs/:kbId/pages/:pageId", async (c) => {
       const docPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "abstract");
       const overviewPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "overview");
       const fulltextPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "fulltext");
+      const structurePages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "structure");
+      const structureMdPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "structure_md");
+      const structureDtPages = await repos.wikiPage.getManyByDocAndType(targetPage.doc_id, "structure_dt");
 
       const pageTypes = new Set<string>();
-      for (const p of [...docPages, ...overviewPages, ...fulltextPages]) {
+      for (const p of [...docPages, ...overviewPages, ...fulltextPages, ...structurePages, ...structureMdPages, ...structureDtPages]) {
         pageTypes.add(p.page_type);
       }
       for (const pt of pageTypes) {
@@ -630,10 +665,16 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  // Save to a temp file so we can copy it to the data dir
+  // Normalize file path separators (Windows browsers may send backslashes).
+  // file.name may contain relative paths from folder uploads, e.g.
+  // "folder/subdir/file.pdf" or "folder\\subdir\\file.pdf".
+  const safeFileName = file.name.replace(/\\/g, "/");
+
+  // Save to a temp file so we can copy it to the data dir.
+  // Use only the basename for the temp file to avoid issues with relative paths.
   const tempPath = join(
     tmpdir(),
-    `deepanalyze-${randomUUID()}-${file.name}`,
+    `deepanalyze-${randomUUID()}-${basename(safeFileName)}`,
   );
 
   try {
@@ -644,9 +685,9 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
     const docId = randomUUID();
 
     // Copy source file to original/{kbId}/{docId}/{filename}
-    const destDir = join(originalDir, kbId, docId);
-    mkdirSync(destDir, { recursive: true });
-    const destPath = join(destDir, file.name);
+    // Ensure parent directories exist for nested folder uploads
+    const destPath = join(originalDir, kbId, docId, safeFileName);
+    mkdirSync(dirname(destPath), { recursive: true });
     copyFileSync(tempPath, destPath);
 
     // Compute MD5 hash of the original file
@@ -658,11 +699,11 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
     const fileSize = stat.size;
 
     // Detect file type from extension
-    const fileType = detectFileType(file.name);
+    const fileType = detectFileType(safeFileName);
 
     const doc = await repos.document.create({
       kb_id: kbId,
-      filename: file.name,
+      filename: safeFileName,
       file_path: destPath,
       file_hash: fileHash,
       file_size: fileSize,
@@ -685,6 +726,7 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
     }
 
     if (autoProcess) {
+      console.log(`[Knowledge] Auto-processing ${doc.filename} (${doc.id})`);
       queue.enqueue({
         kbId,
         docId: doc.id,
@@ -695,8 +737,11 @@ knowledgeRoutes.post("/kbs/:kbId/upload", async (c) => {
     }
 
     // Map to API response (camelCase)
+    // Include both `id` and `documentId` for backward compatibility
     return c.json({
       id: doc.id,
+      documentId: doc.id,
+      docId: doc.id,
       kbId: doc.kb_id,
       filename: doc.filename,
       filePath: doc.file_path,
@@ -737,8 +782,9 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  // Don't re-process already ready documents
-  if (doc.status === "ready") {
+  // Don't re-process already ready documents unless force=true
+  const force = c.req.query("force") === "true";
+  if (doc.status === "ready" && !force) {
     return c.json({
       documentId: docId,
       status: "ready",
@@ -761,6 +807,123 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     status: "queued",
     message: "Document enqueued for processing",
   });
+});
+
+// =====================================================================
+// POST /kbs/:kbId/documents/:docId/regenerate-abstract - Regenerate abstract for a single doc
+// POST /kbs/:kbId/regenerate-abstracts - Batch regenerate abstracts for all docs in KB
+// =====================================================================
+
+knowledgeRoutes.post("/kbs/:kbId/documents/:docId/regenerate-abstract", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+  const repos = await getRepos();
+
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  try {
+    const { ModelRouter } = await import("../../models/router.js");
+    const { WikiCompiler } = await import("../../wiki/compiler.js");
+
+    const router = new ModelRouter();
+    await router.initialize();
+    const dataDir = process.env.DATA_DIR || "data";
+    const compiler = new WikiCompiler(router, dataDir);
+
+    // Delete existing abstract page(s) for this document
+    const existingAbstract = await repos.wikiPage.getByDocAndType(docId, "abstract");
+    if (existingAbstract) {
+      await repos.wikiPage.deleteById(existingAbstract.id);
+    }
+
+    // Regenerate abstract using the compiler
+    const modality = (doc.metadata as Record<string, unknown>)?.modality as string | undefined;
+    await compiler.compileAbstract(kbId, docId, modality ?? "document");
+
+    return c.json({
+      documentId: docId,
+      status: "regenerated",
+      message: "Abstract regenerated successfully",
+    });
+  } catch (err) {
+    console.error(`[Knowledge] Failed to regenerate abstract for ${docId}:`, err);
+    return c.json({
+      error: "Failed to regenerate abstract",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+knowledgeRoutes.post("/kbs/:kbId/regenerate-abstracts", async (c) => {
+  const kbId = c.req.param("kbId");
+  const repos = await getRepos();
+
+  const kb = await repos.knowledgeBase.get(kbId);
+  if (!kb) {
+    return c.json({ error: "Knowledge base not found" }, 404);
+  }
+
+  try {
+    const { ModelRouter } = await import("../../models/router.js");
+    const { WikiCompiler } = await import("../../wiki/compiler.js");
+
+    const router = new ModelRouter();
+    await router.initialize();
+    const dataDir = process.env.DATA_DIR || "data";
+    const compiler = new WikiCompiler(router, dataDir);
+
+    // Find all documents with empty or trivial abstracts
+    const docs = await repos.document.getByKbId(kbId);
+    const results: Array<{ docId: string; filename: string; status: string }> = [];
+
+    for (const doc of docs) {
+      if (doc.status !== "ready") {
+        results.push({ docId: doc.id, filename: doc.filename, status: "skipped_not_ready" });
+        continue;
+      }
+
+      const abstractPage = await repos.wikiPage.getByDocAndType(doc.id, "abstract");
+      const content = abstractPage?.content ?? "";
+
+      // Skip if abstract already has meaningful content (> 50 chars and not just heading)
+      if (content.length > 50 && content !== "## 概述") {
+        results.push({ docId: doc.id, filename: doc.filename, status: "skipped_has_content" });
+        continue;
+      }
+
+      // Delete existing abstract and regenerate
+      if (abstractPage) {
+        await repos.wikiPage.deleteById(abstractPage.id);
+      }
+
+      try {
+        const modality = (doc.metadata as Record<string, unknown>)?.modality as string | undefined;
+        await compiler.compileAbstract(kbId, doc.id, modality ?? "document");
+        results.push({ docId: doc.id, filename: doc.filename, status: "regenerated" });
+      } catch (err) {
+        results.push({
+          docId: doc.id,
+          filename: doc.filename,
+          status: `failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    return c.json({
+      kbId,
+      total: docs.length,
+      results,
+    });
+  } catch (err) {
+    console.error(`[Knowledge] Batch regenerate abstracts failed for KB ${kbId}:`, err);
+    return c.json({
+      error: "Batch regeneration failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
 });
 
 // =====================================================================
@@ -915,6 +1078,157 @@ knowledgeRoutes.post("/kbs/:kbId/trigger-processing", async (c) => {
 });
 
 // =====================================================================
+// GET /search - Cross-KB search (search across all knowledge bases)
+// =====================================================================
+
+knowledgeRoutes.get("/search", async (c) => {
+  const query = decodeURIComponent(c.req.query("query") || c.req.query("q") || "");
+  const topK = parseInt(c.req.query("topK") || "10", 10);
+  const kbIdsParam = c.req.query("kbIds");
+  const levelsParam = c.req.query("levels");
+  const pageTypesParam = c.req.query("pageTypes");
+  const modeParam = c.req.query("mode");
+
+  if (!query.trim()) {
+    return c.json({ error: "query parameter is required (use ?query=... or ?q=...)" }, 400);
+  }
+
+  try {
+    const repos = await getRepos();
+
+    // Resolve KB IDs: use provided list or fall back to all KBs
+    let kbIds: string[];
+    if (kbIdsParam) {
+      kbIds = kbIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
+      // Verify all specified KBs exist
+      for (const kbId of kbIds) {
+        const kb = await repos.knowledgeBase.get(kbId);
+        if (!kb) {
+          return c.json({ error: `Knowledge base not found: ${kbId}` }, 404);
+        }
+      }
+    } else {
+      const allKbs = await repos.knowledgeBase.list();
+      kbIds = allKbs.map((kb) => kb.id);
+    }
+
+    if (kbIds.length === 0) {
+      return c.json({ results: [], totalFound: 0, message: "No knowledge bases found" });
+    }
+
+    // Try to use the Retriever for proper vector + BM25 search
+    try {
+      const { getRetriever } = await import("../../services/agent/agent-system.js");
+      const retriever = await getRetriever();
+
+      if (levelsParam) {
+        // Multi-level search with highlighting
+        const requestedLevels = levelsParam.split(",").map((l) => l.trim());
+        const result = await retriever.searchByLevels(query, kbIds, {
+          topK,
+          levels: requestedLevels,
+          mode: modeParam as any,
+        });
+
+        const filtered: Record<string, unknown> = {};
+        if (requestedLevels.includes("L0")) filtered.L0 = result.L0;
+        if (requestedLevels.includes("L1")) filtered.L1 = result.L1;
+        if (requestedLevels.includes("L2")) filtered.L2 = result.L2;
+
+        return c.json({
+          query,
+          kbIds,
+          results: filtered,
+          totalFound:
+            (requestedLevels.includes("L0") ? (result.L0?.length ?? 0) : 0) +
+            (requestedLevels.includes("L1") ? (result.L1?.length ?? 0) : 0) +
+            (requestedLevels.includes("L2") ? (result.L2?.length ?? 0) : 0),
+        });
+      }
+
+      // Standard fusion search
+      const pageTypes = pageTypesParam
+        ? pageTypesParam.split(",").map((s) => s.trim()).filter(Boolean)
+        : undefined;
+
+      const results = await retriever.search(query, {
+        kbIds,
+        topK,
+        pageTypes,
+      });
+
+      return c.json({ results, totalFound: results.length, kbIds });
+    } catch {
+      // Retriever not initialized yet — fall back to simple LIKE search
+      console.warn("[Knowledge] Retriever not available, falling back to simple search");
+    }
+
+    // Fallback: simple LIKE-based search across all specified KBs
+    const allResults: Array<{
+      kbId: string;
+      docId: string;
+      pageId: string;
+      title: string;
+      pageType: string;
+      snippet: string;
+      score: number;
+    }> = [];
+
+    const lowerQuery = query.toLowerCase();
+
+    for (const kbId of kbIds) {
+      const pages = await repos.wikiPage.getByKbAndType(kbId);
+      for (const page of pages) {
+        let score = 0;
+        let snippet = "";
+
+        if (page.title.toLowerCase().includes(lowerQuery)) {
+          score = 0.8;
+          snippet = page.title;
+        }
+
+        const content = page.content || "";
+        const idx = content.toLowerCase().indexOf(lowerQuery);
+        if (idx >= 0) {
+          const start = Math.max(0, idx - 50);
+          const end = Math.min(content.length, idx + query.length + 100);
+          snippet = content.substring(start, end);
+          if (start > 0) snippet = "..." + snippet;
+          if (end < content.length) snippet = snippet + "...";
+          score = Math.max(score, 0.5);
+        }
+
+        if (score > 0) {
+          allResults.push({
+            kbId,
+            docId: page.doc_id || "",
+            pageId: page.id,
+            title: page.title,
+            pageType: page.page_type,
+            snippet,
+            score,
+          });
+        }
+
+        if (allResults.length >= topK * 3) break;
+      }
+      if (allResults.length >= topK * 3) break;
+    }
+
+    allResults.sort((a, b) => b.score - a.score);
+    const results = allResults.slice(0, topK);
+
+    return c.json({ results, totalFound: results.length, kbIds, fallback: true });
+  } catch (err) {
+    console.error("[Knowledge] Cross-KB search failed:", err);
+    return c.json({
+      error: "Search failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =====================================================================
 // GET /:kbId/search - Search wiki pages in a knowledge base
 // =====================================================================
 
@@ -924,10 +1238,22 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
   const query = decodeURIComponent(c.req.query("query") || c.req.query("q") || "");
   const topK = parseInt(c.req.query("topK") || "10", 10);
   const docIdsParam = c.req.query("docIds");
+  const levelsParam = c.req.query("levels"); // e.g. "L0,L1" or "L1"
+  const modeParam = c.req.query("mode"); // "semantic" | "vector" | "keyword" | "hybrid"
 
   if (!query.trim()) {
     return c.json({ error: "query parameter is required (use ?query=... or ?q=...)" }, 400);
   }
+
+  // Check embedding degradation status to include warning in response
+  let searchWarning: string | null = null;
+  try {
+    const { getEmbeddingManager } = await import("../../models/embedding.js");
+    const mgr = getEmbeddingManager();
+    if (mgr.providerName === "hash-fallback") {
+      searchWarning = "Embedding service unavailable — using keyword search only (no semantic matching). Configure an embedding provider for better results.";
+    }
+  } catch { /* embedding not initialized */ }
 
   // Build docId filter set if provided
   const docIdFilter = docIdsParam
@@ -941,73 +1267,160 @@ knowledgeRoutes.get("/:kbId/search", async (c) => {
     return c.json({ error: "Knowledge base not found" }, 404);
   }
 
+  // Resolve requested levels and corresponding page types for filtering
+  const requestedLevels = levelsParam
+    ? levelsParam.split(",").map((l) => l.trim()).filter((l) => ["L0", "L1", "L2"].includes(l))
+    : ["L0", "L1", "L2"];
+
   try {
-    // Simple search: use wiki_pages table to find matching content
-    // Search by title and page content
-    const allPages = await repos.wikiPage.getByKbAndType(kbId);
-    const escaped = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
-    const likePattern = escaped.toLowerCase();
+    // Primary path: use the Retriever for vector + BM25 fusion search
+    try {
+      const { getRetriever } = await import("../../services/agent/agent-system.js");
+      const retriever = await getRetriever();
 
-    const titleRows = allPages.filter(
-      (p) =>
-        p.title.toLowerCase().includes(likePattern) ||
-        p.page_type === "abstract" ||
-        p.page_type === "overview",
-    ).slice(0, topK);
+      // Use searchByLevels for proper multi-level search with filtering
+      const levelResult = await retriever.searchByLevels(query, [kbId], {
+        topK,
+        levels: requestedLevels,
+        mode: modeParam as any,
+      });
 
-    // Also scan content of all pages in this KB (limit to avoid excessive I/O)
-    const existingIds = new Set(titleRows.map((r) => r.id));
-    const contentMatches: Array<(WikiPage & { _score: number; _snippet: string })> = [];
+      // Collect results from requested levels only, flatten with level annotation
+      const results: Array<{
+        docId: string;
+        pageType: string;
+        level: string;
+        title: string;
+        content: string;
+        score: number;
+        metadata: { pageId: string };
+      }> = [];
 
-    for (const page of allPages) {
-      if (existingIds.has(page.id)) continue;
-      try {
-        const content = page.content;
-        const idx = content.toLowerCase().indexOf(query.toLowerCase());
-        if (idx >= 0) {
-          const start = Math.max(0, idx - 50);
-          const end = Math.min(content.length, idx + query.length + 100);
-          let snippet = content.substring(start, end);
-          if (start > 0) snippet = "..." + snippet;
-          if (end < content.length) snippet = snippet + "...";
-          contentMatches.push({ ...page, _score: 0.5, _snippet: snippet });
+      for (const level of requestedLevels) {
+        const levelKey = level as "L0" | "L1" | "L2";
+        const levelResults = levelResult[levelKey] ?? [];
+        for (const r of levelResults) {
+          results.push({
+            docId: r.docId ?? "",
+            pageType: (r as any).pageType ?? "",
+            level,
+            title: r.title,
+            content: r.snippet ?? "",
+            score: r.score,
+            metadata: { pageId: r.pageId },
+          });
         }
-      } catch {
-        // skip unreadable pages
       }
-      if (contentMatches.length >= topK * 2) break;
+
+      // Apply docId filter if provided
+      const filteredResults = docIdFilter
+        ? results.filter((r) => !r.docId || docIdFilter.has(r.docId))
+        : results;
+
+      return c.json({ results: filteredResults, totalFound: filteredResults.length, warning: searchWarning });
+    } catch (retrieverErr) {
+      // Retriever not initialized — fall back to FTS + LIKE search
+      console.warn("[Knowledge] Retriever not available, falling back to DB search:", retrieverErr instanceof Error ? retrieverErr.message : String(retrieverErr));
     }
 
-    // Merge title matches and content matches
-    const results = [
-      ...titleRows.map((page) => {
-        let snippet = "";
-        try {
-          snippet = page.content.substring(0, 200);
-        } catch { /* ignore */ }
-        return {
-          docId: page.doc_id || "",
-          level: page.page_type,
+    // Fallback: FTS + LIKE-based search with level filtering
+    // Build the set of page types that correspond to requested levels
+    const allowedPageTypes = new Set<string>();
+    for (const level of requestedLevels) {
+      if (level === "L0") allowedPageTypes.add("abstract");
+      if (level === "L1") {
+        allowedPageTypes.add("structure_md");
+        allowedPageTypes.add("structure_dt");
+        allowedPageTypes.add("overview");
+        allowedPageTypes.add("structure");
+      }
+      if (level === "L2") allowedPageTypes.add("fulltext");
+    }
+
+    // Try FTS search first
+    try {
+      const ftsResults = await repos.ftsSearch.searchByText(query, [kbId], { topK });
+      const results = ftsResults
+        .filter((r) => allowedPageTypes.has(r.page_type))
+        .map((r) => {
+          const normalizedScore = Math.max(0, Math.min(1, 1 / (1 + Math.exp(-r.rank))));
+          return {
+            docId: r.doc_id ?? "",
+            pageType: r.page_type,
+            level: PAGE_TYPE_TO_LEVEL[r.page_type] ?? "L1",
+            title: r.title,
+            content: (r as any).content?.substring(0, 200) ?? "",
+            score: normalizedScore,
+            metadata: { pageId: r.id },
+          };
+        });
+
+      // Apply docId filter if provided
+      const filteredResults = docIdFilter
+        ? results.filter((r) => !r.docId || docIdFilter.has(r.docId))
+        : results;
+
+      return c.json({ results: filteredResults, totalFound: filteredResults.length, warning: searchWarning });
+    } catch {
+      // FTS also failed, final fallback to LIKE
+    }
+
+    // Final fallback: LIKE-based search with level filtering
+    const allPages = await repos.wikiPage.getByKbAndType(kbId);
+    const lowerQuery = query.toLowerCase();
+    const results: Array<{
+      docId: string;
+      pageType: string;
+      level: string;
+      title: string;
+      content: string;
+      score: number;
+      metadata: { pageId: string };
+    }> = [];
+
+    for (const page of allPages) {
+      // Filter by requested levels
+      if (!allowedPageTypes.has(page.page_type)) continue;
+
+      const title = page.title ?? "";
+      const content = page.content ?? "";
+      let score = 0;
+      let snippet = "";
+
+      if (title.toLowerCase().includes(lowerQuery)) {
+        score = 0.8;
+        snippet = title;
+      } else if (content.toLowerCase().includes(lowerQuery)) {
+        score = 0.5;
+        const idx = content.toLowerCase().indexOf(lowerQuery);
+        const start = Math.max(0, idx - 50);
+        const end = Math.min(content.length, idx + query.length + 100);
+        snippet = content.substring(start, end);
+        if (start > 0) snippet = "..." + snippet;
+        if (end < content.length) snippet = snippet + "...";
+      }
+
+      if (score > 0) {
+        results.push({
+          docId: page.doc_id ?? "",
+          pageType: page.page_type,
+          level: PAGE_TYPE_TO_LEVEL[page.page_type] ?? "L1",
+          title,
           content: snippet,
-          score: 0.8,
-          metadata: { pageId: page.id, title: page.title },
-        };
-      }),
-      ...contentMatches.map((page) => ({
-        docId: page.doc_id || "",
-        level: page.page_type,
-        content: page._snippet,
-        score: page._score,
-        metadata: { pageId: page.id, title: page.title },
-      })),
-    ].slice(0, topK);
+          score,
+          metadata: { pageId: page.id },
+        });
+      }
+
+      if (results.length >= topK) break;
+    }
 
     // Apply docId filter if provided
     const filteredResults = docIdFilter
       ? results.filter((r) => !r.docId || docIdFilter.has(r.docId))
       : results;
 
-    return c.json({ results: filteredResults, totalFound: filteredResults.length });
+    return c.json({ results: filteredResults, totalFound: filteredResults.length, warning: searchWarning });
   } catch (err) {
     console.error("[Knowledge] Search failed:", err);
     return c.json({
@@ -1114,6 +1527,7 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
     level?: string;
     section?: string;
     pageId?: string;
+    format?: string;
   }>();
 
   if (!body.docId && !body.pageId) {
@@ -1141,6 +1555,7 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
       const result = await expander.expandToLevel(
         body.docId,
         body.level as "L0" | "L1" | "L2",
+        body.format as "md" | "dt" | undefined,
       );
       return c.json({
         content: result.content,
@@ -1439,5 +1854,83 @@ knowledgeRoutes.post("/kbs/:kbId/reindex", async (c) => {
       error: "Reindex failed",
       detail: err instanceof Error ? err.message : String(err),
     }, 500);
+  }
+});
+
+// =============================================================================
+// POST /kbs/:kbId/rebuild-embeddings - Rebuild embeddings only (no recompilation)
+// Use this when the embedding provider changes or embeddings are missing.
+// =============================================================================
+
+knowledgeRoutes.post("/kbs/:kbId/rebuild-embeddings", async (c) => {
+  const kbId = c.req.param("kbId");
+
+  try {
+    const repos = await getRepos();
+    const kb = await repos.knowledgeBase.get(kbId);
+    if (!kb) {
+      return c.json({ error: "Knowledge base not found" }, 404);
+    }
+
+    const { ModelRouter } = await import("../../models/router.js");
+    const { EmbeddingManager } = await import("../../models/embedding.js");
+    const { Indexer } = await import("../../wiki/indexer.js");
+
+    const router = new ModelRouter();
+    await router.initialize();
+    const embeddingManager = new EmbeddingManager(router);
+    await embeddingManager.initialize();
+    const indexer = new Indexer(embeddingManager);
+
+    // Re-index all pages in the KB (embeddings + FTS) without recompilation
+    await indexer.indexKb(kbId);
+
+    return c.json({
+      kbId,
+      status: "completed",
+      provider: embeddingManager.providerName,
+      dimension: embeddingManager.dimension,
+      message: `Embeddings rebuilt using provider "${embeddingManager.providerName}" (${embeddingManager.dimension}d)`,
+    });
+  } catch (err) {
+    console.error(`[Knowledge] Rebuild embeddings failed for KB ${kbId}:`, err);
+    return c.json({
+      error: "Rebuild embeddings failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
+// =============================================================================
+// GET /embedding-status - Check embedding system health
+// =============================================================================
+
+knowledgeRoutes.get("/embedding-status", async (c) => {
+  try {
+    const { getEmbeddingManager } = await import("../../models/embedding.js");
+    const mgr = getEmbeddingManager();
+    const staleCount = await mgr.getStaleCount();
+
+    const isDegraded = mgr.providerName === "hash-fallback";
+
+    return c.json({
+      provider: mgr.providerName,
+      dimension: mgr.dimension,
+      isDegraded,
+      staleEmbeddings: staleCount,
+      warning: isDegraded
+        ? "Embedding service is using hash fallback. Semantic search is unavailable. Configure a real embedding provider in Settings."
+        : staleCount > 0
+          ? `${staleCount} stale embeddings detected. Use rebuild-embeddings to regenerate.`
+          : null,
+    });
+  } catch {
+    return c.json({
+      provider: "uninitialized",
+      dimension: 0,
+      isDegraded: true,
+      staleEmbeddings: 0,
+      warning: "Embedding system not initialized.",
+    });
   }
 });

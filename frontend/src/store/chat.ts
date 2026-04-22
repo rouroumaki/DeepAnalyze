@@ -50,6 +50,7 @@ interface ChatState {
   failAgentTask: (taskId: string, error: string) => void;
   runAgent: (input: string, agentType?: string) => Promise<void>;
   cancelAgentTask: (taskId: string) => Promise<void>;
+  regenerateMessage: (messageId: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -73,10 +74,27 @@ export const useChatStore = create<ChatState>((set, get) => {
     set({ isLoading: true });
     try {
       const sessions = await api.listSessions();
+      const sorted = sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       set({
-        sessions: sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        sessions: sorted,
         isLoading: false,
       });
+      // Auto-load messages for the saved session on first load
+      const { currentSessionId, messages } = get();
+      if (currentSessionId && messages.length === 0) {
+        const exists = sorted.some((s) => s.id === currentSessionId);
+        if (exists) {
+          try {
+            const [msgs, tasks] = await Promise.all([
+              api.getMessages(currentSessionId),
+              api.getAgentTasks(currentSessionId).catch(() => []),
+            ]);
+            set({ messages: msgs, agentTasks: tasks });
+          } catch {
+            // Silently fail — user can click to retry
+          }
+        }
+      }
     } catch (err) {
       set({ error: String(err), isLoading: false });
     }
@@ -162,6 +180,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       const assistantId = `stream-${Date.now()}`;
       get().startStreaming(assistantId);
 
+      // Track whether we received any SSE content events or tool events
+      let receivedContent = false;
+      let receivedAnyEvent = false;
+
       // Use SSE streaming for real-time output
       const { promise } = api.runAgentStream(
         currentSessionId,
@@ -170,11 +192,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         {
           onStart: (_taskId, _agentType) => {
             // Agent started
+            receivedAnyEvent = true;
           },
-          onContent: (_content, accumulated) => {
+          onContent: (content, accumulated) => {
+            receivedContent = true;
             // Update the streaming message content
             set((s) => {
-              const newContent = accumulated;
+              // Use accumulated if provided, otherwise append the delta manually
+              const newContent = accumulated ?? ((s.streamingContent || "") + content);
               return {
                 streamingContent: newContent,
                 messages: s.messages.map((m) =>
@@ -184,6 +209,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             });
           },
           onToolCall: (tc) => {
+            receivedAnyEvent = true;
             const toolCall: ToolCallInfo = {
               id: tc.id,
               toolName: tc.toolName,
@@ -193,6 +219,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             get().addStreamToolCall(toolCall);
           },
           onToolResult: (data) => {
+            receivedAnyEvent = true;
             get().updateStreamToolResult(data.id, data.output, "completed");
           },
           onComplete: (_data) => {
@@ -204,18 +231,53 @@ export const useChatStore = create<ChatState>((set, get) => {
           onDone: (data) => {
             // Streaming finished — finalize the message
             const state = get();
-            const finalContent = state.streamingContent;
+            let finalContent = state.streamingContent;
+
+            // If no SSE content was received but the done event includes output
+            // (e.g., agent failed before producing streaming content), use it
+            if (!finalContent && (data as { output?: string }).output) {
+              finalContent = (data as { output?: string }).output!;
+            }
+
             const finalToolCalls = state.streamingToolCalls.map((tc) => ({
               ...tc,
               status: tc.status === "running" ? "completed" as const : tc.status,
             }));
 
+            // Extract report data if present in the done event
+            const reportPayload = (data as { report?: { id: string; title: string; content: string; sourceCount?: number; reportType?: string } }).report;
+
             state.finishStreaming(finalContent, finalToolCalls);
 
-            // Don't reload messages from server here — the server only saves
-            // the final output text (not tool calls/progress), so reloading
-            // would replace the rich streamed content with just one line.
-            // The messages will be refreshed next time the session is loaded.
+            // If report data was received, attach it to the message
+            if (reportPayload) {
+              const msgId = state.streamingMessageId;
+              set((s) => ({
+                messages: s.messages.map((m) =>
+                  m.id === msgId
+                    ? {
+                        ...m,
+                        report: {
+                          id: reportPayload.id,
+                          title: reportPayload.title,
+                          content: reportPayload.content,
+                          summary: reportPayload.content.slice(0, 200),
+                          references: [],
+                          entities: [],
+                          createdAt: new Date().toISOString(),
+                        },
+                      }
+                    : m,
+                ),
+              }));
+            }
+
+            // If still no content, reload messages from server as last resort
+            if (!finalContent) {
+              api.getMessages(currentSessionId).then((messages) => {
+                set({ messages });
+              }).catch(() => {});
+            }
 
             // Reload agent tasks
             api.getAgentTasks(currentSessionId).then((tasks) => {
@@ -226,12 +288,65 @@ export const useChatStore = create<ChatState>((set, get) => {
             set({ isSending: false });
 
             if (data.status === "failed") {
-              set({ error: "Agent run failed" });
+              set({ error: (data as { output?: string }).output ?? "Agent run failed" });
             }
           },
         },
         scope,
       );
+
+      // SSE timeout fallback: if no events at all arrive within 30 seconds,
+      // fall back to polling for the server-side result.
+      // Tool calls and start events reset the timer since they indicate activity.
+      const sseTimeoutId = setTimeout(() => {
+        if (!receivedAnyEvent && get().isStreaming) {
+          console.warn("[ChatStore] No SSE content received after 15s, falling back to polling");
+          // Poll for the result from the server
+          const userMsgCount = get().messages.filter((m) => m.role === "user").length;
+          const pollForResult = async (attempts = 0) => {
+            if (attempts > 60) {
+              set({ isSending: false });
+              return;
+            }
+            try {
+              const messages = await api.getMessages(currentSessionId);
+              let userMsgIndex = -1;
+              let userCount = 0;
+              for (let i = 0; i < messages.length; i++) {
+                if (messages[i].role === "user") {
+                  userCount++;
+                  if (userCount === userMsgCount) {
+                    userMsgIndex = i;
+                    break;
+                  }
+                }
+              }
+              const hasAssistantResponse = userMsgIndex >= 0 &&
+                messages.some((m, i) => m.role === "assistant" && i > userMsgIndex);
+              if (hasAssistantResponse) {
+                const state = get();
+                if (state.isStreaming) {
+                  state.finishStreaming(
+                    messages.filter((m, i) => m.role === "assistant" && i > userMsgIndex)[0]?.content ?? "",
+                  );
+                }
+                set({ messages, isSending: false });
+                api.getAgentTasks(currentSessionId).then((tasks) => {
+                  set({ agentTasks: tasks });
+                }).catch(() => {});
+                return;
+              }
+            } catch {
+              // Continue polling
+            }
+            setTimeout(() => pollForResult(attempts + 1), 1000);
+          };
+          setTimeout(() => pollForResult(), 1000);
+        }
+      }, 15_000);
+
+      // Clear the timeout when the stream finishes normally
+      promise.finally(() => clearTimeout(sseTimeoutId));
 
       await promise;
     } catch (err) {
@@ -454,13 +569,16 @@ export const useChatStore = create<ChatState>((set, get) => {
         input,
         agentType,
         {
-          onContent: (_content, accumulated) => {
-            set((s) => ({
-              streamingContent: accumulated,
-              messages: s.messages.map((m) =>
-                m.id === s.streamingMessageId ? { ...m, content: accumulated } : m,
-              ),
-            }));
+          onContent: (content, accumulated) => {
+            set((s) => {
+              const newContent = accumulated ?? ((s.streamingContent || "") + content);
+              return {
+                streamingContent: newContent,
+                messages: s.messages.map((m) =>
+                  m.id === s.streamingMessageId ? { ...m, content: newContent } : m,
+                ),
+              };
+            });
           },
           onToolCall: (tc) => {
             get().addStreamToolCall({
@@ -478,14 +596,25 @@ export const useChatStore = create<ChatState>((set, get) => {
           },
           onDone: (data) => {
             const state = get();
-            const finalContent = state.streamingContent;
+            let finalContent = state.streamingContent;
+
+            // If no SSE content received but done event has output, use it
+            if (!finalContent && (data as { output?: string }).output) {
+              finalContent = (data as { output?: string }).output!;
+            }
+
             const finalToolCalls = state.streamingToolCalls.map((tc) => ({
               ...tc,
               status: tc.status === "running" ? "completed" as const : tc.status,
             }));
             state.finishStreaming(finalContent, finalToolCalls);
 
-            // Don't reload messages from server — would lose streamed content
+            // If still no content, reload from server
+            if (!finalContent) {
+              api.getMessages(currentSessionId).then((messages) => {
+                set({ messages });
+              }).catch(() => {});
+            }
 
             api.getAgentTasks(currentSessionId).then((tasks) => {
               set({ agentTasks: tasks });
@@ -494,7 +623,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             set({ isSending: false });
 
             if (data.status === "failed") {
-              set({ error: "Agent run failed" });
+              set({ error: (data as { output?: string }).output ?? "Agent run failed" });
             }
           },
         },
@@ -538,6 +667,27 @@ export const useChatStore = create<ChatState>((set, get) => {
       };
       setTimeout(() => pollForResult(), 2000);
     }
+  },
+
+  regenerateMessage: (messageId: string) => {
+    const state = get();
+    const msgIndex = state.messages.findIndex((m) => m.id === messageId);
+    if (msgIndex === -1) return;
+
+    // Find the user message before this AI message
+    let userMsgIndex = msgIndex - 1;
+    while (userMsgIndex >= 0 && state.messages[userMsgIndex].role !== "user") {
+      userMsgIndex--;
+    }
+    if (userMsgIndex < 0) return;
+
+    const userContent = state.messages[userMsgIndex].content;
+
+    // Remove the AI message and everything after it
+    set({ messages: state.messages.slice(0, msgIndex) });
+
+    // Re-send the user message through the normal flow
+    get().sendMessage(userContent);
   },
 
   cancelAgentTask: async (taskId: string) => {

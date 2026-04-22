@@ -76,7 +76,7 @@ export function createReportRoutes(): Hono {
   // =====================================================================
 
   router.get("/reports", async (c) => {
-    const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
+    const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
     const offset = parseInt(c.req.query("offset") || "0", 10);
 
     const repos = await getRepos();
@@ -270,12 +270,17 @@ export function createReportRoutes(): Hono {
     // Build the agent input with context about what to generate
     const reportType = body.reportType || "analysis";
     const agentInput = [
-      `Generate a ${reportType} report titled "${body.title}".`,
-      `Knowledge Base: ${body.kbId}`,
-      `Query/Topic: ${body.query}`,
+      `请生成一份 ${reportType} 类型的报告，标题为"${body.title}"。`,
+      `知识库 ID: ${body.kbId}`,
+      `分析主题: ${body.query}`,
       "",
-      "Use the report_generate tool to create this report. Search the knowledge base",
-      "thoroughly before generating. Make sure the report is comprehensive and cites sources.",
+      "请按以下步骤操作：",
+      "1. 先使用 kb_search 和 wiki_browse 充分搜索知识库中的相关资料",
+      "2. 对搜集到的信息进行深度分析和综合整理",
+      "3. 撰写完整的报告文本（Markdown格式），包含完整的分析、论证和结论",
+      "4. 使用 report_generate 工具保存报告，将你撰写的完整报告文本作为 content 参数传入",
+      "5. 报告内容必须是你自己的分析和综合，而不是原始文档片段的堆砌",
+      "6. 确保报告全面且有充分的来源引用",
     ].join("\n");
 
     // Generate a task ID for tracking

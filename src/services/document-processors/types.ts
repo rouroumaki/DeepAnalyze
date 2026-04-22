@@ -9,6 +9,8 @@ export interface ParsedContent {
   raw?: Record<string, unknown> | ImageRawData | AudioRawData | VideoRawData;
   /** DocTags text representation from Docling. */
   doctags?: string;
+  /** Markdown text representation (for L1_md pages). */
+  markdown?: string;
   /** Document modality type. */
   modality?: 'document' | 'image' | 'audio' | 'video' | 'excel';
 }

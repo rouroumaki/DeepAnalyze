@@ -1,8 +1,9 @@
 // =============================================================================
 // DeepAnalyze - Report Generation Tool
 // =============================================================================
-// Generates structured analysis reports by searching the knowledge base,
-// gathering relevant content, and saving the result as a wiki page.
+// Accepts agent-synthesized content and saves it as a structured report wiki
+// page. The agent is responsible for analyzing and synthesizing knowledge base
+// content; this tool handles persistence, formatting, and citation anchoring.
 // =============================================================================
 
 import { join } from "node:path";
@@ -11,15 +12,12 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { AgentTool } from "../../services/agent/types.js";
-import type { Retriever } from "../../wiki/retriever.js";
-import type { SearchResult } from "../../wiki/retriever.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
 
 export interface ReportToolDeps {
-  retriever: Retriever;
   dataDir: string;
 }
 
@@ -45,107 +43,54 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
   return {
     name: "report_generate",
     description:
-      "Generate a structured analysis report. Searches the knowledge base " +
-      "for relevant information, compiles findings into a report, and saves " +
-      "it as a wiki page. Returns the report content and page ID.",
+      "将你已经分析和合成的报告内容保存为正式报告。你必须先将知识库内容深度分析和综合整理为完整的报告文本，" +
+      "然后通过此工具保存。报告内容应是你自己的分析和综合，而不是原始文档片段的堆砌。" +
+      "你可以在报告中使用 [[doc:文档ID]] 或 [[page:页面ID]] 标记来引用来源。" +
+      "返回报告 ID 和预览内容。",
     inputSchema: {
       type: "object",
       properties: {
         title: {
           type: "string",
-          description: "Report title",
+          description: "报告标题",
         },
-        query: {
+        content: {
           type: "string",
-          description: "Topic/query to analyze for the report",
+          description:
+            "报告正文内容（Markdown 格式）。这是你经过深度分析和综合整理的完整报告文本，" +
+            "应包含完整的分析、论证、结论和建议，而不是原始文档片段。",
         },
         kbId: {
           type: "string",
-          description: "Knowledge base ID to search within",
+          description: "关联的知识库 ID",
         },
         reportType: {
           type: "string",
           enum: ["analysis", "summary", "comparison", "investigation"],
-          description: "Type of report to generate (default: analysis)",
+          "description": "报告类型（默认：analysis）",
         },
-        sections: {
+        sourceDocIds: {
           type: "array",
           items: { type: "string" },
-          description: "Optional list of section titles to include in the report",
+          description: "报告中引用的来源文档 ID 列表（可选，用于溯源追踪）",
         },
       },
-      required: ["title", "query", "kbId"],
+      required: ["title", "content", "kbId"],
     },
     async execute(input: Record<string, unknown>): Promise<ReportResult | { error: string }> {
       try {
         const title = input.title as string;
-        const query = input.query as string;
+        const agentContent = input.content as string;
         const kbId = input.kbId as string;
         const reportType = (input.reportType as ReportType) || "analysis";
-        const sections = input.sections as string[] | undefined;
+        const sourceDocIds = (input.sourceDocIds as string[] | undefined) || [];
 
-        // -------------------------------------------------------------------
-        // 1. Search for relevant content
-        // -------------------------------------------------------------------
-
-        const results: SearchResult[] = await deps.retriever.search(query, {
-          kbIds: [kbId],
-          topK: 15,
-          pageTypes: ["overview", "abstract"],
-        });
-
-        if (results.length === 0) {
-          // Broaden the search if no overview/abstract pages are found
-          const broadResults: SearchResult[] = await deps.retriever.search(query, {
-            kbIds: [kbId],
-            topK: 15,
-          });
-
-          if (broadResults.length === 0) {
-            return {
-              error: `No relevant content found for query "${query}" in knowledge base ${kbId}`,
-            };
-          }
-
-          results.push(...broadResults);
+        if (!agentContent || agentContent.trim().length === 0) {
+          return { error: "报告内容不能为空。请提供你分析和综合整理的完整报告文本。" };
         }
 
         // -------------------------------------------------------------------
-        // 2. Gather content from top results
-        // -------------------------------------------------------------------
-
-        const topResults = results.slice(0, 10);
-        const sources: Array<{
-          pageId: string;
-          title: string;
-          pageType: string;
-          snippet: string;
-          content: string;
-        }> = [];
-
-        for (const result of topResults) {
-          let content = result.snippet;
-          try {
-            const repos = await getRepos();
-            const page = await repos.wikiPage.getById(result.pageId);
-            if (page && page.content) {
-              content = page.content;
-            }
-          } catch {
-            // Fall back to snippet if read fails
-          }
-
-          sources.push({
-            pageId: result.pageId,
-            title: result.title,
-            pageType: result.pageType,
-            snippet: result.snippet,
-            content,
-          });
-        }
-
-        // -------------------------------------------------------------------
-        // 3. Build report markdown
+        // 1. Build report markdown
         // -------------------------------------------------------------------
 
         const reportLines: string[] = [];
@@ -158,98 +103,47 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
         reportLines.push("---");
         reportLines.push("");
 
-        // Table of Contents (if sections are provided)
-        if (sections && sections.length > 0) {
-          reportLines.push("## Table of Contents");
-          reportLines.push("");
-          for (let i = 0; i < sections.length; i++) {
-            reportLines.push(`${i + 1}. ${sections[i]}`);
-          }
-          reportLines.push("");
-        }
-
-        // Sources Consulted
-        reportLines.push("## Sources Consulted");
-        reportLines.push("");
-        for (const source of sources) {
-          reportLines.push(
-            `- **${source.title}** (${source.pageType}) - Page ID: ${source.pageId}`,
-          );
-        }
+        // Agent-synthesized content (the actual report body)
+        reportLines.push(agentContent);
         reportLines.push("");
 
-        // Analysis sections
-        if (sections && sections.length > 0) {
-          // Use user-specified sections
-          for (const section of sections) {
-            reportLines.push(`## ${section}`);
-            reportLines.push("");
-            reportLines.push(`_Content for "${section}" based on analysis of ${sources.length} sources._`);
-            reportLines.push("");
+        // Source references section (only if sourceDocIds were provided)
+        if (sourceDocIds.length > 0) {
+          reportLines.push("---");
+          reportLines.push("");
+          reportLines.push("## 参考文献");
+          reportLines.push("");
 
-            // Include relevant excerpts for this section
-            for (const source of sources) {
-              const excerpt = extractRelevantExcerpt(source.content, query, 300);
-              if (excerpt) {
-                reportLines.push(`### From: ${source.title}`);
-                reportLines.push("");
-                reportLines.push(excerpt);
-                reportLines.push("");
+          // Resolve source document titles
+          try {
+            const repos = await getRepos();
+            for (let i = 0; i < sourceDocIds.length; i++) {
+              const docId = sourceDocIds[i];
+              try {
+                const doc = await repos.document.getById(docId);
+                const docTitle = doc?.filename || docId;
+                reportLines.push(`${i + 1}. [[doc:${docId}|${docTitle}]]`);
+              } catch {
+                reportLines.push(`${i + 1}. [[doc:${docId}]]`);
               }
             }
+          } catch {
+            // If repo access fails, just list IDs
+            sourceDocIds.forEach((id, i) => {
+              reportLines.push(`${i + 1}. [[doc:${id}]]`);
+            });
           }
-        } else {
-          // Default section structure
-          reportLines.push("## Background");
-          reportLines.push("");
-          reportLines.push(
-            `This report analyzes information related to "${query}" from the knowledge base.`,
-          );
-          reportLines.push(
-            `A total of ${results.length} relevant pages were found across ${sources.length} sources.`,
-          );
-          reportLines.push("");
-
-          reportLines.push("## Analysis");
-          reportLines.push("");
-          for (const source of sources) {
-            const excerpt = extractRelevantExcerpt(source.content, query, 400);
-            if (excerpt) {
-              reportLines.push(`### ${source.title}`);
-              reportLines.push("");
-              reportLines.push(excerpt);
-              reportLines.push("");
-            }
-          }
-
-          reportLines.push("## Key Findings");
-          reportLines.push("");
-          reportLines.push("_(To be filled in by the agent based on analysis)_");
-          reportLines.push("");
-
-          reportLines.push("## Open Questions");
-          reportLines.push("");
-          reportLines.push("_(To be filled in by the agent)_");
-          reportLines.push("");
-
-          reportLines.push("## Recommendations");
-          reportLines.push("");
-          reportLines.push("_(To be filled in by the agent)_");
           reportLines.push("");
         }
 
         // Footer
         reportLines.push("---");
         reportLines.push("");
-        reportLines.push(
-          `_Report generated from ${sources.length} sources across knowledge base ${kbId}._`,
-        );
-        reportLines.push("");
 
         const reportContent = reportLines.join("\n");
 
         // -------------------------------------------------------------------
-        // 4. Save as wiki page
+        // 2. Save as wiki page
         // -------------------------------------------------------------------
 
         const wikiDir = join(deps.dataDir, "wiki");
@@ -274,14 +168,14 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
         });
 
         // -------------------------------------------------------------------
-        // 5. Return result
+        // 3. Return result
         // -------------------------------------------------------------------
 
         return {
           reportId: page.id,
           title,
           content: reportContent,
-          sourceCount: results.length,
+          sourceCount: sourceDocIds.length,
           reportType,
         };
       } catch (err) {
@@ -291,52 +185,4 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
       }
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extract a relevant excerpt from content that contains the query terms.
- * Falls back to the beginning of the content if no match is found.
- */
-function extractRelevantExcerpt(
-  content: string,
-  query: string,
-  maxLen: number = 300,
-): string {
-  if (!content) return "";
-
-  // Try to find a relevant portion containing query keywords
-  const keywords = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
-
-  for (const keyword of keywords) {
-    const idx = content.toLowerCase().indexOf(keyword);
-    if (idx !== -1) {
-      const start = Math.max(0, idx - 50);
-      const end = Math.min(content.length, start + maxLen);
-      let excerpt = content.substring(start, end);
-      if (start > 0) excerpt = "..." + excerpt;
-      if (end < content.length) excerpt = excerpt + "...";
-      return excerpt;
-    }
-  }
-
-  // No keyword match - return the first paragraph
-  const lines = content.split("\n");
-  const firstParagraph = lines.find(
-    (line) => line.trim().length > 0 && !line.startsWith("#"),
-  );
-
-  if (firstParagraph) {
-    return firstParagraph.length > maxLen
-      ? firstParagraph.substring(0, maxLen) + "..."
-      : firstParagraph;
-  }
-
-  return content.length > maxLen ? content.substring(0, maxLen) + "..." : content;
 }

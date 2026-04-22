@@ -23,6 +23,16 @@ export class PgMessageRepo implements MessageRepo {
     return rows.map(r => this.mapRow(r));
   }
 
+  async getLatestCompactBoundary(sessionId: string): Promise<Message | undefined> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM messages
+       WHERE session_id = $1 AND role = 'user' AND content LIKE '[COMPACT_BOUNDARY:%'
+       ORDER BY created_at DESC LIMIT 1`,
+      [sessionId],
+    );
+    return rows[0] ? this.mapRow(rows[0]) : undefined;
+  }
+
   private mapRow(row: any): Message {
     return {
       id: row.id,

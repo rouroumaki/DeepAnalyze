@@ -41,9 +41,8 @@ export interface KBSearchOutput {
 export class KBSearchTool {
   readonly name = "kb_search";
   readonly description =
-    "Search the knowledge base using a combination of semantic vector search, " +
-    "keyword matching (BM25), and link traversal. Results are merged using " +
-    "Reciprocal Rank Fusion for optimal relevance ranking.";
+    "使用语义向量搜索、关键词匹配（BM25）和链接遍历的组合来搜索知识库。" +
+    "结果通过倒数排名融合（Reciprocal Rank Fusion）合并，实现最优相关性排序。";
 
   private retriever: Retriever;
 
@@ -85,11 +84,9 @@ export class KBSearchTool {
    * Get all knowledge base IDs from the database.
    */
   private async getAllKbIds(): Promise<string[]> {
-    const { DB } = await import("../../store/database.js");
-    const db = DB.getInstance().raw;
-    const rows = db
-      .prepare("SELECT id FROM knowledge_bases")
-      .all() as Array<{ id: string }>;
-    return rows.map((r) => r.id);
+    const { getRepos } = await import("../../store/repos/index.js");
+    const repos = await getRepos();
+    const kbs = await repos.knowledgeBase.list();
+    return kbs.map((kb) => kb.id);
   }
 }

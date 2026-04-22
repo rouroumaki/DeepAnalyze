@@ -123,13 +123,19 @@ export class CronService {
       throw new Error("无效的 cron 表达式");
     }
 
+    // Either message or action must be provided
+    if (!data.message?.trim() && !data.action) {
+      throw new Error("执行消息或系统动作必须提供一项");
+    }
+
     const nextRun = this.calculateNextRun(data.schedule);
     const repo = await this.getRepo();
 
     return repo.create({
       name: data.name,
       schedule: data.schedule,
-      message: data.message,
+      message: data.message ?? "",
+      action: data.action ?? null,
       enabled: data.enabled ?? true,
       channel: data.channel ?? null,
       chatId: data.chatId ?? null,
@@ -161,6 +167,7 @@ export class CronService {
     if (data.name !== undefined) fields.name = data.name;
     if (data.schedule !== undefined) fields.schedule = data.schedule;
     if (data.message !== undefined) fields.message = data.message;
+    if (data.action !== undefined) fields.action = data.action;
     if (data.enabled !== undefined) fields.enabled = data.enabled;
     if (data.channel !== undefined) fields.channel = data.channel;
     if (data.chatId !== undefined) fields.chatId = data.chatId;

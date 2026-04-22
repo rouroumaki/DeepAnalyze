@@ -36,7 +36,7 @@ const LEVEL_CONFIG: Record<
       "border-green-500 bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400",
   },
   L1: {
-    label: "L1 概述",
+    label: "L1 结构",
     color: "text-blue-700 dark:text-blue-400",
     activeColor:
       "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400",
@@ -51,7 +51,7 @@ const LEVEL_CONFIG: Record<
 
 const LEVEL_TO_PAGE_TYPE: Record<"L0" | "L1" | "L2", string> = {
   L0: "abstract",
-  L1: "overview",
+  L1: "structure_md",  // Server falls back to structure_dt/structure automatically
   L2: "fulltext",
 };
 

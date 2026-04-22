@@ -84,6 +84,7 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<{ nodeCount: number; edgeCount: number } | null>(null);
+  const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set(["document", "entity", "concept"]));
 
   // --- Refs ---
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -94,8 +95,13 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
   const animFrameRef = useRef<number>(0);
   const dragNodeRef = useRef<SimNode | null>(null);
   const isDraggingRef = useRef(false);
+  const isPanningRef = useRef(false);
   const hasMovedRef = useRef(false);
   const hoveredNodeRef = useRef<SimNode | null>(null);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
+  // Zoom / pan transform
+  const scaleRef = useRef(1.0);
+  const offsetRef = useRef({ x: 0, y: 0 });
 
   // --- Store ---
   const navigateToWikiPage = useUIStore((s) => s.navigateToWikiPage);
@@ -182,15 +188,18 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
     [],
   );
 
-  // --- Get canvas coordinates from mouse event ---
+  // --- Get canvas coordinates from mouse event (accounting for zoom/pan) ---
   const getCanvasCoords = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
       const canvas = canvasRef.current;
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      // Convert screen coords to world coords (inverse transform)
       return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
+        x: (screenX - offsetRef.current.x) / scaleRef.current,
+        y: (screenY - offsetRef.current.y) / scaleRef.current,
       };
     },
     [],
@@ -204,6 +213,11 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       if (node) {
         dragNodeRef.current = node;
         isDraggingRef.current = true;
+        hasMovedRef.current = false;
+      } else {
+        // Start panning
+        isPanningRef.current = true;
+        panStartRef.current = { x: e.clientX, y: e.clientY };
         hasMovedRef.current = false;
       }
     },
@@ -222,13 +236,22 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
         dragNodeRef.current.vy = 0;
         // Reheat simulation slightly during drag
         alphaRef.current = Math.max(alphaRef.current, 0.3);
+      } else if (isPanningRef.current && panStartRef.current) {
+        hasMovedRef.current = true;
+        const dx = e.clientX - panStartRef.current.x;
+        const dy = e.clientY - panStartRef.current.y;
+        offsetRef.current = {
+          x: offsetRef.current.x + dx,
+          y: offsetRef.current.y + dy,
+        };
+        panStartRef.current = { x: e.clientX, y: e.clientY };
       } else {
         // Hover detection
         const node = findNodeAt(coords.x, coords.y);
         hoveredNodeRef.current = node;
         const canvas = canvasRef.current;
         if (canvas) {
-          canvas.style.cursor = node ? "pointer" : "default";
+          canvas.style.cursor = node ? "pointer" : "grab";
         }
       }
     },
@@ -244,6 +267,8 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       }
       dragNodeRef.current = null;
       isDraggingRef.current = false;
+      isPanningRef.current = false;
+      panStartRef.current = null;
       hasMovedRef.current = false;
     },
     [kbId, navigateToWikiPage],
@@ -252,6 +277,8 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
   const handleMouseLeave = useCallback(() => {
     dragNodeRef.current = null;
     isDraggingRef.current = false;
+    isPanningRef.current = false;
+    panStartRef.current = null;
     hasMovedRef.current = false;
     hoveredNodeRef.current = null;
     const canvas = canvasRef.current;
@@ -259,6 +286,34 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       canvas.style.cursor = "default";
     }
   }, []);
+
+  // --- Wheel handler for zoom ---
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+
+      // Mouse position in screen coordinates
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      // Calculate new scale
+      const delta = -e.deltaY * 0.001;
+      const oldScale = scaleRef.current;
+      const newScale = Math.min(Math.max(oldScale * (1 + delta), 0.1), 5.0);
+
+      // Adjust offset to zoom toward mouse position
+      offsetRef.current = {
+        x: mouseX - (mouseX - offsetRef.current.x) * (newScale / oldScale),
+        y: mouseY - (mouseY - offsetRef.current.y) * (newScale / oldScale),
+      };
+
+      scaleRef.current = newScale;
+    },
+    [],
+  );
 
   // --- Force simulation step ---
   const simulateStep = useCallback(() => {
@@ -370,11 +425,19 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       // Clear
       ctx.clearRect(0, 0, width, height);
 
-      const nodes = simNodesRef.current;
-      const edges = edgesRef.current;
+      const allNodes = simNodesRef.current;
+      const allEdges = edgesRef.current;
+      const types = activeTypes;
+
+      // Filter nodes and edges by active types
+      const nodes = allNodes.filter((n) => types.has(n.type));
+      const visibleNodeIds = new Set(nodes.map((n) => n.id));
+      const edges = allEdges.filter(
+        (e) => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target),
+      );
 
       // Show empty state
-      if (!isLoading && nodes.length === 0) {
+      if (!isLoading && allNodes.length === 0) {
         ctx.font = "14px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -384,8 +447,13 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
         return;
       }
 
-      // Run force simulation step
+      // Run force simulation step (on all nodes, not just visible)
       simulateStep();
+
+      // Apply zoom/pan transform
+      ctx.save();
+      ctx.translate(offsetRef.current.x, offsetRef.current.y);
+      ctx.scale(scaleRef.current, scaleRef.current);
 
       // Build node index for edge rendering
       const nodeMap = new Map<string, SimNode>();
@@ -394,7 +462,7 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       }
 
       // --- Draw edges ---
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / scaleRef.current;
       for (const edge of edges) {
         const src = nodeMap.get(edge.source);
         const tgt = nodeMap.get(edge.target);
@@ -424,22 +492,24 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
         // Border
         if (isHovered) {
           ctx.strokeStyle = "#fff";
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2 / scaleRef.current;
           ctx.stroke();
         } else {
           ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-          ctx.lineWidth = 1;
+          ctx.lineWidth = 1 / scaleRef.current;
           ctx.stroke();
         }
 
         // Label
         const label = truncateLabel(node.label);
-        ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+        ctx.font = `${11 / scaleRef.current}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
         ctx.fillStyle = "#ddd";
-        ctx.fillText(label, node.x, node.y + node.radius + 4);
+        ctx.fillText(label, node.x, node.y + node.radius + 4 / scaleRef.current);
       }
+
+      ctx.restore();
 
       // --- Draw stats overlay ---
       if (stats) {
@@ -463,7 +533,7 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
       running = false;
       cancelAnimationFrame(animFrameRef.current);
     };
-  }, [isLoading, stats, simulateStep]);
+  }, [isLoading, stats, simulateStep, activeTypes]);
 
   // =====================================================================
   // Render
@@ -567,12 +637,104 @@ export function KnowledgeGraph({ kbId }: KnowledgeGraphProps) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
+        onWheel={handleWheel}
         style={{
           display: "block",
           width: "100%",
           height: "100%",
+          cursor: "grab",
         }}
       />
+
+      {/* Node type filter controls */}
+      <div
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          display: "flex",
+          gap: 4,
+          zIndex: 3,
+        }}
+      >
+        {Object.entries(NODE_COLORS).map(([type, color]) => (
+          <button
+            key={type}
+            onClick={() => {
+              setActiveTypes((prev) => {
+                const next = new Set(prev);
+                if (next.has(type)) {
+                  // Don't allow deselecting all
+                  if (next.size > 1) next.delete(type);
+                } else {
+                  next.add(type);
+                }
+                return next;
+              });
+            }}
+            style={{
+              padding: "4px 8px",
+              fontSize: 11,
+              borderRadius: 4,
+              border: `1px solid ${activeTypes.has(type) ? color : "var(--border-primary)"}`,
+              background: activeTypes.has(type) ? `${color}22` : "var(--surface-primary)",
+              color: activeTypes.has(type) ? color : "var(--text-tertiary)",
+              cursor: "pointer",
+              transition: "all 0.15s",
+              fontWeight: activeTypes.has(type) ? 600 : 400,
+            }}
+          >
+            {type === "document" ? "文档" : type === "entity" ? "实体" : "概念"}
+          </button>
+        ))}
+      </div>
+
+      {/* Zoom controls */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 8,
+          right: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          zIndex: 3,
+        }}
+      >
+        <button
+          onClick={() => { scaleRef.current = Math.min(scaleRef.current * 1.2, 5.0); }}
+          style={{
+            width: 28, height: 28, borderRadius: 4, border: "1px solid var(--border-primary)",
+            background: "var(--surface-primary)", color: "var(--text-secondary)",
+            cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          +
+        </button>
+        <button
+          onClick={() => {
+            scaleRef.current = 1.0;
+            offsetRef.current = { x: 0, y: 0 };
+          }}
+          style={{
+            width: 28, height: 28, borderRadius: 4, border: "1px solid var(--border-primary)",
+            background: "var(--surface-primary)", color: "var(--text-secondary)",
+            cursor: "pointer", fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          FIT
+        </button>
+        <button
+          onClick={() => { scaleRef.current = Math.max(scaleRef.current / 1.2, 0.1); }}
+          style={{
+            width: 28, height: 28, borderRadius: 4, border: "1px solid var(--border-primary)",
+            background: "var(--surface-primary)", color: "var(--text-secondary)",
+            cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          -
+        </button>
+      </div>
     </div>
   );
 }

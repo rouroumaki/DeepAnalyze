@@ -63,24 +63,51 @@ export async function compileVideoStructure(
 
     // Build title and content based on whether we have a scene or keyframe
     const title = `场景${seg.index + 1} (${formatTime(seg.startTime)}-${formatTime(seg.endTime)})`;
-    const content = seg.scene
+    const dtContent = seg.scene
       ? DocTagsFormatters.videoScene(seg.scene, segTurns)
       : seg.keyframe
         ? DocTagsFormatters.videoScene(seg.keyframe, segTurns)
         : `[场景${seg.index + 1}]`;
 
-    // Determine description for metadata
+    // Build Markdown content for structure_md
     const description = seg.scene?.description ?? seg.keyframe?.description ?? '';
+    const mdContent = [
+      `## ${title}`,
+      description ? `\n${description}\n` : '',
+      segTurns.length > 0 ? `\n### 对话\n\n${segTurns.map(t =>
+        `**${t.speaker}** [${formatTime(t.startTime)}]: ${t.text}`
+      ).join('\n\n')}` : '',
+    ].join('\n');
 
-    const page = await wikiPageRepo.create({
+    const anchorIdList = [sceneAnchors[seg.index]?.id, ...segTurnAnchors.map(a => a.id)].filter(Boolean);
+
+    // L1_dt: DocTags format page
+    const dtPage = await wikiPageRepo.create({
       kb_id: kbId,
       doc_id: docId,
-      page_type: 'structure',
+      page_type: 'structure_dt',
       title,
-      content,
+      content: dtContent,
+      file_path: `${kbId}/documents/${docId}/structure_dt/scene_${seg.index + 1}.dt.md`,
+      metadata: {
+        anchorIds: anchorIdList,
+        modality: 'video',
+        elementTypes: ['scene', ...segTurns.map(() => 'turn')],
+        timeRange: `${seg.startTime}-${seg.endTime}`,
+        keyframeDescription: description,
+      },
+    });
+
+    // L1_md: Markdown format page
+    const mdPage = await wikiPageRepo.create({
+      kb_id: kbId,
+      doc_id: docId,
+      page_type: 'structure_md',
+      title,
+      content: mdContent,
       file_path: `${kbId}/documents/${docId}/structure/scene_${seg.index + 1}.md`,
       metadata: {
-        anchorIds: [sceneAnchors[seg.index]?.id, ...segTurnAnchors.map(a => a.id)].filter(Boolean),
+        anchorIds: anchorIdList,
         modality: 'video',
         elementTypes: ['scene', ...segTurns.map(() => 'turn')],
         timeRange: `${seg.startTime}-${seg.endTime}`,
@@ -89,10 +116,10 @@ export async function compileVideoStructure(
     });
 
     // Update anchor associations
-    const anchorIds = [sceneAnchors[seg.index]?.id, ...segTurnAnchors.map(a => a.id)].filter(Boolean) as string[];
-    await anchorRepo.updateStructurePageId(anchorIds, page.id);
-    await ftsRepo.upsertFTSEntry(page.id, title, content);
-    pageIds.push(page.id);
+    await anchorRepo.updateStructurePageId(anchorIdList as string[], mdPage.id);
+    await ftsRepo.upsertFTSEntry(dtPage.id, title, dtContent);
+    await ftsRepo.upsertFTSEntry(mdPage.id, title, mdContent);
+    pageIds.push(dtPage.id, mdPage.id);
   }
 
   return pageIds;

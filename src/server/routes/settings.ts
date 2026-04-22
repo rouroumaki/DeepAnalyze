@@ -168,10 +168,26 @@ export function createSettingsRoutes(): Hono {
     const body = await c.req.json<Partial<ProviderDefaults>>();
     const repos = await getRepos();
     const settings = await repos.settings.getProviderSettings();
+    const oldEmbedding = settings.defaults.embedding;
     settings.defaults = { ...settings.defaults, ...body };
     console.log(`[Settings] Updating defaults:`, JSON.stringify(body), `→ main="${settings.defaults.main}"`);
     await repos.settings.saveProviderSettings(settings);
     bumpConfigVersion();
+
+    // Trigger async reindex if embedding provider changed
+    if (body.embedding !== undefined && body.embedding !== oldEmbedding && body.embedding !== "") {
+      console.log(`[Settings] Embedding provider changed: "${oldEmbedding}" → "${body.embedding}", triggering reindex...`);
+      import("../../services/embedding-reindex.js").then(({ reindexAllEmbeddings }) => {
+        reindexAllEmbeddings((progress) => {
+          if (progress.status !== "running") {
+            console.log(`[Settings] Embedding reindex ${progress.status}: ${progress.completed}/${progress.total} (failed: ${progress.failed})`);
+          }
+        }).catch((err) => {
+          console.error("[Settings] Embedding reindex failed:", err instanceof Error ? err.message : String(err));
+        });
+      }).catch(() => { /* ignore if module not available */ });
+    }
+
     return c.json({ success: true, defaults: settings.defaults });
   });
 
@@ -240,12 +256,25 @@ export function createSettingsRoutes(): Hono {
         });
       }
 
-      // Both failed
+      // Both failed — check if this provider is the default for any role
       const errorBody = await chatResp.text().catch(() => "");
+      const defaults = allSettings.defaults as Record<string, string> | undefined;
+      const affectedRoles: string[] = [];
+      if (defaults) {
+        for (const [role, defaultId] of Object.entries(defaults)) {
+          if (defaultId === provider.id) {
+            affectedRoles.push(role);
+          }
+        }
+      }
       return c.json({
         success: false,
         status: chatResp.status,
         error: `HTTP ${chatResp.status}: ${errorBody.slice(0, 200)}`,
+        ...(affectedRoles.length > 0 ? {
+          warning: `此 Provider 是以下角色的默认模型: ${affectedRoles.join(", ")}。建议更换默认模型或修复 API Key。`,
+          affectedRoles,
+        } : {}),
       });
     } catch (err) {
       return c.json({
@@ -306,9 +335,10 @@ export function createSettingsRoutes(): Hono {
   /** Set a setting value */
   router.put("/key/:key", async (c) => {
     const { value } = await c.req.json<{ value: string }>();
+    const key = c.req.param("key");
     const repos = await getRepos();
-    await repos.settings.set(c.req.param("key"), value);
-    return c.json({ success: true });
+    await repos.settings.set(key, value);
+    return c.json({ key, value });
   });
 
   // -----------------------------------------------------------------------
@@ -349,7 +379,7 @@ export function createSettingsRoutes(): Hono {
       MINIMAX_API_KEY: {
         id: "minimax",
         modelRole: "main",
-        model: "M2.7",
+        model: "MiniMax-M2.7",
         extraModels: [
           { id: "minimax-embedding", model: "embo-01", role: "embedding" },
           { id: "minimax-tts", model: "Speech-2.8", role: "tts" },
@@ -414,19 +444,20 @@ export function createSettingsRoutes(): Hono {
     const settings = await repos.settings.getProviderSettings();
     const existingIds = new Set(settings.providers.map((p) => p.id));
 
-    // Per-provider recommended max output tokens
+    // Per-provider recommended max output tokens.
+    // 0 = let the API provider decide automatically (recommended).
     const RECOMMENDED_MAX_TOKENS: Record<string, number> = {
-      openai: 32768,
+      openai: 0,
       anthropic: 64000,
-      deepseek: 8192,
-      minimax: 131072,
-      qwen: 8192,
-      moonshot: 66000,
-      zhipu: 131072,
-      openrouter: 128000,
-      groq: 32000,
-      mistral: 32000,
-      gemini: 65536,
+      deepseek: 0,
+      minimax: 0,
+      qwen: 0,
+      moonshot: 0,
+      zhipu: 0,
+      openrouter: 0,
+      groq: 0,
+      mistral: 0,
+      gemini: 0,
     };
 
     for (const [envKey, config] of Object.entries(envToProvider)) {

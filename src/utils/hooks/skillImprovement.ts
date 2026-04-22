@@ -100,8 +100,8 @@ function createSkillImprovementHook() {
 
       return [
         createUserMessage({
-          content: `You are analyzing a conversation where a user is executing a skill (a repeatable process).
-Your job: identify if the user's recent messages contain preferences, requests, or corrections that should be permanently added to the skill definition for future runs.
+          content: `你正在分析一个用户执行技能（可重复流程）的对话。
+你的任务：识别用户最近的消息中是否包含应该永久添加到技能定义中以供将来使用的偏好、请求或修正。
 
 <skill_definition>
 ${projectSkill.content}
@@ -111,23 +111,23 @@ ${projectSkill.content}
 ${formatRecentMessages(newMessages)}
 </recent_messages>
 
-Look for:
-- Requests to add, change, or remove steps: "can you also ask me X", "please do Y too", "don't do Z"
-- Preferences about how steps should work: "ask me about energy levels", "note the time", "use a casual tone"
-- Corrections: "no, do X instead", "always use Y", "make sure to..."
+查找：
+- 添加、更改或删除步骤的请求："能否也问我 X"、"请也做 Y"、"不要做 Z"
+- 关于步骤如何执行的偏好："询问我的能量水平"、"记录时间"、"使用随意的语气"
+- 修正："不，改为做 X"、"总是使用 Y"、"确保..."
 
-Ignore:
-- Routine conversation that doesn't generalize (one-time answers, chitchat)
-- Things the skill already does
+忽略：
+- 不可泛化的常规对话（一次性回答、闲聊）
+- 技能已经完成的内容
 
-Output a JSON array inside <updates> tags. Each item: {"section": "which step/section to modify or 'new step'", "change": "what to add/modify", "reason": "which user message prompted this"}.
-Output <updates>[]</updates> if no updates are needed.`,
+在 <updates> 标签内输出 JSON 数组。每项格式：{"section": "要修改的步骤/章节或 'new step'", "change": "要添加/修改的内容", "reason": "哪条用户消息触发了此更改"}。
+如果不需要更新，输出 <updates>[]</updates>。`,
         }),
       ]
     },
 
     systemPrompt:
-      'You detect user preferences and process improvements during skill execution. Flag anything the user asks for that should be remembered for next time.',
+      '你检测技能执行期间的用户偏好和流程改进。标记用户要求的任何应该被记住以供下次使用的内容。',
 
     useTools: false,
 
@@ -212,7 +212,7 @@ export async function applySkillImprovement(
   const response = await queryModelWithoutStreaming({
     messages: [
       createUserMessage({
-        content: `You are editing a skill definition file. Apply the following improvements to the skill.
+        content: `你正在编辑一个技能定义文件。请将以下改进应用到技能中。
 
 <current_skill_file>
 ${currentContent}
@@ -222,16 +222,16 @@ ${currentContent}
 ${updateList}
 </improvements>
 
-Rules:
-- Integrate the improvements naturally into the existing structure
-- Preserve frontmatter (--- block) exactly as-is
-- Preserve the overall format and style
-- Do not remove existing content unless an improvement explicitly replaces it
-- Output the complete updated file inside <updated_file> tags`,
+规则：
+- 将改进自然地整合到现有结构中
+- 保留 frontmatter（--- 块）原样不变
+- 保留整体格式和风格
+- 除非改进明确要求替换，否则不要删除现有内容
+- 在 <updated_file> 标签内输出完整的更新文件`,
       }),
     ],
     systemPrompt: asSystemPrompt([
-      'You edit skill definition files to incorporate user preferences. Output only the updated file content.',
+      '你编辑技能定义文件以整合用户偏好。仅输出更新后的文件内容。',
     ]),
     thinkingConfig: { type: 'disabled' as const },
     tools: [],

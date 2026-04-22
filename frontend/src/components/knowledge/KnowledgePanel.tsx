@@ -34,6 +34,8 @@ import {
   CheckCircle,
   AlertCircle,
   BookOpen,
+  Pencil,
+  Save,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,9 @@ export function KnowledgePanel() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingKbs, setIsLoadingKbs] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [editingKb, setEditingKb] = useState(false);
+  const [editKbName, setEditKbName] = useState("");
+  const [editKbDescription, setEditKbDescription] = useState("");
 
   // --- Upload tracking state ---
   const [uploads, setUploads] = useState<UploadState[]>([]);
@@ -329,9 +334,16 @@ export function KnowledgePanel() {
     });
     if (!confirmed) return;
     try {
-      await api.deleteKnowledgeBase(kbId);
+      const deletedId = kbId;
+      await api.deleteKnowledgeBase(deletedId);
       success("知识库已删除");
-      onKbIdChange("");
+      // Navigate away BEFORE clearing state to avoid stale URL param race
+      window.location.hash = "#/knowledge";
+      setCurrentKbId("");
+      // Optimistically remove from local state to prevent flash
+      setKnowledgeBases((prev) => prev.filter((kb) => kb.id !== deletedId));
+      setDocuments([]);
+      // Reload to get fresh list and auto-select first KB
       loadKnowledgeBases();
     } catch {
       toastError("删除知识库失败");
@@ -658,13 +670,18 @@ export function KnowledgePanel() {
             )}
           </div>
         ) : navigatingEntity ? (
-          /* Entity Navigation Page */
-          <EntityPage
-            kbId={kbId}
-            entityName={navigatingEntity}
-            onBack={() => setNavigatingEntity(null)}
-            onNavigateEntity={(name) => setNavigatingEntity(name)}
-          />
+          /* Entity Navigation Page — DISABLED per design decision, show document list instead */
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+
+            {/* Action row */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <p style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)", margin: 0 }}>
+                  实体导航功能暂未开放
+                </p>
+              </div>
+            </div>
+          </div>
         ) : (
           /* ---- Main content ---- */
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
@@ -1022,11 +1039,17 @@ export function KnowledgePanel() {
                   ? { step: processing.step, progress: processing.progress, error: processing.error }
                   : null;
 
+                // Determine level readiness: use WebSocket data if available,
+                // otherwise assume all levels are ready for completed documents.
+                const wsLevels = levelReadiness.get(doc.id);
+                const defaultReady = doc.status === "ready";
+                const levels = wsLevels ?? (defaultReady ? { L0: true, L1: true, L2: true } : { L0: false, L1: false, L2: false });
+
                 return (
                   <DocumentCard
                     key={doc.id}
                     document={doc}
-                    levels={levelReadiness.get(doc.id) ?? { L0: false, L1: false, L2: false }}
+                    levels={levels}
                     processing={processingInfo}
                     selected={selectedDocs.has(doc.id)}
                     onToggleSelect={() => toggleSelect(doc.id)}
@@ -1079,18 +1102,104 @@ export function KnowledgePanel() {
                     const currentKb = knowledgeBases.find((kb) => kb.id === kbId);
                     return currentKb ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                        <div>
-                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>名称</span>
-                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", margin: 0 }}>
-                            {currentKb.name}
-                          </p>
-                        </div>
-                        <div>
-                          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>描述</span>
-                          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
-                            {currentKb.description || "暂无描述"}
-                          </p>
-                        </div>
+                        {editingKb ? (
+                          <>
+                            <div>
+                              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>名称</span>
+                              <input
+                                value={editKbName}
+                                onChange={(e) => setEditKbName(e.target.value)}
+                                style={{
+                                  width: "100%", padding: "4px 8px", fontSize: "var(--text-sm)",
+                                  border: "1px solid var(--border-primary)", borderRadius: "var(--radius-sm)",
+                                  background: "var(--bg-primary)", color: "var(--text-primary)",
+                                  marginTop: 2,
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>描述</span>
+                              <textarea
+                                value={editKbDescription}
+                                onChange={(e) => setEditKbDescription(e.target.value)}
+                                rows={2}
+                                style={{
+                                  width: "100%", padding: "4px 8px", fontSize: "var(--text-sm)",
+                                  border: "1px solid var(--border-primary)", borderRadius: "var(--radius-sm)",
+                                  background: "var(--bg-primary)", color: "var(--text-primary)",
+                                  marginTop: 2, resize: "vertical",
+                                }}
+                              />
+                            </div>
+                            <div style={{ display: "flex", gap: "var(--space-2)", marginTop: 4 }}>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await api.updateKnowledgeBase(kbId, {
+                                      name: editKbName.trim() || undefined,
+                                      description: editKbDescription.trim() || undefined,
+                                    });
+                                    setEditingKb(false);
+                                    loadKnowledgeBases();
+                                    success("知识库信息已更新");
+                                  } catch {
+                                    toastError("更新失败");
+                                  }
+                                }}
+                                style={{
+                                  padding: "4px 12px", fontSize: "var(--text-xs)",
+                                  border: "1px solid var(--border-primary)", borderRadius: "var(--radius-sm)",
+                                  background: "var(--interactive)", color: "#fff",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <Save size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} />
+                                保存
+                              </button>
+                              <button
+                                onClick={() => setEditingKb(false)}
+                                style={{
+                                  padding: "4px 12px", fontSize: "var(--text-xs)",
+                                  border: "1px solid var(--border-primary)", borderRadius: "var(--radius-sm)",
+                                  background: "var(--surface-primary)", color: "var(--text-secondary)",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                取消
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>名称</span>
+                              <button
+                                onClick={() => {
+                                  setEditKbName(currentKb.name);
+                                  setEditKbDescription(currentKb.description || "");
+                                  setEditingKb(true);
+                                }}
+                                style={{
+                                  border: "none", background: "transparent",
+                                  color: "var(--text-tertiary)", cursor: "pointer",
+                                  padding: 2, display: "flex",
+                                }}
+                                title="编辑"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                            </div>
+                            <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", margin: 0 }}>
+                              {currentKb.name}
+                            </p>
+                            <div>
+                              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>描述</span>
+                              <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
+                                {currentKb.description || "暂无描述"}
+                              </p>
+                            </div>
+                          </>
+                        )}
                         <div>
                           <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>文档数量</span>
                           <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>

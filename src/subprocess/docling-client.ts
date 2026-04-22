@@ -39,7 +39,13 @@ export interface ParseResult {
 export async function startDocling(baseDir: string, mgr: SubprocessManager): Promise<void> {
   const separator = baseDir.endsWith("/") ? "" : "/";
   const servicePath = `${baseDir}${separator}docling-service`;
-  await mgr.start("docling", ["python", "main.py"], servicePath);
+
+  // Set HF_ENDPOINT for HuggingFace model downloads if not already set
+  if (!process.env.HF_ENDPOINT) {
+    process.env.HF_ENDPOINT = "https://hf-mirror.com";
+  }
+
+  await mgr.start("docling", ["python3", "main.py"], servicePath);
 }
 
 /**

@@ -2,7 +2,7 @@ import pg from 'pg';
 import type { SettingsRepo } from './interfaces';
 
 const EMPTY_PROVIDER_DEFAULTS = {
-  main: '', summarizer: '', embedding: '', vlm: '', tts: '', image_gen: '', video_gen: '', music_gen: '',
+  main: '', summarizer: '', embedding: '', vlm: '', tts: '', image_gen: '', video_gen: '', music_gen: '', audio_transcribe: '', video_understand: '',
 };
 
 export class PgSettingsRepo implements SettingsRepo {

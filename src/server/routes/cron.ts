@@ -46,7 +46,10 @@ export function createCronRoutes(): Hono {
 
     if (!body.name?.trim()) return c.json({ error: "任务名称不能为空" }, 400);
     if (!body.schedule?.trim()) return c.json({ error: "cron 表达式不能为空" }, 400);
-    if (!body.message?.trim()) return c.json({ error: "执行消息不能为空" }, 400);
+    // Either message or action must be provided
+    if (!body.message?.trim() && !body.action) {
+      return c.json({ error: "执行消息或系统动作必须提供一项" }, 400);
+    }
 
     try {
       const job = service.createJob(body);

@@ -25,14 +25,34 @@ export async function compileImageStructure(
   const anchors = anchorGenerator.generateImageAnchors(docId, kbId, raw);
   await anchorRepo.batchInsert(anchors);
 
-  // 2. Create single Structure page
+  // 2. Create dual-format Structure pages (structure_dt + structure_md)
   const title = '图片内容';
-  const page = await wikiPageRepo.create({
+
+  // L1_dt: DocTags format page
+  const dtPage = await wikiPageRepo.create({
     kb_id: kbId,
     doc_id: docId,
-    page_type: 'structure',
+    page_type: 'structure_dt',
     title,
     content: doctags,
+    file_path: `${kbId}/documents/${docId}/structure_dt/image.dt.md`,
+    metadata: {
+      anchorIds: anchors.map(a => a.id),
+      modality: 'image',
+      elementTypes: ['image'],
+      format: raw.format,
+      dimensions: raw.width && raw.height ? `${raw.width}x${raw.height}` : undefined,
+    },
+  });
+
+  // L1_md: Markdown format page (use VLM description or OCR text)
+  const mdContent = raw.description || raw.ocrText || doctags;
+  const mdPage = await wikiPageRepo.create({
+    kb_id: kbId,
+    doc_id: docId,
+    page_type: 'structure_md',
+    title,
+    content: mdContent,
     file_path: `${kbId}/documents/${docId}/structure/image.md`,
     metadata: {
       anchorIds: anchors.map(a => a.id),
@@ -44,10 +64,11 @@ export async function compileImageStructure(
   });
 
   // 3. Update anchor structure_page_id references
-  await anchorRepo.updateStructurePageId(anchors.map(a => a.id), page.id);
+  await anchorRepo.updateStructurePageId(anchors.map(a => a.id), mdPage.id);
 
-  // 4. Create FTS index entry
-  await ftsRepo.upsertFTSEntry(page.id, title, doctags);
+  // 4. Create FTS index entries for both pages
+  await ftsRepo.upsertFTSEntry(dtPage.id, title, doctags);
+  await ftsRepo.upsertFTSEntry(mdPage.id, title, mdContent);
 
-  return [page.id];
+  return [dtPage.id, mdPage.id];
 }

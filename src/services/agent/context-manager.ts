@@ -28,6 +28,12 @@ export interface ContextWindowInfo {
   effectiveWindow: number;
 }
 
+/** Result of token-aware context loading */
+export interface ContextLoadResult {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  estimatedTokens: number;
+}
+
 // ---------------------------------------------------------------------------
 // ContextManager
 // ---------------------------------------------------------------------------
@@ -155,5 +161,56 @@ export class ContextManager {
     if (this.toolDefs.length === 0) return 0;
     const schemaJson = JSON.stringify(this.toolDefs);
     return this.modelRouter.estimateTokens(schemaJson);
+  }
+
+  // -----------------------------------------------------------------------
+  // Token-aware context loading (for route handlers)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Load context messages from history within a token budget.
+   * Walks backward from the most recent message, accumulating tokens,
+   * and stops when adding the next-older message would exceed maxTokens.
+   *
+   * This replaces fixed-count loading (e.g. "last 20 messages") with
+   * a token-based approach that adapts to actual content size.
+   */
+  loadContextMessages(
+    allMessages: Array<{ role: string; content: string }>,
+    maxTokens: number,
+  ): ContextLoadResult {
+    // Filter to only user/assistant messages
+    const candidates = allMessages.filter(
+      (m) => m.role === "user" || m.role === "assistant",
+    );
+
+    // Walk backward, accumulating tokens
+    const selected: Array<{ role: "user" | "assistant"; content: string }> = [];
+    let totalTokens = 0;
+
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const msg = candidates[i]!;
+      const msgTokens = this.estimateTextTokens(msg.content || "") + 10; // 10 overhead per msg
+
+      if (totalTokens + msgTokens > maxTokens) {
+        break;
+      }
+
+      selected.unshift({
+        role: msg.role as "user" | "assistant",
+        content: msg.content || "",
+      });
+      totalTokens += msgTokens;
+    }
+
+    return { messages: selected, estimatedTokens: totalTokens };
+  }
+
+  /**
+   * Estimate tokens for a plain text string (no message overhead).
+   * Uses the same heuristic as ModelRouter.estimateTokens().
+   */
+  estimateTextTokens(text: string): number {
+    return this.modelRouter.estimateTokens(text);
   }
 }

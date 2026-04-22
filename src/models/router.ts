@@ -117,6 +117,12 @@ export class ModelRouter {
   private providerIdToName = new Map<string, string>();
   /** Default role assignments from DB settings */
   private dbDefaults: { main: string; summarizer: string; embedding: string; vlm: string; tts: string; image_gen: string; video_gen: string; music_gen: string; audio_transcribe: string; video_understand: string } | null = null;
+  /** Provider IDs assigned to non-chat roles (embedding, tts, vlm, etc.) */
+  private nonChatProviderIds = new Set<string>();
+  /** Keywords in provider IDs that indicate non-chat capability */
+  private static readonly NON_CHAT_KEYWORDS = [
+    "embedding", "tts", "image", "video", "music", "audio", "transcri",
+  ];
   /** Config version at the time of last initialization */
   private loadedVersion = -1;
   private circuitBreaker = new CircuitBreaker();
@@ -155,6 +161,7 @@ export class ModelRouter {
     this.config = null;
     this.providerIdToName.clear();
     this.dbDefaults = null;
+    this.nonChatProviderIds.clear();
     await this.initialize();
   }
 
@@ -185,9 +192,10 @@ export class ModelRouter {
       if (provider) return provider;
     }
 
-    // Try to find an alternate provider that isn't open-circuited
+    // Try to find an alternate provider that isn't open-circuited.
+    // Skip non-chat providers (embedding, tts, vlm, image/video/music gen).
     for (const [id, provider] of this.providers) {
-      if (id !== targetId && !this.circuitBreaker.isOpen(id)) {
+      if (id !== targetId && !this.circuitBreaker.isOpen(id) && !this.isNonChatProvider(id)) {
         console.warn(`[ModelRouter] Provider "${targetId}" unavailable, falling back to "${id}"`);
         return provider;
       }
@@ -201,6 +209,18 @@ export class ModelRouter {
     throw new Error(
       `ModelRouter: provider "${targetId}" not found. Available: ${available}`,
     );
+  }
+
+  /**
+   * Check if a provider ID corresponds to a non-chat provider.
+   * Uses both role-based assignment and keyword heuristics.
+   */
+  private isNonChatProvider(id: string): boolean {
+    // Check explicit role assignment
+    if (this.nonChatProviderIds.has(id)) return true;
+    // Check keywords in the provider ID (e.g. "minimax-embedding", "minimax-tts")
+    const lowerId = id.toLowerCase();
+    return ModelRouter.NON_CHAT_KEYWORDS.some((kw) => lowerId.includes(kw));
   }
 
   /** Get the default provider ID from either DB or YAML config. */
@@ -305,6 +325,27 @@ export class ModelRouter {
     return this.config.defaults.main;
   }
 
+  /**
+   * Get the default model for a role WITHOUT falling back to the main model.
+   * Returns undefined if the role is not explicitly configured.
+   * Use this for optional capabilities like VLM where sending a request to
+   * a non-capable model is worse than skipping the feature.
+   */
+  getDefaultModelStrict(role: ModelRole): string | undefined {
+    // Database config path
+    if (this.dbDefaults) {
+      const modelId = this.dbDefaults[role];
+      return modelId || undefined;
+    }
+
+    // YAML config path
+    if (!this.config) return undefined;
+    const modelName = this.config.defaults[role as keyof typeof this.config.defaults];
+    if (modelName) return modelName;
+    if (this.config.models[role]) return role;
+    return undefined;
+  }
+
   // -----------------------------------------------------------------------
   // List configured providers (for API exposure)
   // -----------------------------------------------------------------------
@@ -362,6 +403,19 @@ export class ModelRouter {
       if (this.providers.size === 0) return false;
 
       this.dbDefaults = settings.defaults;
+
+      // Build set of provider IDs assigned to non-chat roles.
+      // These should be skipped when looking for a chat fallback.
+      this.nonChatProviderIds.clear();
+      const nonChatRoles: (keyof typeof settings.defaults)[] = [
+        "embedding", "vlm", "tts", "image_gen", "video_gen",
+        "music_gen", "audio_transcribe", "video_understand",
+      ];
+      for (const role of nonChatRoles) {
+        const id = settings.defaults[role];
+        if (id) this.nonChatProviderIds.add(id);
+      }
+
       console.log(`[ModelRouter] Loaded defaults: main="${settings.defaults.main}", summarizer="${settings.defaults.summarizer}", embedding="${settings.defaults.embedding}"`);
       return true;
     } catch {

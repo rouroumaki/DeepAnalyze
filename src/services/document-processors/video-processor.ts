@@ -236,10 +236,10 @@ export class VideoProcessor implements DocumentProcessor {
       router = new ModelRouter();
       await router.initialize();
 
-      // Prefer video_understand role, fall back to vlm
-      vlmModel = router.getDefaultModel("video_understand");
+      // Prefer video_understand role, fall back to vlm (strict: no main model fallback)
+      vlmModel = router.getDefaultModelStrict("video_understand");
       if (!vlmModel) {
-        vlmModel = router.getDefaultModel("vlm");
+        vlmModel = router.getDefaultModelStrict("vlm");
       }
     } catch {
       // VLM not available

@@ -83,7 +83,12 @@ export class Expander {
     if (pgPage.doc_id && level !== "raw") {
       const childLevel = this.nextLevel(level);
       if (childLevel) {
-        const childPageType = this.levelToPageType(childLevel);
+        let childPageType: string | null;
+        if (childLevel === "L1") {
+          childPageType = await this.resolveL1PageType(pgPage.doc_id);
+        } else {
+          childPageType = this.levelToPageType(childLevel);
+        }
         if (childPageType) {
           const childPage = await repos.wikiPage.getByDocAndType(pgPage.doc_id, childPageType);
           if (childPage) {
@@ -122,9 +127,17 @@ export class Expander {
   async expandToLevel(
     docId: string,
     targetLevel: "L0" | "L1" | "L2",
+    format?: "md" | "dt",
   ): Promise<ExpandResult> {
     const repos = await getRepos();
-    const targetPageType = this.levelToPageType(targetLevel);
+
+    // Resolve page type with fallback for legacy "structure" pages at L1
+    let targetPageType: string | null;
+    if (targetLevel === "L1") {
+      targetPageType = await this.resolveL1PageType(docId, format);
+    } else {
+      targetPageType = this.levelToPageType(targetLevel, format);
+    }
     if (!targetPageType) {
       throw new Error(`Invalid target level: ${targetLevel}`);
     }
@@ -141,9 +154,14 @@ export class Expander {
     // Build the tree of child pages at more detailed levels
     let childPages: ExpandResult[] | undefined;
     const childLevel = this.nextLevel(targetLevel);
-    if (childLevel) {
-      const childPageType = this.levelToPageType(childLevel);
-      if (childPageType && page.doc_id) {
+    if (childLevel && page.doc_id) {
+      let childPageType: string | null;
+      if (childLevel === "L1") {
+        childPageType = await this.resolveL1PageType(page.doc_id);
+      } else {
+        childPageType = this.levelToPageType(childLevel);
+      }
+      if (childPageType) {
         const childPage = await repos.wikiPage.getByDocAndType(page.doc_id, childPageType);
         if (childPage) {
           const childContent = childPage.content || "";
@@ -250,12 +268,18 @@ export class Expander {
     tokenBudget: number,
   ): Promise<ExpandResult> {
     const repos = await getRepos();
-    const levels: Array<"L0" | "L1" | "L2"> = ["L0", "L1", "L2"];
+    const levels: Array<{ level: "L0" | "L1" | "L2"; pageType: string | null }> = [];
+
+    // Resolve page types, with L1 fallback for legacy "structure" pages
+    levels.push({ level: "L0", pageType: "abstract" });
+    const l1Type = await this.resolveL1PageType(docId);
+    levels.push({ level: "L1", pageType: l1Type });
+    levels.push({ level: "L2", pageType: "fulltext" });
+
     let totalTokens = 0;
     let bestResult: ExpandResult | null = null;
 
-    for (const level of levels) {
-      const pageType = this.levelToPageType(level);
+    for (const { level, pageType } of levels) {
       if (!pageType) continue;
 
       const page = await repos.wikiPage.getByDocAndType(docId, pageType);
@@ -460,6 +484,8 @@ export class Expander {
         return "L0";
       case "overview":
       case "structure":
+      case "structure_md":
+      case "structure_dt":
         return "L1";
       case "fulltext":
         return "L2";
@@ -477,12 +503,13 @@ export class Expander {
    */
   private levelToPageType(
     level: "L0" | "L1" | "L2" | "raw",
+    format?: "md" | "dt",
   ): string | null {
     switch (level) {
       case "L0":
         return "abstract";
       case "L1":
-        return "structure";
+        return format === "md" ? "structure_md" : "structure_dt";
       case "L2":
         return "fulltext";
       case "raw":
@@ -490,6 +517,31 @@ export class Expander {
       default:
         return null;
     }
+  }
+
+  /**
+   * Get the page type for L1, with fallback to legacy "structure" format.
+   * Returns the first matching page type that exists in the database.
+   */
+  private async resolveL1PageType(
+    docId: string,
+    format?: "md" | "dt",
+  ): Promise<string | null> {
+    const repos = await getRepos();
+    const preferred = format === "md" ? "structure_md" : "structure_dt";
+    const page = await repos.wikiPage.getByDocAndType(docId, preferred);
+    if (page) return preferred;
+
+    // Fallback: try the legacy "structure" type
+    const legacy = await repos.wikiPage.getByDocAndType(docId, "structure");
+    if (legacy) return "structure";
+
+    // Fallback: try the other format
+    const other = format === "md" ? "structure_dt" : "structure_md";
+    const otherPage = await repos.wikiPage.getByDocAndType(docId, other);
+    if (otherPage) return other;
+
+    return null;
   }
 
   /**

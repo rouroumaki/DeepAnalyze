@@ -23,7 +23,7 @@ export function ReportExport({ reportId, reportTitle, onClose }: ReportExportPro
   const handleExport = async (format: ExportFormat, ext: string) => {
     setExporting(format);
     try {
-      const resp = await fetch(`/api/reports/export/${reportId}?format=${format}`);
+      const resp = await fetch(`/api/reports/reports/${reportId}/export?format=${format}`);
       if (!resp.ok) throw new Error("导出失败");
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);

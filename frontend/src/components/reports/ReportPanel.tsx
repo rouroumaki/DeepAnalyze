@@ -22,14 +22,11 @@ import {
   ExternalLink,
 } from "lucide-react";
 
-interface ReportPanelProps {
-  kbId: string;
-  onKbIdChange: (id: string) => void;
-}
-
 type SubTab = "reports" | "timeline" | "graph";
 
-export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
+export function ReportPanel() {
+  // Get kbId from Zustand store (set when user selects a knowledge base)
+  const kbId = useUIStore((s) => s.currentKbId) ?? "";
   const { error: showError } = useToast();
   const { success } = useToast();
   const resolvedTheme = useUIStore((s) => s.resolvedTheme);
@@ -49,19 +46,38 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
 
   // Load data when kb changes
   useEffect(() => {
-    if (!kbId) return;
     setLoading(true);
-    Promise.all([
-      api.listReports(kbId).catch(() => ({ reports: [] })),
-      api.getTimeline(kbId).catch(() => ({ events: [] })),
-      api.getGraph(kbId).catch(() => ({ nodes: [], edges: [], stats: { nodeCount: 0, edgeCount: 0 } })),
-    ]).then(([reportsData, timelineData, graphData]) => {
-      setReports(reportsData.reports ?? []);
-      setTimeline(timelineData.events ?? []);
-      setGraphNodes(graphData.nodes ?? []);
-      setGraphEdges(graphData.edges ?? []);
-      setLoading(false);
-    });
+    if (kbId) {
+      // KB selected: load KB-specific reports, timeline, and graph
+      Promise.all([
+        api.listReports(kbId).catch(() => ({ reports: [] })),
+        api.getTimeline(kbId).catch(() => ({ events: [] })),
+        api.getGraph(kbId).catch(() => ({ nodes: [], edges: [], stats: { nodeCount: 0, edgeCount: 0 } })),
+      ]).then(([reportsData, timelineData, graphData]) => {
+        setReports(reportsData.reports ?? []);
+        setTimeline(timelineData.events ?? []);
+        setGraphNodes(graphData.nodes ?? []);
+        setGraphEdges(graphData.edges ?? []);
+        setLoading(false);
+      });
+    } else {
+      // No KB selected: load all reports (timeline and graph require a KB)
+      api.listAllReports()
+        .then((data) => {
+          setReports(data.reports ?? []);
+          setTimeline([]);
+          setGraphNodes([]);
+          setGraphEdges([]);
+          setLoading(false);
+        })
+        .catch(() => {
+          setReports([]);
+          setTimeline([]);
+          setGraphNodes([]);
+          setGraphEdges([]);
+          setLoading(false);
+        });
+    }
   }, [kbId]);
 
   // Graph canvas rendering
@@ -230,19 +246,8 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
     }
   };
 
-  if (!kbId) {
-    return (
-      <div style={{
-        height: "100%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-tertiary)",
-      }}>
-        <p>请先在知识库标签页中选择一个知识库</p>
-      </div>
-    );
-  }
+  // When no KB is selected and user is on timeline or graph tab, show a prompt
+  const showKbPrompt = !kbId && (activeSubTab === "timeline" || activeSubTab === "graph");
 
   return (
     <div style={{
@@ -297,8 +302,8 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
           ))}
         </div>
 
-        {/* Generate report button */}
-        {activeSubTab === "reports" && (
+        {/* Generate report button (only when a KB is selected) */}
+        {activeSubTab === "reports" && kbId && (
           <button
             onClick={() => setShowGenModal(true)}
             style={{
@@ -559,7 +564,17 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
           </div>
         ) : activeSubTab === "timeline" ? (
           <div style={{ height: "100%", overflowY: "auto", padding: "var(--space-4)" }}>
-            {timeline.length === 0 ? (
+            {showKbPrompt ? (
+              <div style={{
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--text-tertiary)",
+              }}>
+                <p>请先在知识库标签页中选择一个知识库以查看时间线</p>
+              </div>
+            ) : timeline.length === 0 ? (
               <div style={{
                 textAlign: "center",
                 padding: "48px 0",
@@ -577,8 +592,8 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
                   width: 1,
                   background: "var(--border-primary)",
                 }} />
-                {timeline.map((event, i) => (
-                  <div key={i} style={{ position: "relative", paddingBottom: "var(--space-6)" }}>
+                {timeline.map((event) => (
+                  <div key={event.date} style={{ position: "relative", paddingBottom: "var(--space-6)" }}>
                     <div style={{
                       position: "absolute",
                       left: -18,
@@ -631,6 +646,16 @@ export function ReportPanel({ kbId, onKbIdChange }: ReportPanelProps) {
                 ))}
               </div>
             )}
+          </div>
+        ) : showKbPrompt ? (
+          <div style={{
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--text-tertiary)",
+          }}>
+            <p>请先在知识库标签页中选择一个知识库以查看关系图</p>
           </div>
         ) : (
           /* Graph */
@@ -741,29 +766,31 @@ function ReportDetailPanel({ report, kbId, onBack, onExport }: { report: ReportD
           <FileDown size={14} />
           导出
         </button>
-        <button
-          onClick={() => navigateToWikiPage(kbId, report.id)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--space-1)",
-            padding: "4px 10px",
-            fontSize: "var(--text-xs)",
-            fontWeight: "var(--font-medium)",
-            borderRadius: "var(--radius-md)",
-            cursor: "pointer",
-            border: "1px solid var(--border-primary)",
-            background: "transparent",
-            color: "var(--text-secondary)",
-            transition: "all var(--transition-fast)",
-            marginLeft: "auto",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; e.currentTarget.style.color = "var(--interactive)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
-        >
-          <ExternalLink size={14} />
-          在知识库中查看
-        </button>
+        {kbId && (
+          <button
+            onClick={() => navigateToWikiPage(kbId, report.id)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-1)",
+              padding: "4px 10px",
+              fontSize: "var(--text-xs)",
+              fontWeight: "var(--font-medium)",
+              borderRadius: "var(--radius-md)",
+              cursor: "pointer",
+              border: "1px solid var(--border-primary)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              transition: "all var(--transition-fast)",
+              marginLeft: "auto",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--interactive)"; e.currentTarget.style.color = "var(--interactive)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+          >
+            <ExternalLink size={14} />
+            在知识库中查看
+          </button>
+        )}
         <div>
           <h3 style={{
             fontSize: "var(--text-sm)",

@@ -73,13 +73,14 @@ export class Orchestrator {
   ) {
     this.runner = runner;
     this.modelRouter = modelRouter;
+    this.autoDream = compounder && linker
+      ? new AutoDreamManager(modelRouter, compounder, linker)
+      : null;
+  }
 
-    // Initialize AutoDreamManager if both compounder and linker are provided
-    if (compounder && linker) {
-      this.autoDream = new AutoDreamManager(modelRouter, compounder, linker);
-    } else {
-      this.autoDream = null;
-    }
+  /** Expose the ModelRouter for context management in route handlers. */
+  getModelRouter(): ModelRouter {
+    return this.modelRouter;
   }
 
   // -----------------------------------------------------------------------

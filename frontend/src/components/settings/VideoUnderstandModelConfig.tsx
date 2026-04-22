@@ -24,14 +24,14 @@ export function VideoUnderstandModelConfig({ providers, defaults, registry, onSe
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
   const [temperature, setTemperature] = useState(0.5);
-  const [maxTokens, setMaxTokens] = useState(8192);
+  const [maxTokens, setMaxTokens] = useState(0);
   const [enabled, setEnabled] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Track original values for dirty detection
-  const originalRef = useRef({ model: "", temperature: 0.5, maxTokens: 8192 });
+  const originalRef = useRef({ model: "", temperature: 0.5, maxTokens: 0 });
 
   // Initialize from defaults
   useEffect(() => {
@@ -40,7 +40,7 @@ export function VideoUnderstandModelConfig({ providers, defaults, registry, onSe
       const p = providers.find((pr) => pr.id === defaultId);
       const initModel = p?.model ?? "";
       const initTemp = p?.temperature ?? 0.5;
-      const initMaxTokens = p?.maxTokens ?? 8192;
+      const initMaxTokens = p?.maxTokens ?? 0;
       setProviderId(defaultId);
       setModel(initModel);
       setTemperature(initTemp);
@@ -61,7 +61,7 @@ export function VideoUnderstandModelConfig({ providers, defaults, registry, onSe
       const p = providers.find((pr) => pr.id === config.providerId);
       const newModel = config.model;
       const newTemp = p?.temperature ?? 0.5;
-      const newMaxTokens = p?.maxTokens ?? 8192;
+      const newMaxTokens = p?.maxTokens ?? 0;
       setTemperature(newTemp);
       setMaxTokens(newMaxTokens);
       originalRef.current = { model: newModel, temperature: newTemp, maxTokens: newMaxTokens };

@@ -69,7 +69,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 3. 使用 expand 展开关键文档的详细内容
 4. 使用 timeline_build 构建时间线（如果涉及时间事件）
 5. 使用 graph_build 构建关系图（如果涉及实体关系）
-6. 综合所有信息生成结构化调研报告
+6. 综合所有信息撰写完整的调研报告（Markdown格式），然后使用 report_generate 保存（content参数传入你撰写的报告文本）
 
 报告格式：
 - 执行摘要
@@ -100,7 +100,8 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 3. **深入浏览** — 使用 wiki_browse 查看文档概览，定位关键章节
 4. **展开阅读** — 使用 expand 展开关键段落获取完整内容
 5. **关联分析** — 检查搜索结果中的关联页面，交叉验证信息
-6. **生成报告** — 使用 report_generate 生成结构化分析报告
+6. **综合撰写** — 将分析结果撰写为完整的报告文本（Markdown格式），包含完整的论证、数据和结论
+7. **保存报告** — 使用 report_generate 将你撰写的完整报告文本保存到知识库（content参数传入你的综合报告文本）
 
 **分析要求：**
 - 始终基于文档原文进行分析，不要编造信息
@@ -270,5 +271,50 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     ],
     maxTurns: 10,
     config: { category: "extraction" },
+  },
+  {
+    name: "报告生成",
+    pluginId: null,
+    description: "基于知识库内容生成结构化分析报告，包含来源引用和可视化。",
+    systemPrompt: `你是一个专业的报告生成助手。请基于知识库内容生成一份结构化分析报告。
+
+报告主题：{{topic}}
+报告类型：{{reportType}}
+
+**工作流程：**
+
+1. **信息收集** — 使用 kb_search 搜索相关文档（至少3个不同角度）
+2. **深入阅读** — 使用 wiki_browse 和 expand 获取关键内容详情
+3. **综合撰写** — 对搜集到的信息进行深度分析和综合整理，撰写完整的报告文本
+4. **保存报告** — 调用 report_generate 工具将你撰写的完整报告文本保存到知识库
+
+**报告结构要求：**
+- 执行摘要（5条以内核心发现）
+- 背景介绍
+- 详细分析（每个论点引用来源文档）
+- 关键发现（编号列表）
+- 待解决问题
+- 结论与建议
+
+**引用格式：** 所有事实必须标注来源：
+[来源: {原始文件名} → {章节标题} (第X页)]
+
+**重要：**
+- report_generate 只负责保存报告，不帮你生成内容。
+- 你必须先自己撰写完整的分析报告（Markdown格式），然后通过 content 参数传给 report_generate。
+- 报告内容必须是你自己的分析和综合，绝不能是原始文档片段的堆砌。
+
+## 多模态引用
+- Excel 表格：标注 Sheet 名和表格编号
+- 音频：标注发言者和时间范围
+- 视频：标注场景编号和时间范围
+- 图片：标注图片描述和文件名`,
+    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "timeline_build", "graph_build", "think", "finish"],
+    variables: [
+      { name: "topic", description: "报告主题或分析问题", required: true },
+      { name: "reportType", description: "报告类型（分析/总结/对比/调查）", required: false, defaultValue: "分析" },
+    ],
+    maxTurns: 20,
+    config: { category: "report" },
   },
 ];

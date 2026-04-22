@@ -10,7 +10,9 @@ let doclingAvailable: boolean | null = null;
 
 /**
  * Check whether the Docling Python service can be started.
- * Result is cached after the first check.
+ * Result is cached after the first successful check (positive or negative).
+ * Failed checks due to timeouts or transient errors are NOT cached,
+ * allowing retries on subsequent parse attempts.
  */
 async function checkDoclingAvailable(): Promise<boolean> {
   if (doclingAvailable !== null) return doclingAvailable;
@@ -25,22 +27,26 @@ async function checkDoclingAvailable(): Promise<boolean> {
     const mgr = new SubprocessManager();
     await startDocling(projectRoot, mgr);
 
-    // Give it a moment to crash if imports fail
-    await new Promise((r) => setTimeout(r, 2000));
+    // Wait for the process to either stabilize or crash.
+    // Use 5s to accommodate slower environments (model downloads, cold starts).
+    await new Promise((r) => setTimeout(r, 5000));
 
     // If the process already exited, docling is not available
     const running = mgr.isRunning("docling");
     if (running) {
       await mgr.stop("docling");
+      doclingAvailable = true;
+    } else {
+      // Do NOT cache negative results — allow retry on next parse call
+      console.warn("[DoclingProcessor] Docling process exited during availability check, will retry next time");
     }
 
-    doclingAvailable = running;
-    return doclingAvailable;
+    return running;
   } catch (err) {
     console.warn(
       `[DoclingProcessor] Docling not available: ${err instanceof Error ? err.message : String(err)}`,
     );
-    doclingAvailable = false;
+    // Do NOT cache failures — transient issues should be retried
     return false;
   }
 }
@@ -50,7 +56,18 @@ async function checkDoclingAvailable(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 export class DoclingProcessor implements DocumentProcessor {
-  private static readonly HANDLED_TYPES = new Set(["pdf", "docx", "doc", "pptx", "ppt"]);
+  private static readonly HANDLED_TYPES = new Set([
+    // Documents (xlsx/xls handled by NativeExcelProcessor)
+    "pdf", "docx", "doc", "pptx", "ppt", "xlsm",
+    // Web
+    "html", "htm",
+    // Text (MarkdownDocumentBackend)
+    "md", "txt", "csv", "asciidoc", "adoc", "asc", "latex", "tex",
+    // Images (ImageDocumentBackend)
+    "jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp",
+    // Audio (AsrPipeline)
+    "wav", "mp3", "m4a", "aac", "ogg", "flac",
+  ]);
 
   canHandle(fileType: string): boolean {
     return DoclingProcessor.HANDLED_TYPES.has(fileType);
@@ -124,6 +141,7 @@ export class DoclingProcessor implements DocumentProcessor {
         success: true,
         raw: result.raw,
         doctags: result.doctags,
+        markdown: result.content || "",
         modality: "document",
       };
     } catch (err) {

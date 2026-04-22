@@ -2,24 +2,18 @@
 // DeepAnalyze - Agent Team Manager
 // =============================================================================
 // High-level manager for agent teams. Wraps the CRUD operations from
-// agent-teams store and provides preset templates for common team patterns.
+// the PG-backed agent-team repo and provides preset templates for common
+// team patterns.
 // =============================================================================
 
-import {
-  createTeam,
-  getTeam,
-  getTeamByName,
-  listTeams,
-  updateTeam,
-  deleteTeam,
-} from "../../store/agent-teams.js";
+import { getRepos } from "../../store/repos/index.js";
 import type {
   AgentTeam,
   AgentTeamWithMembers,
   CreateTeamData,
   UpdateTeamData,
   TeamMode,
-} from "../../store/agent-teams.js";
+} from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
 // Template types
@@ -266,35 +260,53 @@ const TEMPLATES: TeamTemplate[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * High-level manager for agent teams. Wraps the CRUD store functions and
- * provides preset templates for quickly spinning up common team patterns.
+ * High-level manager for agent teams. Wraps the PG-backed agent-team repo
+ * and provides preset templates for quickly spinning up common team patterns.
  *
  * Usage:
  *   const manager = new AgentTeamManager();
- *   const team = manager.createFromTemplate("研究管道", "我的研究项目");
+ *   const team = await manager.createFromTemplate("研究管道", "我的研究项目");
  */
 export class AgentTeamManager {
   // -----------------------------------------------------------------------
-  // Delegated CRUD operations
+  // Delegated CRUD operations (async, backed by PG repo)
   // -----------------------------------------------------------------------
 
   /** Get a team by its unique ID. */
-  getTeam = getTeam;
+  async getTeam(teamId: string): Promise<AgentTeamWithMembers | undefined> {
+    const repos = await getRepos();
+    return repos.agentTeam.get(teamId);
+  }
 
   /** Look up a team by its unique name. */
-  getTeamByName = getTeamByName;
+  async getTeamByName(name: string): Promise<AgentTeamWithMembers | undefined> {
+    const repos = await getRepos();
+    return repos.agentTeam.getByName(name);
+  }
 
   /** List all teams (without members), ordered by most recently updated. */
-  listTeams = listTeams;
+  async listTeams(): Promise<AgentTeam[]> {
+    const repos = await getRepos();
+    return repos.agentTeam.list();
+  }
 
   /** Create a new team with members. */
-  createTeam = createTeam;
+  async createTeam(data: CreateTeamData): Promise<AgentTeamWithMembers> {
+    const repos = await getRepos();
+    return repos.agentTeam.create(data);
+  }
 
   /** Partially update a team (and optionally replace its members). */
-  updateTeam = updateTeam;
+  async updateTeam(teamId: string, data: UpdateTeamData): Promise<AgentTeamWithMembers | undefined> {
+    const repos = await getRepos();
+    return repos.agentTeam.update(teamId, data);
+  }
 
   /** Delete a team by ID. Returns true if the team existed and was deleted. */
-  deleteTeam = deleteTeam;
+  async deleteTeam(teamId: string): Promise<boolean> {
+    const repos = await getRepos();
+    return repos.agentTeam.delete(teamId);
+  }
 
   // -----------------------------------------------------------------------
   // Template API
@@ -330,11 +342,11 @@ export class AgentTeamManager {
    * @returns The newly created team with its members.
    * @throws Error if the template name does not match any preset.
    */
-  createFromTemplate(
+  async createFromTemplate(
     templateName: string,
     customName?: string,
     extra?: Partial<Pick<CreateTeamData, "description" | "modelConfig" | "enableSkills" | "crossReview">>,
-  ): AgentTeamWithMembers {
+  ): Promise<AgentTeamWithMembers> {
     const template = this.getTemplate(templateName);
     if (!template) {
       throw new Error(`Unknown team template: "${templateName}". Available: ${TEMPLATES.map((t) => t.name).join(", ")}`);
@@ -363,10 +375,10 @@ export class AgentTeamManager {
    *                        For "跨库对比分析": `{ kbIds: string[], kbNames: Record<string, string> }`
    * @returns The newly created team with its members.
    */
-  createDynamicTeam(
+  async createDynamicTeam(
     templateName: string,
     params: Record<string, unknown>,
-  ): AgentTeamWithMembers {
+  ): Promise<AgentTeamWithMembers> {
     const template = this.getTemplate(templateName);
     if (!template) {
       throw new Error(`Unknown team template: "${templateName}". Available: ${TEMPLATES.map((t) => t.name).join(", ")}`);

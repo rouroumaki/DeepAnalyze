@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "clsx": "^2.1.1",
     "dompurify": "^3.3.3",
     "highlight.js": "^11.11.0",
     "lucide-react": "^0.469.0",

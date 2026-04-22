@@ -36,6 +36,10 @@ interface StructureSection {
   sectionPath: string;
   pageRange: string | null;
   wordCount: number;
+  /** Raw DocTags for this section (for structure_dt pages). */
+  doctagsContent?: string;
+  /** Markdown for this section (for structure_md pages). */
+  markdownContent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,16 +106,23 @@ export class WikiCompiler {
         );
       }
 
-      if (isRichContent && richContent) {
+      // Determine if we have rich DoclingDocument data (with raw field) for the
+      // three-layer flow, or just text from a simple processor (TextProcessor,
+      // ImageProcessor, etc.) which should use the legacy overview→abstract flow.
+      const hasRawData = isRichContent && richContent?.raw;
+
+      if (hasRawData && richContent) {
         // === NEW three-layer flow ===
         // Step 1: Save Raw (DoclingDocument JSON)
         await this.compileRaw(kbId, docId, richContent, metadata);
 
         // Step 2: Generate Structure pages from DocTags/anchors
         await this.compileStructure(kbId, docId, richContent);
+        await this.emitLevelReady(kbId, docId, "L1");
 
         // Step 3: Generate Abstract from Structure sections
         await this.compileAbstract(kbId, docId, richContent.modality);
+        await this.emitLevelReady(kbId, docId, "L0");
 
         // Also save fulltext for backward compatibility
         await this.compileFulltext(
@@ -120,29 +131,31 @@ export class WikiCompiler {
           textContent || "(No extractable text content)",
           metadata,
         );
+        await this.emitLevelReady(kbId, docId, "L2");
       } else {
-        // === LEGACY flow ===
+        // === LEGACY flow (plain text or ParsedContent without raw) ===
         const content = textContent || "(No extractable text content)";
         await this.compileFulltext(kbId, docId, content, metadata);
         await this.compileOverview(kbId, docId, content);
         await this.compileLegacyAbstract(kbId, docId);
       }
 
-      // Entity extraction and link creation
-      await this.extractAndUpdateLinks(kbId, docId);
+      // Entity extraction and link creation — DISABLED per design decision
+      // Code preserved for potential future re-enablement
+      // await this.extractAndUpdateLinks(kbId, docId);
 
-      // Build cross-document links
-      try {
-        const { Linker } = await import("../wiki/linker.js");
-        const linker = new Linker();
-        await linker.buildForwardLinks(kbId);
-        console.log(`[WikiCompiler] Built cross-document links for KB ${kbId}`);
-      } catch (err) {
-        console.warn(
-          `[WikiCompiler] Cross-document linking failed for KB ${kbId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      // Cross-document linking — DISABLED per design decision
+      // try {
+      //   const { Linker } = await import("../wiki/linker.js");
+      //   const linker = new Linker();
+      //   await linker.buildForwardLinks(kbId);
+      //   console.log(`[WikiCompiler] Built cross-document links for KB ${kbId}`);
+      // } catch (err) {
+      //   console.warn(
+      //     `[WikiCompiler] Cross-document linking failed for KB ${kbId}:`,
+      //     err instanceof Error ? err.message : String(err),
+      //   );
+      // }
 
       if (!options?.skipStatusUpdates) {
         await repos.document.updateStatus(docId, "ready");
@@ -307,8 +320,8 @@ export class WikiCompiler {
     const modality = content.modality ?? "document";
     const anchors: AnchorDef[] =
       modality === "excel"
-        ? this.anchorGenerator.generateExcelAnchors(docId, kbId, raw)
-        : this.anchorGenerator.generateAnchors(docId, kbId, raw);
+        ? this.anchorGenerator.generateExcelAnchors(docId, kbId, raw as Record<string, unknown>)
+        : this.anchorGenerator.generateAnchors(docId, kbId, raw as Record<string, unknown>);
 
     if (anchors.length === 0) {
       console.log(
@@ -320,10 +333,22 @@ export class WikiCompiler {
     // Write anchors to PG via Repository layer
     await this.writeAnchorsToRepo(anchors);
 
-    // Split DocTags into sections by H1 headings
-    const sections = content.doctags
+    // Split DocTags into dt sections
+    const dtSections = content.doctags
       ? this.splitDocTagsIntoSections(content.doctags, anchors)
-      : this.buildSectionsFromAnchors(anchors);
+      : [];
+
+    // Split native Markdown into md sections (from Docling export_to_markdown)
+    const mdSections = content.markdown
+      ? this.splitMarkdownIntoSections(content.markdown, anchors)
+      : [];
+
+    // Use dt sections as the base; fall back to md sections; then anchor-based
+    const sections = dtSections.length > 0
+      ? dtSections
+      : mdSections.length > 0
+        ? mdSections
+        : this.buildSectionsFromAnchors(anchors);
 
     if (sections.length === 0) {
       console.log(
@@ -334,15 +359,31 @@ export class WikiCompiler {
 
     const wikiDir = this.pageManager.getWikiDir();
 
-    // Create a structure page for each section
-    for (const section of sections) {
+    // Create dual-format structure pages for each section (L1_md + L1_dt)
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i];
       const sectionTitle = section.title || `Section ${section.sectionPath || "0"}`;
+
+      // L1_dt: DocTags format page
+      const dtContent = section.doctagsContent || section.content;
       await this.createWikiPageViaRepo(
         kbId,
         docId,
-        "structure",
+        "structure_dt",
         sectionTitle,
-        section.content,
+        dtContent,
+        wikiDir,
+      );
+
+      // L1_md: Markdown format page — prefer native Markdown from Docling
+      const mdSection = mdSections[i];
+      const markdownContent = mdSection?.markdownContent || section.markdownContent || section.content;
+      await this.createWikiPageViaRepo(
+        kbId,
+        docId,
+        "structure_md",
+        sectionTitle,
+        markdownContent,
         wikiDir,
       );
     }
@@ -356,7 +397,7 @@ export class WikiCompiler {
   // Abstract layer: LLM-generated summary from Structure sections
   // -----------------------------------------------------------------------
 
-  private async compileAbstract(
+  async compileAbstract(
     kbId: string,
     docId: string,
     modality?: string,
@@ -364,13 +405,15 @@ export class WikiCompiler {
     // Collect all structure section titles + previews for the prompt
     const structureSections = await this.getStructureSectionSummaries(docId);
 
-    // If no structure sections, fall back to overview content
-    const abstractInput =
-      structureSections.length > 0
-        ? structureSections
-            .map((s) => `## ${s.title}\n${s.preview}`)
-            .join("\n\n")
-        : await this.getOverviewFallback(docId);
+    // If no structure sections, fall back to overview or fulltext content
+    let abstractInput: string;
+    if (structureSections.length > 0) {
+      abstractInput = structureSections
+        .map((s) => `## ${s.title}\n${s.preview}`)
+        .join("\n\n");
+    } else {
+      abstractInput = await this.getOverviewFallback(docId);
+    }
 
     if (!abstractInput || abstractInput.trim().length === 0) {
       console.warn(
@@ -379,9 +422,10 @@ export class WikiCompiler {
       return;
     }
 
+    // Allow up to 8000 chars for abstract input to capture richer content
     const truncated =
-      abstractInput.length > 4000
-        ? abstractInput.slice(0, 4000) + "\n...(truncated)"
+      abstractInput.length > 8000
+        ? abstractInput.slice(0, 8000) + "\n...(truncated)"
         : abstractInput;
 
     // Modality-aware prompt hints
@@ -404,26 +448,51 @@ export class WikiCompiler {
 文档章节概要：
 ${truncated}`;
 
-    let response: string;
-    try {
-      const result = await this.router.chat(
-        [{ role: "user", content: prompt }],
-        { model: this.router.getDefaultModel("summarizer") },
-      );
-      response = result.content;
-      if (!response || response.trim().length === 0) {
-        response = "";
+    // Retry LLM call up to 3 times with exponential backoff
+    let response = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await this.router.chat(
+          [{ role: "user", content: prompt }],
+          { model: this.router.getDefaultModel("summarizer") },
+        );
+        response = result.content ?? "";
+        // Strip thinking tags if present (some models wrap output in <think/> blocks)
+        response = response.replace(/<think[\s\S]*?<\/think>/g, "").trim();
+        if (response.trim().length > 0) {
+          break;
+        }
+        console.warn(`[WikiCompiler] Abstract generation returned empty for doc ${docId}, attempt ${attempt}/3`);
+      } catch (err) {
+        console.warn(
+          `[WikiCompiler] Abstract generation failed for doc ${docId} (attempt ${attempt}/3):`,
+          err instanceof Error ? err.message : String(err),
+        );
       }
-    } catch (err) {
-      console.warn(
-        `[WikiCompiler] Abstract generation failed for doc ${docId}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      response = "";
+      // Exponential backoff: 2s, 4s
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+      }
     }
 
+    // Fallback: extract meaningful content from structure sections (not just the first heading line)
     if (!response || response.trim().length === 0) {
-      response = abstractInput.slice(0, 200).split("\n")[0] || "No abstract available.";
+      // Build a concise fallback from section content, skipping pure headings
+      const sectionTexts = structureSections.length > 0
+        ? structureSections.map((s) => s.preview).filter((p) => p.trim().length > 0)
+        : [abstractInput];
+      const combined = sectionTexts.join("\n").slice(0, 300);
+      // Take first meaningful paragraph (skip lines that are just headings)
+      const meaningfulLine = combined
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith("#"))
+        .slice(0, 3)
+        .join(" ");
+      response = meaningfulLine || "No abstract available.";
+      console.warn(
+        `[WikiCompiler] Using fallback abstract for doc ${docId}: ${response.slice(0, 80)}...`,
+      );
     }
 
     await this.createWikiPageViaRepo(
@@ -611,11 +680,21 @@ ${truncated}`;
   ): Promise<void> {
     const repos = await getRepos();
 
-    // Read overview for entity extraction (use overview or abstract as source)
-    const l1Page = await repos.wikiPage.getByDocAndType(docId, "overview");
+    // Read L1 content for entity extraction: try overview first (legacy), then structure pages (new), then abstract
+    let l1Page = await repos.wikiPage.getByDocAndType(docId, "overview");
+    if (!l1Page) {
+      // New three-layer flow: use first structure page or abstract
+      const structurePages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+      if (structurePages.length > 0) {
+        // Use the first structure page as the link source
+        l1Page = structurePages[0];
+      } else {
+        l1Page = await repos.wikiPage.getByDocAndType(docId, "abstract");
+      }
+    }
     if (!l1Page) {
       console.warn(
-        `[WikiCompiler] Overview not found for doc ${docId}, skipping entity extraction`,
+        `[WikiCompiler] No L1 page found for doc ${docId}, skipping entity extraction`,
       );
       return;
     }
@@ -623,7 +702,7 @@ ${truncated}`;
     const l1Content = l1Page.content || "";
     if (!l1Content || l1Content.trim().length === 0) {
       console.warn(
-        `[WikiCompiler] Empty overview content for entity extraction, doc ${docId}`,
+        `[WikiCompiler] Empty L1 content for entity extraction, doc ${docId}`,
       );
       return;
     }
@@ -690,6 +769,7 @@ ${truncated}`;
   /**
    * Split DocTags text into sections by [h1] markers.
    * Each section corresponds to a structure wiki page.
+   * Content is converted from DocTags to Markdown for better model readability.
    */
   private splitDocTagsIntoSections(
     doctags: string,
@@ -698,7 +778,7 @@ ${truncated}`;
     const lines = doctags.split("\n");
     const sections: StructureSection[] = [];
     let currentTitle = "概述";
-    let currentContent: string[] = [];
+    let currentRawLines: string[] = [];
     let currentPath = "";
     let h1Idx = 0;
 
@@ -707,9 +787,10 @@ ${truncated}`;
       const h1Match = line.match(/^\[h1\]\s*(.+)/);
       if (h1Match) {
         // Flush previous section
-        if (currentContent.length > 0) {
-          const content = currentContent.join("\n").trim();
-          if (content) {
+        if (currentRawLines.length > 0) {
+          const rawDoctags = currentRawLines.join("\n");
+          const mdContent = this.doctagsToMarkdown(rawDoctags);
+          if (mdContent.trim()) {
             h1Idx++;
             currentPath = `${h1Idx}`;
             const sectionAnchors = anchors.filter(
@@ -717,34 +798,29 @@ ${truncated}`;
             );
             sections.push({
               title: currentTitle,
-              content,
+              content: mdContent,
               anchorIds: sectionAnchors.map((a) => a.id),
               sectionPath: currentPath,
               pageRange: null,
-              wordCount: content.length,
+              wordCount: mdContent.length,
+              doctagsContent: rawDoctags,
+              markdownContent: mdContent,
             });
           }
         }
         currentTitle = h1Match[1].trim();
-        currentContent = [line];
+        currentRawLines = [line];
         continue;
       }
 
-      // Check for H2 markers (subsections within current H1)
-      const h2Match = line.match(/^\[h2\]\s*(.+)/);
-      if (h2Match) {
-        // H2 is a subsection - keep it within the current H1 section
-        currentContent.push(line);
-        continue;
-      }
-
-      currentContent.push(line);
+      currentRawLines.push(line);
     }
 
     // Flush last section
-    if (currentContent.length > 0) {
-      const content = currentContent.join("\n").trim();
-      if (content) {
+    if (currentRawLines.length > 0) {
+      const rawDoctags = currentRawLines.join("\n");
+      const mdContent = this.doctagsToMarkdown(rawDoctags);
+      if (mdContent.trim()) {
         if (sections.length === 0) {
           h1Idx = 1;
           currentPath = "1";
@@ -754,16 +830,233 @@ ${truncated}`;
         );
         sections.push({
           title: currentTitle,
-          content,
+          content: mdContent,
           anchorIds: sectionAnchors.map((a) => a.id),
           sectionPath: currentPath,
           pageRange: null,
-          wordCount: content.length,
+          wordCount: mdContent.length,
+          doctagsContent: rawDoctags,
+          markdownContent: mdContent,
         });
       }
     }
 
     return sections;
+  }
+
+  // -----------------------------------------------------------------------
+  // Markdown splitting (for Docling native export_to_markdown output)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Split native Markdown content (from Docling export_to_markdown()) into
+   * sections by H1 headings. Returns sections with proper markdownContent
+   * already in correct format.
+   */
+  private splitMarkdownIntoSections(markdown: string, anchors: AnchorDef[]): StructureSection[] {
+    const lines = markdown.split("\n");
+    const sections: StructureSection[] = [];
+    let currentTitle = "概述";
+    let currentLines: string[] = [];
+    let h1Idx = 0;
+
+    for (const line of lines) {
+      const h1Match = line.match(/^#\s+(.+)/);
+      if (h1Match) {
+        // Flush previous section
+        if (currentLines.length > 0) {
+          const mdContent = currentLines.join("\n");
+          if (mdContent.trim()) {
+            h1Idx++;
+            const currentPath = `${h1Idx}`;
+            const sectionAnchors = anchors.filter(
+              (a) => a.section_path === currentPath || a.section_path === `${h1Idx}`,
+            );
+            sections.push({
+              title: currentTitle,
+              content: mdContent,
+              anchorIds: sectionAnchors.map((a) => a.id),
+              sectionPath: currentPath,
+              pageRange: null,
+              wordCount: mdContent.length,
+              doctagsContent: undefined,
+              markdownContent: mdContent,
+            });
+          }
+        }
+        currentTitle = h1Match[1].trim();
+        currentLines = [line]; // Include the H1 line in the section
+        continue;
+      }
+      currentLines.push(line);
+    }
+
+    // Flush last section
+    if (currentLines.length > 0) {
+      const mdContent = currentLines.join("\n");
+      if (mdContent.trim()) {
+        if (sections.length === 0) h1Idx = 1;
+        const currentPath = sections.length === 0 ? "1" : `${h1Idx}`;
+        const sectionAnchors = anchors.filter((a) => a.section_path === currentPath);
+        sections.push({
+          title: currentTitle,
+          content: mdContent,
+          anchorIds: sectionAnchors.map((a) => a.id),
+          sectionPath: currentPath,
+          pageRange: null,
+          wordCount: mdContent.length,
+          doctagsContent: undefined,
+          markdownContent: mdContent,
+        });
+      }
+    }
+
+    return sections;
+  }
+
+  /**
+   * Convert DocTags format to clean Markdown.
+   * Strips structural tags like [paragraph], [table], [list] etc.
+   * and converts heading tags to Markdown headings.
+   * Preserves meaningful content while removing noisy formatting markers.
+   */
+  private doctagsToMarkdown(doctags: string): string {
+    const lines = doctags.split("\n");
+    const result: string[] = [];
+
+    for (let line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        result.push("");
+        continue;
+      }
+
+      // Convert heading tags to Markdown headings
+      const h1Match = trimmed.match(/^\[h1\]\s*(.+)/);
+      if (h1Match) {
+        result.push(`# ${h1Match[1].trim()}`);
+        continue;
+      }
+      const h2Match = trimmed.match(/^\[h2\]\s*(.+)/);
+      if (h2Match) {
+        result.push(`## ${h2Match[1].trim()}`);
+        continue;
+      }
+      const h3Match = trimmed.match(/^\[h3\]\s*(.+)/);
+      if (h3Match) {
+        result.push(`### ${h3Match[1].trim()}`);
+        continue;
+      }
+      const h4Match = trimmed.match(/^\[h4\]\s*(.+)/);
+      if (h4Match) {
+        result.push(`#### ${h4Match[1].trim()}`);
+        continue;
+      }
+
+      // Strip common structural tags, keep content
+      const strippedTag = trimmed.match(/^\[(paragraph|text|caption|title|header|footer|page_header|page_footer|footnote|endnote|code|formula|equation|figure|picture|image|chart)\]\s*(.*)/s);
+      if (strippedTag) {
+        const content = strippedTag[2].trim();
+        if (content) result.push(content);
+        continue;
+      }
+
+      // Convert list items: [unordered_list] or [ordered_list] content → bullet/numbered
+      const ulMatch = trimmed.match(/^\[unordered_list\]\s*(.*)/s);
+      if (ulMatch) {
+        const content = ulMatch[1].trim();
+        if (content) result.push(`- ${content}`);
+        continue;
+      }
+      const olMatch = trimmed.match(/^\[ordered_list\]\s*(.*)/s);
+      if (olMatch) {
+        const content = olMatch[1].trim();
+        if (content) result.push(`1. ${content}`);
+        continue;
+      }
+
+      // Convert table tags to Markdown tables
+      if (trimmed.startsWith("[table]")) {
+        const tableContent = trimmed.replace(/^\[table\]\s*/, "").trim();
+        if (tableContent) {
+          result.push(this.convertDocTagsTable(tableContent));
+        }
+        continue;
+      }
+      if (trimmed.startsWith("[/table]")) continue;
+
+      // Table row markers
+      const rowMatch = trimmed.match(/^\[row\]\s*(.*)/s);
+      if (rowMatch) {
+        const cells = rowMatch[1].split("[cell]").map((c: string) => c.replace(/\[\/cell\]/g, "").trim()).filter(Boolean);
+        if (cells.length > 0) {
+          result.push(`| ${cells.join(" | ")} |`);
+        }
+        continue;
+      }
+
+      // Strip [list] container tags
+      if (trimmed === "[list]" || trimmed === "[/list]" ||
+          trimmed === "[unordered_list]" || trimmed === "[/unordered_list]" ||
+          trimmed === "[ordered_list]" || trimmed === "[/ordered_list]") {
+        continue;
+      }
+
+      // Strip any remaining standalone tag markers like [/paragraph], [/code], etc.
+      if (/^\[\/[a-z_]+\]$/.test(trimmed)) continue;
+
+      // Keep everything else (plain text content)
+      result.push(trimmed);
+    }
+
+    // Clean up excessive blank lines
+    return result.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /**
+   * Convert DocTags table content to a Markdown table.
+   * Input is raw cell content with [cell] delimiters.
+   */
+  private convertDocTagsTable(raw: string): string {
+    // Try to parse as structured rows
+    const rows: string[][] = [];
+    const rowParts = raw.split(/\[row\]/).filter((s: string) => s.trim());
+
+    for (const rowPart of rowParts) {
+      const cells = rowPart.split(/\[cell\]/)
+        .map((c: string) => c.replace(/\[\/cell\]/g, "").replace(/\[\/row\]/g, "").trim())
+        .filter(Boolean);
+      if (cells.length > 0) {
+        rows.push(cells);
+      }
+    }
+
+    // If no structured rows found, treat as a single row
+    if (rows.length === 0) {
+      const cells = raw.split(/\[cell\]/)
+        .map((c: string) => c.replace(/\[\/cell\]/g, "").trim())
+        .filter(Boolean);
+      if (cells.length > 0) {
+        rows.push(cells);
+      }
+    }
+
+    if (rows.length === 0) return raw;
+
+    // Build Markdown table
+    const maxCols = Math.max(...rows.map((r) => r.length));
+    const lines: string[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const padded = [...rows[i]];
+      while (padded.length < maxCols) padded.push("");
+      lines.push(`| ${padded.join(" | ")} |`);
+      if (i === 0) {
+        lines.push(`| ${Array(maxCols).fill("---").join(" | ")} |`);
+      }
+    }
+
+    return lines.join("\n");
   }
 
   /**
@@ -828,13 +1121,30 @@ ${truncated}`;
   }
 
   /**
-   * Get structure section summaries from anchors for abstract generation.
+   * Get structure section summaries for abstract generation.
+   * First tries to read structure pages from PG (full content), then falls
+   * back to anchor previews if no structure pages exist.
    */
   private async getStructureSectionSummaries(
     docId: string,
   ): Promise<Array<{ title: string; preview: string }>> {
     try {
       const repos = await getRepos();
+
+      // Primary: read structure_md pages from PG (new dual-format L1)
+      let structurePages = await repos.wikiPage.getManyByDocAndType(docId, "structure_md");
+      // Fallback: read legacy structure pages (backward compat)
+      if (structurePages.length === 0) {
+        structurePages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+      }
+      if (structurePages.length > 0) {
+        return structurePages.map((page) => ({
+          title: page.title,
+          preview: page.content?.slice(0, 2000) ?? "",
+        }));
+      }
+
+      // Fallback: use anchor previews (limited but better than nothing)
       const anchors = await repos.anchor.getByDocId(docId);
 
       // Group by section_path, build summaries
@@ -856,10 +1166,12 @@ ${truncated}`;
         }
       }
 
-      return Array.from(sectionMap.entries()).map(([, v]) => ({
-        title: v.title,
-        preview: v.previews.slice(0, 3).join("\n"),
-      }));
+      if (sectionMap.size > 0) {
+        return Array.from(sectionMap.entries()).map(([, v]) => ({
+          title: v.title,
+          preview: v.previews.slice(0, 10).join("\n"),
+        }));
+      }
     } catch {
       // Fall through
     }
@@ -895,6 +1207,16 @@ ${truncated}`;
    * Create a wiki page: write content to filesystem and insert into PG.
    * This replaces the old createWikiPage() from wiki-pages.ts.
    */
+  /** Broadcast a doc_level_ready event via WebSocket so the frontend can show progressive green. */
+  private async emitLevelReady(kbId: string, docId: string, level: "L0" | "L1" | "L2"): Promise<void> {
+    try {
+      const { broadcastToKb } = await import("../server/ws.js");
+      broadcastToKb(kbId, { type: "doc_level_ready", kbId, docId, level });
+    } catch {
+      // WebSocket module may not be loaded yet — non-critical
+    }
+  }
+
   private async createWikiPageViaRepo(
     kbId: string,
     docId: string | null,
@@ -971,6 +1293,14 @@ ${truncated}`;
       case "structure": {
         const safeName = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 100);
         return join(wikiDir, kbId, "documents", docId!, "structure", `${safeName}.md`);
+      }
+      case "structure_md": {
+        const safeName = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 100);
+        return join(wikiDir, kbId, "documents", docId!, "structure", `${safeName}.md`);
+      }
+      case "structure_dt": {
+        const safeName = title.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 100);
+        return join(wikiDir, kbId, "documents", docId!, "structure_dt", `${safeName}.dt.md`);
       }
       default:
         return join(wikiDir, kbId, "documents", `${id}.md`);

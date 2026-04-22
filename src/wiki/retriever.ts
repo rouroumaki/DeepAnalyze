@@ -49,6 +49,9 @@ export interface EntitySearchResult {
   relatedPages: string[];
 }
 
+/** Search mode controls which search strategies are used. */
+export type SearchMode = "semantic" | "vector" | "keyword" | "hybrid";
+
 /** Options for configuring a search query. */
 export interface SearchOptions {
   /** Knowledge base IDs to search within. */
@@ -61,6 +64,13 @@ export interface SearchOptions {
   pageTypes?: string[];
   /** Minimum score threshold (0-1 scale). */
   minScore?: number;
+  /**
+   * Search mode:
+   * - "semantic" or "vector" — vector embedding search only (best for meaning-based queries)
+   * - "keyword" — BM25 full-text search only (best for exact term matching)
+   * - "hybrid" — both vector + BM25 with RRF fusion (default, best overall)
+   */
+  mode?: SearchMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,8 +116,7 @@ export class Retriever {
         kbIds,
         {
           topK,
-          pageTypes: ["structure"],
-          modelName: process.env.EMBEDDING_MODEL ?? "bge-m3",
+          modelName: this.embeddingManager.providerName,
         },
       );
 
@@ -354,15 +363,23 @@ export class Retriever {
       kbIds,
       topK = 10,
       linkedFrom,
-      pageTypes = ["structure"],
+      pageTypes,
       minScore,
+      mode = "hybrid",
     } = options;
 
-    // Run all search strategies in parallel using Promise.allSettled
+    // Run search strategies based on mode
     const searchPromises: Promise<SearchResult[]>[] = [];
 
-    searchPromises.push(this.vectorSearch(query, kbIds, topK));
-    searchPromises.push(this.bm25Search(query, kbIds, topK));
+    if (mode === "semantic" || mode === "vector") {
+      searchPromises.push(this.vectorSearch(query, kbIds, topK));
+    } else if (mode === "keyword") {
+      searchPromises.push(this.bm25Search(query, kbIds, topK));
+    } else {
+      // hybrid (default) — run both
+      searchPromises.push(this.vectorSearch(query, kbIds, topK));
+      searchPromises.push(this.bm25Search(query, kbIds, topK));
+    }
 
     if (linkedFrom) {
       searchPromises.push(this.linkedSearch(linkedFrom, 2));
@@ -464,6 +481,7 @@ export class Retriever {
       includeEntities?: boolean;
       docId?: string;
       levels?: string[];
+      mode?: SearchMode;
     },
   ): Promise<{
     L0: LeveledSearchResult[];
@@ -471,14 +489,14 @@ export class Retriever {
     L2: LeveledSearchResult[];
     entities: EntitySearchResult[];
   }> {
-    const { topK = 10, includeEntities = false, docId, levels } = options ?? {};
+    const { topK = 10, includeEntities = false, docId, levels, mode } = options ?? {};
 
     const keywords = query.split(/\s+/).filter((w) => w.length > 0);
 
     // Mapping from level to page_type values in the DB
     const levelMap: Record<string, string[]> = {
       L0: ["abstract"],
-      L1: ["overview", "structure"],
+      L1: ["structure_md", "structure_dt", "overview", "structure"],
       L2: ["fulltext"],
     };
 
@@ -490,9 +508,9 @@ export class Retriever {
     const searchL2 = requestedLevels.includes("L2");
 
     const [l0Results, l1Results, l2Results, entityResults] = await Promise.all([
-      searchL0 ? this.searchLevel(query, kbIds, levelMap.L0, "L0", keywords, topK, docId) : Promise.resolve([]),
-      searchL1 ? this.searchLevel(query, kbIds, levelMap.L1, "L1", keywords, topK, docId) : Promise.resolve([]),
-      searchL2 ? this.searchLevel(query, kbIds, levelMap.L2, "L2", keywords, topK, docId) : Promise.resolve([]),
+      searchL0 ? this.searchLevel(query, kbIds, levelMap.L0, "L0", keywords, topK, docId, mode) : Promise.resolve([]),
+      searchL1 ? this.searchLevel(query, kbIds, levelMap.L1, "L1", keywords, topK, docId, mode) : Promise.resolve([]),
+      searchL2 ? this.searchLevel(query, kbIds, levelMap.L2, "L2", keywords, topK, docId, mode) : Promise.resolve([]),
       includeEntities ? this.searchEntities(query, kbIds, topK) : Promise.resolve([]),
     ]);
 
@@ -515,12 +533,14 @@ export class Retriever {
     keywords: string[],
     topK: number,
     docId?: string,
+    mode?: SearchMode,
   ): Promise<LeveledSearchResult[]> {
     // Delegate to the unified search and filter by page type
     const opts: SearchOptions = {
       kbIds,
       topK,
       pageTypes,
+      mode,
     };
 
     const raw = await this.search(query, opts);

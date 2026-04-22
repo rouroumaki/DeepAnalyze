@@ -301,6 +301,8 @@ export interface CronJob {
   name: string;
   schedule: string;
   message: string;
+  /** System action to execute. If set, overrides agent prompt execution. */
+  action: string | null;
   enabled: boolean;
   channel: string | null;
   chatId: string | null;
@@ -320,6 +322,7 @@ export interface NewCronJob {
   name: string;
   schedule: string;
   message: string;
+  action?: string | null;
   enabled?: boolean;
   channel?: string;
   chatId?: string;
@@ -364,7 +367,7 @@ export interface Skill {
 export interface NewSkill {
   id: string;
   name: string;
-  pluginId: string;
+  pluginId: string | null;
   description?: string;
   config?: Record<string, unknown>;
 }
@@ -524,6 +527,7 @@ export interface SessionRepo {
 export interface MessageRepo {
   create(sessionId: string, role: string, content: string | null, metadata?: Record<string, unknown>): Promise<Message>;
   list(sessionId: string): Promise<Message[]>;
+  getLatestCompactBoundary(sessionId: string): Promise<Message | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -686,7 +690,7 @@ export interface ProviderConfig {
   endpoint: string;
   apiKey: string;
   model: string;
-  maxTokens: number;
+  maxTokens?: number;
   supportsToolUse: boolean;
   enabled: boolean;
   contextWindow?: number;

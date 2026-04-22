@@ -28,7 +28,7 @@ export interface TeamInfo {
 
 export const agentTeamsApi = {
   list: () =>
-    api.get<{ teams: TeamInfo[] }>("/api/agent-teams").then((r) => r.teams),
+    api.get<TeamInfo[]>("/api/agent-teams"),
 
   get: (id: string) =>
     api.get<TeamInfo>(`/api/agent-teams/${id}`),
@@ -43,5 +43,5 @@ export const agentTeamsApi = {
     api.delete(`/api/agent-teams/${id}`),
 
   templates: () =>
-    api.get<{ templates: TeamInfo[] }>("/api/agent-teams/templates").then((r) => r.templates),
+    api.get<TeamInfo[]>("/api/agent-teams/templates"),
 };

@@ -15,12 +15,13 @@ export type RelevantMemory = {
   mtimeMs: number
 }
 
-const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful to Claude Code as it processes a user's query. You will be given the user's query and a list of available memory files with their filenames and descriptions.
+// [ORIGINAL ENGLISH] You are selecting memories that will be useful to Claude Code...
+const SELECT_MEMORIES_SYSTEM_PROMPT = `你正在选择对处理用户查询有用的记忆。你将获得用户的查询和一组可用记忆文件的文件名和描述。
 
-Return a list of filenames for the memories that will clearly be useful to Claude Code as it processes the user's query (up to 5). Only include memories that you are certain will be helpful based on their name and description.
-- If you are unsure if a memory will be useful in processing the user's query, then do not include it in your list. Be selective and discerning.
-- If there are no memories in the list that would clearly be useful, feel free to return an empty list.
-- If a list of recently-used tools is provided, do not select memories that are usage reference or API documentation for those tools (Claude Code is already exercising them). DO still select memories containing warnings, gotchas, or known issues about those tools — active use is exactly when those matter.
+返回对处理用户查询明显有用的记忆文件名列表（最多5个）。仅包含你根据名称和描述确定会有帮助的记忆。
+- 如果你不确定某个记忆对处理用户查询是否有用，则不要将其包含在列表中。请谨慎选择。
+- 如果列表中没有明显有用的记忆，可以返回空列表。
+- 如果提供了最近使用的工具列表，不要选择这些工具的使用参考或 API 文档的记忆（系统已经在使用它们）。但务必选择包含这些工具的警告、注意事项或已知问题的记忆——正在使用时这些最重要。
 `
 
 /**
@@ -91,7 +92,7 @@ async function selectRelevantMemories(
   // description → false positive).
   const toolsSection =
     recentTools.length > 0
-      ? `\n\nRecently used tools: ${recentTools.join(', ')}`
+      ? `\n\n最近使用的工具：${recentTools.join(', ')}`
       : ''
 
   try {

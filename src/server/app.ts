@@ -130,8 +130,12 @@ export function createApp(): Hono {
     if (!searchRoutes) {
       try {
         console.log("[SearchSystem] Initializing search routes...");
-        const { getRetriever } = await import("../services/agent/agent-system.js");
-        searchRoutes = createSearchRoutes(async () => getRetriever());
+        // Create routes even if getRetriever is not available yet —
+        // the retriever will be resolved lazily on each request.
+        searchRoutes = createSearchRoutes(async () => {
+          const { getRetriever } = await import("../services/agent/agent-system.js");
+          return getRetriever();
+        });
         console.log("[SearchSystem] Search routes ready.");
       } catch (err) {
         console.error("[SearchSystem] Initialization failed:", err);
@@ -463,28 +467,11 @@ export function createApp(): Hono {
     await next();
   });
 
-  // Agent Teams root — endpoint discovery
-  app.get("/api/agent-teams", (c) => c.json({
-    status: "ok",
-    message: "Agent Teams API",
-    endpoints: [
-      "GET    /",
-      "GET    /templates",
-      "GET    /:id",
-      "POST   /",
-      "PUT    /:id",
-      "DELETE /:id",
-    ],
-  }));
-
-  // Agent Teams sub-routes
-  app.all("/api/agent-teams/*", async (c) => {
+  // Helper to delegate requests to the lazy-loaded agent team sub-app
+  const delegateToAgentTeams = async (c: any, subPath: string) => {
     if (!agentTeamRoutes) {
       return c.json({ error: "Agent teams system not ready" }, 503);
     }
-
-    const fullPath = c.req.path;
-    const subPath = fullPath.replace("/api/agent-teams", "") || "/";
 
     const url = new URL(c.req.url);
     url.pathname = subPath;
@@ -501,6 +488,36 @@ export function createApp(): Hono {
     });
 
     return agentTeamRoutes.fetch(newRequest);
+  };
+
+  // Agent Teams root — delegates to the sub-app's GET / handler (team list)
+  app.get("/api/agent-teams", async (c) => {
+    // Ensure lazy initialization happens (the middleware only covers /api/agent-teams/*)
+    if (!agentTeamRoutes) {
+      try {
+        agentTeamRoutes = createAgentTeamRoutes();
+      } catch (err) {
+        return c.json({ error: "Agent teams system not ready" }, 503);
+      }
+    }
+    return delegateToAgentTeams(c, "/");
+  });
+  app.post("/api/agent-teams", async (c) => {
+    if (!agentTeamRoutes) {
+      try {
+        agentTeamRoutes = createAgentTeamRoutes();
+      } catch (err) {
+        return c.json({ error: "Agent teams system not ready" }, 503);
+      }
+    }
+    return delegateToAgentTeams(c, "/");
+  });
+
+  // Agent Teams sub-routes
+  app.all("/api/agent-teams/*", async (c) => {
+    const fullPath = c.req.path;
+    const subPath = fullPath.replace("/api/agent-teams", "") || "/";
+    return delegateToAgentTeams(c, subPath);
   });
 
   // -----------------------------------------------------------------------
@@ -547,6 +564,7 @@ export function createApp(): Hono {
       "GET    /kbs/:kbId/documents — List documents",
       "POST   /kbs/:kbId/upload — Upload a document",
       "POST   /kbs/:kbId/process/:docId — Process a document",
+      "GET    /search?query=...&kbIds=...&levels=L0,L1,L2 — Cross-KB search",
       "GET    /:kbId/search?query=... — Search wiki",
       "GET    /:kbId/wiki/* — Browse wiki pages",
       "POST   /:kbId/expand — Expand wiki content",

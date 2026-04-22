@@ -73,6 +73,12 @@ export class CronScheduler {
         return;
       }
 
+      // If this is a system action, execute it directly
+      if (job.action) {
+        await this.executeAction(jobId, job.action);
+        return;
+      }
+
       const prompt = message ?? job.message;
 
       // Execute via the agent system's chat endpoint
@@ -144,5 +150,82 @@ export class CronScheduler {
   /** Check if a job is currently running */
   isJobActive(jobId: string): boolean {
     return this.activeJobs.has(jobId);
+  }
+
+  /** Execute a system-level action */
+  private async executeAction(jobId: string, action: string): Promise<void> {
+    console.log(`[CronScheduler] Executing system action: ${action}`);
+
+    try {
+      switch (action) {
+        case "reindex": {
+          // Trigger reindex for all knowledge bases with stale embeddings
+          const { getRepos } = await import("../../store/repos/index.js");
+          const repos = await getRepos();
+          const { getProcessingQueue } = await import("../processing-queue.js");
+          const queue = getProcessingQueue();
+
+          const kbs = await repos.knowledgeBase.list();
+          let reindexed = 0;
+          for (const kb of kbs) {
+            const docs = await repos.document.getByKbId(kb.id);
+            for (const doc of docs) {
+              if (doc.status === "error" || doc.status === "needs_reindex") {
+                queue.enqueue({
+                  kbId: kb.id,
+                  docId: doc.id,
+                  filename: doc.filename,
+                  filePath: doc.file_path,
+                  fileType: doc.file_type,
+                });
+                reindexed++;
+              }
+            }
+          }
+          console.log(`[CronScheduler] Reindex queued ${reindexed} documents`);
+          this.service.markCompleted(jobId);
+          break;
+        }
+
+        case "cleanup": {
+          // Clean up old sessions, temp files, etc.
+          const { getRepos } = await import("../../store/repos/index.js");
+          const repos = await getRepos();
+          const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days
+          // Clean up old error documents
+          const kbs = await repos.knowledgeBase.list();
+          let cleaned = 0;
+          for (const kb of kbs) {
+            const docs = await repos.document.getByKbId(kb.id);
+            for (const doc of docs) {
+              if (doc.status === "error" && new Date(doc.created_at) < cutoff) {
+                await repos.document.deleteById(doc.id);
+                cleaned++;
+              }
+            }
+          }
+          console.log(`[CronScheduler] Cleanup removed ${cleaned} old error documents`);
+          this.service.markCompleted(jobId);
+          break;
+        }
+
+        case "health_check": {
+          const baseUrl = process.env.CRON_BASE_URL || "http://localhost:21000";
+          const resp = await fetch(`${baseUrl}/api/health`);
+          if (!resp.ok) throw new Error(`Health check failed: ${resp.status}`);
+          const data = await resp.json() as { status: string };
+          console.log(`[CronScheduler] Health check: ${data.status}`);
+          this.service.markCompleted(jobId);
+          break;
+        }
+
+        default:
+          throw new Error(`Unknown system action: ${action}`);
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[CronScheduler] Action ${action} failed:`, errorMsg);
+      this.service.markFailed(jobId, errorMsg);
+    }
   }
 }

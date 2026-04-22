@@ -9,7 +9,7 @@ import pg from 'pg';
 // Types
 // ---------------------------------------------------------------------------
 
-/** A PG migration definition (mirrors the SQLite migration pattern). */
+/** A PG migration definition. */
 export interface PGMigration {
   version: number;
   name: string;
@@ -35,6 +35,7 @@ function getPoolConfig(): pg.PoolConfig {
     password: process.env.PG_PASSWORD ?? 'deepanalyze_dev',
     max: 20,
     idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000, // Fail fast if PG is unreachable (5s)
   };
 }
 

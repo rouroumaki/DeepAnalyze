@@ -217,6 +217,11 @@ export const api = {
     }),
   deleteKnowledgeBase: (id: string) =>
     request<void>(`/api/knowledge/kbs/${id}`, { method: "DELETE" }),
+  updateKnowledgeBase: (id: string, data: { name?: string; description?: string }) =>
+    request<KnowledgeBase>(`/api/knowledge/kbs/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 
   triggerProcessing: (kbId: string) =>
     request<{ enqueued: number }>(`/api/knowledge/kbs/${kbId}/trigger-processing`, { method: "POST" }),
@@ -278,12 +283,12 @@ export const api = {
   },
   browseWiki: (kbId: string, path: string) =>
     request<WikiPage>(`/api/knowledge/${kbId}/wiki/${encodeURIComponent(path)}`),
-  expandWiki: (kbId: string, docId: string, level: string, section?: string) =>
+  expandWiki: (kbId: string, docId: string, level: string, format?: string, section?: string) =>
     request<{ content: string; level: string; expandable: boolean }>(
       `/api/knowledge/${kbId}/expand`,
       {
         method: "POST",
-        body: JSON.stringify({ docId, level, section }),
+        body: JSON.stringify({ docId, level, format, section }),
       },
     ),
 
@@ -294,9 +299,13 @@ export const api = {
     ),
 
   // --- Reports ---
+  listAllReports: (limit?: number, offset?: number) =>
+    request<{ reports: ReportInfo[]; pagination: { limit: number; offset: number; count: number } }>(
+      `/api/reports/reports?limit=${limit ?? 50}&offset=${offset ?? 0}`,
+    ),
   listReports: (kbId: string) =>
     request<{ kbId: string; reports: ReportInfo[] }>(
-      `/api/reports/reports/${kbId}`,
+      `/api/reports/reports/kb/${kbId}`,
     ),
   getReport: (reportId: string) =>
     request<ReportDetail>(`/api/reports/report/${reportId}`),

@@ -267,7 +267,7 @@ export class WorkflowEngine {
 
     // Persist workflow result to agent_tasks table
     try {
-      const { getRepos } = await import("../store/repos/index.js");
+      const { getRepos } = await import("../../store/repos/index.js");
       const repos = await getRepos();
       const status = result.status === "completed" ? "completed" : "failed";
       const output = typeof result.synthesis === "string" ? result.synthesis : JSON.stringify(result);
@@ -860,7 +860,7 @@ export class WorkflowEngine {
       if (state && state.result && state.result.status === "completed") {
         messages.push({
           role: "assistant",
-          content: `[Output from ${state.agent.role} (${depId})]:\n${state.result.output}`,
+          content: `[${state.agent.role} (${depId}) 的输出]:\n${state.result.output}`,
         });
       }
     }
@@ -885,7 +885,7 @@ export class WorkflowEngine {
       {
         role: "user" as const,
         content:
-          `Here is the context from previous agents in this workflow:\n\n` +
+          `以下是此工作流中前置 Agent 的上下文：\n\n` +
           accumulated.join("\n\n"),
       },
     ];
@@ -900,7 +900,7 @@ export class WorkflowEngine {
       workflowId: this.input.workflowId,
       status: "cancelled",
       agentResults: [],
-      synthesis: "Workflow was cancelled.",
+      synthesis: "工作流已取消。",
       totalDuration: 0,
     };
   }

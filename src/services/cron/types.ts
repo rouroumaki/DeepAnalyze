@@ -3,11 +3,16 @@
 // Type definitions for the cron job system
 // =============================================================================
 
+/** Supported system-level actions for cron jobs */
+export type CronAction = "reindex" | "cleanup" | "health_check";
+
 export interface CronJob {
   id: string;
   name: string;
   schedule: string;
   message: string;
+  /** System action to execute. If set, overrides agent prompt execution. */
+  action: CronAction | null;
   enabled: boolean;
   channel: string | null;
   chatId: string | null;
@@ -25,7 +30,10 @@ export interface CronJob {
 export interface CreateCronJobRequest {
   name: string;
   schedule: string;
-  message: string;
+  /** Agent prompt message. Required when action is null. */
+  message?: string;
+  /** System action. When set, the scheduler executes this action directly. */
+  action?: CronAction | null;
   enabled?: boolean;
   channel?: string | null;
   chatId?: string | null;
@@ -44,6 +52,7 @@ export interface CronJobRow {
   name: string;
   schedule: string;
   message: string;
+  action: string | null;
   enabled: number;
   channel: string | null;
   chat_id: string | null;
@@ -65,6 +74,7 @@ export function rowToJob(row: CronJobRow): CronJob {
     name: row.name,
     schedule: row.schedule,
     message: row.message,
+    action: (row.action as CronAction) ?? null,
     enabled: row.enabled === 1,
     channel: row.channel,
     chatId: row.chat_id,

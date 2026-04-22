@@ -251,9 +251,9 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                     marginTop: "var(--space-1)",
                   }}
                 >
-                  {forwardLinks.map((link, i) => (
+                  {forwardLinks.map((link) => (
                     <button
-                      key={i}
+                      key={`fwd-${link.targetPageId}`}
                       onClick={() => {
                         setQuery(link.targetPageId);
                         handleSearch();
@@ -313,9 +313,9 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                     marginTop: "var(--space-1)",
                   }}
                 >
-                  {backwardLinks.map((link, i) => (
+                  {backwardLinks.map((link) => (
                     <button
-                      key={i}
+                      key={`bwd-${link.sourcePageId}`}
                       onClick={() => {
                         setQuery(link.sourcePageId);
                         handleSearch();
@@ -374,9 +374,9 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
                     marginTop: "var(--space-1)",
                   }}
                 >
-                  {entityRefs.map((link, i) => (
+                  {entityRefs.map((link) => (
                     <button
-                      key={i}
+                      key={`ent-${link.entityName || link.targetPageId}`}
                       onClick={() =>
                         link.entityName && handleEntityClick(link.entityName)
                       }

@@ -3,42 +3,80 @@
 // Main agent model configuration (主模型)
 // =============================================================================
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import { ModelConfigCard } from "./ModelConfigCard";
 import type { ProviderConfig, ProviderDefaults, ProviderMetadata } from "../../types/index";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Save } from "lucide-react";
 
 interface MainModelConfigProps {
   providers: ProviderConfig[];
   defaults: ProviderDefaults | null;
   registry: ProviderMetadata[];
   onSetDefault: (role: string, providerId: string) => void;
+  onSaveProvider: (provider: ProviderConfig) => Promise<void>;
 }
 
-export function MainModelConfig({ providers, defaults, registry, onSetDefault }: MainModelConfigProps) {
+export function MainModelConfig({ providers, defaults, registry, onSetDefault, onSaveProvider }: MainModelConfigProps) {
   const { success, error: showError } = useToast();
 
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(4096);
+  const [temperature, setTemperature] = useState(1.0);
+  const [maxTokens, setMaxTokens] = useState(0);
   const [maxIterations, setMaxIterations] = useState(50);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Track original values for dirty detection
+  const originalRef = useRef({ model: "", temperature: 1.0, maxTokens: 0 });
+
+  /** Look up recommended temperature from registry for a provider */
+  const getRegistryDefaults = (pid: string) => {
+    const meta = registry.find((r) => r.id === pid);
+    const modelMeta = meta?.models?.find((m) => m.id === model);
+    return {
+      temperature: modelMeta?.recommendedTemperature?.default ?? 1.0,
+      maxTokens: meta?.recommendedMaxTokens ?? 0,
+    };
+  };
 
   // Initialize from defaults
   useEffect(() => {
     if (defaults?.main) {
       const p = providers.find((pr) => pr.id === defaults.main);
+      const regDefaults = getRegistryDefaults(defaults.main);
+      const initModel = p?.model ?? "";
+      const initTemp = p?.temperature ?? regDefaults.temperature;
+      const initMaxTokens = p?.maxTokens ?? regDefaults.maxTokens;
       setProviderId(defaults.main);
-      setModel(p?.model ?? "");
-      setMaxTokens(p?.maxTokens ?? 4096);
+      setModel(initModel);
+      setTemperature(initTemp);
+      setMaxTokens(initMaxTokens);
+      originalRef.current = { model: initModel, temperature: initTemp, maxTokens: initMaxTokens };
     }
   }, [defaults, providers]);
 
+  const isDirty = providerId && (
+    model !== originalRef.current.model ||
+    temperature !== originalRef.current.temperature ||
+    maxTokens !== originalRef.current.maxTokens
+  );
+
   const handleConfigChange = (config: { providerId: string; model: string; temperature: number; maxTokens: number }) => {
+    if (config.providerId !== providerId) {
+      // Provider changed — use saved config or registry defaults
+      const p = providers.find((pr) => pr.id === config.providerId);
+      const regDefaults = getRegistryDefaults(config.providerId);
+      const newModel = config.model;
+      const newTemp = p?.temperature ?? regDefaults.temperature;
+      const newMaxTokens = p?.maxTokens ?? regDefaults.maxTokens;
+      setTemperature(newTemp);
+      setMaxTokens(newMaxTokens);
+      originalRef.current = { model: newModel, temperature: newTemp, maxTokens: newMaxTokens };
+    }
     setProviderId(config.providerId);
     setModel(config.model);
     setTemperature(config.temperature);
@@ -63,6 +101,28 @@ export function MainModelConfig({ providers, defaults, registry, onSetDefault }:
       setTestResult({ success: false, message: err instanceof Error ? err.message : "连接失败" });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!providerId) return;
+    const p = providers.find((pr) => pr.id === providerId);
+    if (!p) return;
+    setSaving(true);
+    try {
+      const updated: ProviderConfig = {
+        ...p,
+        model,
+        temperature,
+        maxTokens,
+      };
+      await onSaveProvider(updated);
+      originalRef.current = { model, temperature, maxTokens };
+      success("主模型配置已保存");
+    } catch (err) {
+      showError("保存失败: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -93,7 +153,7 @@ export function MainModelConfig({ providers, defaults, registry, onSetDefault }:
         model={model}
         temperature={temperature}
         maxTokens={maxTokens}
-        maxTokensLimit={128000}
+        maxTokensLimit={256000}
         enabled={true}
         providers={providers}
         registry={registry}
@@ -119,9 +179,36 @@ export function MainModelConfig({ providers, defaults, registry, onSetDefault }:
               />
             </div>
 
-            {/* Set as default button */}
-            {providerId && defaults?.main !== providerId && (
-              <div style={{ marginTop: "var(--space-2)" }}>
+            {/* Save + Set as default buttons */}
+            <div style={{ marginTop: "var(--space-3)", display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+              {/* Save config button */}
+              {providerId && (
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-1)",
+                    padding: "var(--space-2) var(--space-4)",
+                    background: isDirty ? "var(--interactive)" : "var(--bg-hover)",
+                    color: isDirty ? "white" : "var(--text-secondary)",
+                    fontSize: "var(--text-sm)",
+                    fontWeight: "var(--font-medium)",
+                    borderRadius: "var(--radius-lg)",
+                    border: isDirty ? "1px solid var(--interactive)" : "1px solid var(--border-primary)",
+                    cursor: saving ? "not-allowed" : "pointer",
+                    opacity: saving ? 0.6 : 1,
+                    transition: "all var(--transition-fast)",
+                  }}
+                >
+                  <Save size={14} />
+                  {saving ? "保存中..." : "保存配置"}
+                </button>
+              )}
+
+              {/* Set as default button */}
+              {providerId && defaults?.main !== providerId && (
                 <button
                   onClick={() => onSetDefault("main", providerId)}
                   style={{
@@ -144,8 +231,8 @@ export function MainModelConfig({ providers, defaults, registry, onSetDefault }:
                   <ShieldCheck size={14} />
                   设为默认主模型
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </>
         }
       />

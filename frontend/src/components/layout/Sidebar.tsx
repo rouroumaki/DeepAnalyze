@@ -307,15 +307,15 @@ export function Sidebar() {
             active={activeView === item.id}
             collapsed={collapsed}
             onClick={() => {
-              // Knowledge needs a kbId; if none available, go to chat
+              // Knowledge needs a kbId; if none available, navigate anyway and let
+              // KnowledgePanel auto-select the first KB
               if (item.id === 'knowledge') {
+                setActiveView('knowledge');
                 if (currentKbId) {
-                  setActiveView('knowledge');
                   window.location.hash = `#/knowledge/${currentKbId}`;
                 } else {
-                  // No KB selected yet — redirect to chat where user can create one
-                  setActiveView('chat');
-                  window.location.hash = '#/chat';
+                  // Will auto-select first KB when KnowledgePanel loads
+                  window.location.hash = `#/knowledge/_new`;
                 }
               } else {
                 setActiveView(item.id);

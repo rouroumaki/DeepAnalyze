@@ -150,15 +150,44 @@ export function ModelConfigCard({
         {/* Model name */}
         <div>
           <label style={labelStyle}>模型名称</label>
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => emit({ model: e.target.value })}
-            placeholder="模型 ID，如 gpt-4o, deepseek-chat"
-            style={inputStyle}
-            onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
-          />
+          {(() => {
+            const meta = registry.find((r) => r.id === providerId);
+            const availableModels = meta?.models ?? [];
+            if (availableModels.length > 0) {
+              // Show a datalist for known providers to guide model selection
+              const listId = `models-${providerId}`;
+              return (
+                <div style={{ display: "flex", gap: "var(--space-1)" }}>
+                  <input
+                    list={listId}
+                    type="text"
+                    value={model}
+                    onChange={(e) => emit({ model: e.target.value })}
+                    placeholder={meta?.defaultModel || "模型 ID"}
+                    style={{ ...inputStyle, flex: 1 }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
+                  />
+                  <datalist id={listId}>
+                    {availableModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </datalist>
+                </div>
+              );
+            }
+            return (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => emit({ model: e.target.value })}
+                placeholder="模型 ID，如 gpt-4o, deepseek-chat"
+                style={inputStyle}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
+              />
+            );
+          })()}
         </div>
 
         {/* Temperature slider */}
@@ -216,6 +245,7 @@ export function ModelConfigCard({
             onFocus={(e) => { e.currentTarget.style.borderColor = "var(--interactive-light)"; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border-primary)"; }}
           />
+          <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: 0, marginTop: 2 }}>设为 0 表示由 API 自动决定（推荐）</p>
         </div>
 
         {/* Test result */}

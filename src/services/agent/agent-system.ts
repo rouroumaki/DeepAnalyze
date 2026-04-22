@@ -230,7 +230,7 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   console.log("[AgentSystem] Wiki subsystem initialized");
 
   // Step 4: Tool registry with all custom tools
-  const toolRegistry = createConfiguredToolRegistry({
+  const toolRegistry = await createConfiguredToolRegistry({
     retriever,
     linker,
     expander,
@@ -261,24 +261,28 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   const { PluginManager } = await import("../plugins/plugin-manager.js");
   const pluginManager = new PluginManager(toolRegistry);
   pluginManager.setAgentRunner(runner);
-  pluginManager.loadFromDatabase();
+  await pluginManager.loadFromDatabase();
   pluginManagerInstance = pluginManager;
   console.log("[AgentSystem] PluginManager initialized");
 
-  // Step 9: Register built-in skills
+  // Step 9: Register built-in skills (delete-and-recreate to keep prompts fresh)
   const { BUILT_IN_SKILLS } = await import("../skills/built-in-skills.js");
+  let skillsRegistered = 0;
   for (const skill of BUILT_IN_SKILLS) {
     try {
-      // Check if skill already exists (by name)
-      const existing = pluginManager.listSkills();
-      if (!existing.some(s => s.name === skill.name)) {
-        pluginManager.createSkill(skill);
+      const existing = await pluginManager.listSkills();
+      const match = existing.find(s => s.name === skill.name);
+      if (match) {
+        // Delete the old version and recreate with updated prompt/tools
+        await pluginManager.deleteSkill(match.id);
       }
-    } catch {
-      // Skill may already exist, skip
+      await pluginManager.createSkill(skill);
+      skillsRegistered++;
+    } catch (err) {
+      console.error(`[AgentSystem] Failed to register built-in skill "${skill.name}":`, err);
     }
   }
-  console.log("[AgentSystem] Built-in skills registered");
+  console.log(`[AgentSystem] Built-in skills registered (${skillsRegistered}/${BUILT_IN_SKILLS.length})`);
 
   // Step 10: Agent Team Manager + workflow_run tool
   const { AgentTeamManager } = await import("./agent-team-manager.js");

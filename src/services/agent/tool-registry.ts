@@ -19,9 +19,8 @@ import type { ToolDefinition } from "../../models/provider.js";
 const thinkTool: AgentTool = {
   name: "think",
   description:
-    "Think through a problem step by step. Use this to plan your approach " +
-    "before acting. This tool does not perform any external action; it simply " +
-    "records your reasoning for the next turn.",
+    "逐步思考问题。在采取行动之前使用此工具来规划你的方法。" +
+    "此工具不执行任何外部操作，只是记录你的推理过程供下一轮使用。",
   async execute(input: Record<string, unknown>) {
     return { thought: input.thought, recorded: true };
   },
@@ -30,7 +29,7 @@ const thinkTool: AgentTool = {
     properties: {
       thought: {
         type: "string",
-        description: "Your reasoning process",
+        description: "你的推理过程（使用与用户相同的语言）",
       },
     },
     required: ["thought"],

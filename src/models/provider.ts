@@ -129,8 +129,8 @@ export const ModelConfigSchema = z.object({
   /** Model identifier (e.g. "qwen2.5-14b"). */
   model: z.string(),
 
-  /** Maximum tokens the model can generate in a single response. */
-  maxTokens: z.number().positive().default(32768),
+  /** Maximum tokens the model can generate in a single response. 0 = let API decide. */
+  maxTokens: z.number().min(0).default(0),
 
   /** Whether the model supports tool/function calling. */
   supportsToolUse: z.boolean().default(false),

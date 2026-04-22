@@ -8,8 +8,8 @@ export class PgCronJobRepo implements CronJobRepo {
   async create(job: NewCronJob): Promise<CronJob> {
     const id = randomUUID();
     const { rows } = await this.pool.query(
-      `INSERT INTO cron_jobs (id, name, schedule, message, enabled, channel, chat_id, deliver_response, next_run) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [id, job.name, job.schedule, job.message, job.enabled ?? true, job.channel ?? null, job.chatId ?? null, job.deliverResponse ?? false, job.nextRun ?? null],
+      `INSERT INTO cron_jobs (id, name, schedule, message, action, enabled, channel, chat_id, deliver_response, next_run) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [id, job.name, job.schedule, job.message ?? "", job.action ?? null, job.enabled ?? true, job.channel ?? null, job.chatId ?? null, job.deliverResponse ?? false, job.nextRun ?? null],
     );
     return this.mapRow(rows[0]);
   }
@@ -28,7 +28,7 @@ export class PgCronJobRepo implements CronJobRepo {
     const sets: string[] = [];
     const vals: any[] = [];
     let i = 1;
-    const allowedKeys: Record<string, string> = { name: 'name', schedule: 'schedule', message: 'message', enabled: 'enabled', channel: 'channel', chatId: 'chat_id', deliverResponse: 'deliver_response' };
+    const allowedKeys: Record<string, string> = { name: 'name', schedule: 'schedule', message: 'message', action: 'action', enabled: 'enabled', channel: 'channel', chatId: 'chat_id', deliverResponse: 'deliver_response' };
     for (const [camelKey, pgCol] of Object.entries(allowedKeys)) {
       if ((fields as any)[camelKey] !== undefined) { sets.push(`${pgCol} = $${i++}`); vals.push((fields as any)[camelKey]); }
     }
@@ -65,6 +65,7 @@ export class PgCronJobRepo implements CronJobRepo {
   private mapRow(row: any): CronJob {
     return {
       id: row.id, name: row.name, schedule: row.schedule, message: row.message,
+      action: row.action ?? null,
       enabled: row.enabled, channel: row.channel ?? null, chatId: row.chat_id ?? null,
       deliverResponse: row.deliver_response ?? false, lastRun: row.last_run?.toISOString?.() ?? row.last_run ?? null,
       nextRun: row.next_run?.toISOString?.() ?? row.next_run ?? null,

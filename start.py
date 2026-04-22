@@ -6,7 +6,7 @@
     python start.py --port 8080        # 自定义端口
     python start.py --dev              # 开发模式（前端热重载 + 后端热重载）
     python start.py --skip-frontend    # 跳过前端构建
-    python start.py --no-docker        # 不启动 Docker，仅使用 SQLite
+    python start.py --no-docker        # 不启动 Docker 容器（需自行提供 PostgreSQL）
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ import re
 import signal
 import socket
 import shutil
-import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
+
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -41,6 +41,32 @@ REQUIRED_DIRS = [
     PROJECT_ROOT / "config",
     PROJECT_ROOT / "uploads",
 ]
+
+
+# ============================================================================
+# .env 文件加载
+# ============================================================================
+
+
+def load_dotenv(env_path: Path | None = None) -> dict[str, str]:
+    """Load a .env file and return key-value pairs.
+    Does NOT override existing environment variables (like python-dotenv)."""
+    if env_path is None:
+        env_path = PROJECT_ROOT / ".env"
+    result: dict[str, str] = {}
+    if not env_path.exists():
+        return result
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        result[key] = value
+    return result
 
 
 # ============================================================================
@@ -111,7 +137,7 @@ def check_docker() -> bool:
 
     docker_path = shutil.which(docker_cmd)
     if not docker_path:
-        _warn("Docker 未安装，将使用 SQLite（功能有限）")
+        _warn("Docker 未安装，需自行提供 PostgreSQL 数据库")
         _info("  安装 Docker 可启用向量检索和全文搜索")
         return False
 
@@ -120,7 +146,7 @@ def check_docker() -> bool:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        _warn("Docker 未运行，将使用 SQLite（功能有限）")
+        _warn("Docker 未运行，需自行提供 PostgreSQL 数据库")
         _info("  启动 Docker Desktop 可启用向量检索和全文搜索")
         return False
 
@@ -145,7 +171,22 @@ def start_containers() -> bool:
     docker_cmd = "docker.exe" if sys.platform == "win32" else "docker"
     compose_cmd = [docker_cmd, "compose", "-f", str(compose_file)]
 
-    # Start containers — stream build/pull output to console in real-time
+    # Build compose environment from .env file (docker compose reads .env natively,
+    # but we also need the values in Python, so load them explicitly)
+    dotenv_vars = load_dotenv()
+    pg_port = dotenv_vars.get("PG_PORT", "5432")
+
+    # Set PG_PORT in the environment so docker-compose uses it
+    compose_env = {**os.environ}
+    compose_env["PG_PORT"] = pg_port
+    if "PG_DATABASE" in dotenv_vars:
+        compose_env["PG_DATABASE"] = dotenv_vars["PG_DATABASE"]
+    if "PG_USER" in dotenv_vars:
+        compose_env["PG_USER"] = dotenv_vars["PG_USER"]
+    if "PG_PASSWORD" in dotenv_vars:
+        compose_env["PG_PASSWORD"] = dotenv_vars["PG_PASSWORD"]
+
+    _info(f"  PostgreSQL 端口: {pg_port}")
     _info("  启动 PostgreSQL + Ollama 容器（首次需下载约 500MB，请耐心等待）...")
     _info("  ------ Docker 输出 ------")
     proc = subprocess.Popen(
@@ -153,6 +194,7 @@ def start_containers() -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=compose_env,
     )
     # Stream output line-by-line
     for line in proc.stdout:
@@ -163,11 +205,11 @@ def start_containers() -> bool:
     _info("  ------ Docker 输出结束 ------")
 
     if proc.returncode != 0:
-        _warn(f"容器启动失败 (exit code {proc.returncode})，将使用 SQLite")
+        _warn(f"容器启动失败 (exit code {proc.returncode})，需自行提供 PostgreSQL")
         _info("  可手动排查: docker compose -f docker-compose.dev.yml up --build")
         return False
 
-    # Wait for PostgreSQL to be healthy
+    # Wait for PostgreSQL to be healthy (check inside container first)
     _info("  等待 PostgreSQL 就绪...")
     retries = 0
     max_retries = 60
@@ -176,6 +218,7 @@ def start_containers() -> bool:
             compose_cmd + ["exec", "-T", "postgres",
                            "pg_isready", "-U", "deepanalyze", "-d", "deepanalyze"],
             capture_output=True, text=True, check=False,
+            env=compose_env,
         )
         if result.returncode == 0:
             break
@@ -185,10 +228,33 @@ def start_containers() -> bool:
         retries += 1
 
     if retries >= max_retries:
-        _warn("PostgreSQL 启动超时，将使用 SQLite")
+        _warn("PostgreSQL 启动超时")
         return False
 
-    _info(f"  PostgreSQL 就绪 (等待了 {retries}s)")
+    _info(f"  PostgreSQL 容器就绪 (等待了 {retries}s)")
+
+    # Verify PG is accessible from the host on the expected port
+    _info(f"  验证主机端口 {pg_port} 可达...")
+    host_retries = 0
+    max_host_retries = 15
+    pg_ok = False
+    while host_retries < max_host_retries:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                s.connect(("127.0.0.1", int(pg_port)))
+            pg_ok = True
+            break
+        except (OSError, ConnectionRefusedError, socket.timeout):
+            time.sleep(1)
+            host_retries += 1
+
+    if not pg_ok:
+        _warn(f"PostgreSQL 容器已启动但主机无法连接 127.0.0.1:{pg_port}")
+        _info("  提示: 检查端口是否被占用或 Docker 端口映射是否正确")
+        return False
+
+    _info(f"  主机端口 {pg_port} 连接成功")
 
     # Check Ollama
     try:
@@ -338,6 +404,21 @@ defaults:
 
 def cleanup_orphan() -> None:
     _step(6, "清理残留进程")
+
+    # Clean up orphan Docker containers from production compose
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "name=deepanalyze-socat-embedding",
+             "--filter", "status=exited", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        orphan_containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        for name in orphan_containers:
+            if name:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=5)
+                _info(f"  已清理孤儿容器: {name}")
+    except Exception:
+        pass
 
     if not PID_FILE.exists():
         _ok("无残留进程")
@@ -537,25 +618,19 @@ def check_port(host: str, port: int) -> None:
 def validate_database() -> None:
     _step(8, "验证数据库")
 
-    db_path = DATA_DIR / "deepanalyze.db"
-
-    if not db_path.exists():
-        _ok("首次启动，数据库将自动创建")
-        return
+    # Check PostgreSQL connectivity (used by the backend)
+    dotenv_vars = load_dotenv()
+    pg_host = os.environ.get("PG_HOST", dotenv_vars.get("PG_HOST", "localhost"))
+    pg_port = int(os.environ.get("PG_PORT", dotenv_vars.get("PG_PORT", "5432")))
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        result = conn.execute("PRAGMA integrity_check").fetchone()
-        conn.close()
-
-        if result and result[0] == "ok":
-            size_kb = db_path.stat().st_size / 1024
-            _ok(f"SQLite 正常 ({size_kb:.0f} KB)")
-        else:
-            _warn(f"数据库可能损坏: {result}")
-            _info("  建议备份后删除 data/deepanalyze.db 重启")
-    except Exception as e:
-        _warn(f"数据库检查失败: {e}")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(3)
+            s.connect((pg_host, pg_port))
+        _ok(f"PostgreSQL 可达 ({pg_host}:{pg_port})")
+    except (OSError, ConnectionRefusedError, socket.timeout):
+        _warn(f"PostgreSQL {pg_host}:{pg_port} 不可达")
+        _info("  后端启动后将自动重试连接并运行迁移")
 
 
 # ============================================================================
@@ -567,19 +642,70 @@ def start_server(host: str, port: int, dev: bool = False, pg_available: bool = F
     _step(9, "启动服务")
 
     vite_proc = None
+    embedding_proc = None
     npx_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
     npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
     frontend_dir = PROJECT_ROOT / "frontend"
+
+    # Load .env file values (does not override existing env vars)
+    dotenv_vars = load_dotenv()
+
+    # ── Start local BGE-M3 embedding server ──────────────────────────
+    bge_model_dir = DATA_DIR / "models" / "bge-m3"
+    embedding_port = int(dotenv_vars.get("EMBEDDING_PORT", "11435"))
+    embedding_server_path = PROJECT_ROOT / "embedding_server.py"
+    if bge_model_dir.is_dir() and embedding_server_path.is_file():
+        # Clean up stale embedding server process on the port
+        _kill_port_user(embedding_port)
+        _info("  启动本地 BGE-M3 嵌入服务...")
+        embedding_proc = subprocess.Popen(
+            [sys.executable, str(embedding_server_path),
+             "--host", "127.0.0.1",
+             "--port", str(embedding_port),
+             "--model-path", str(bge_model_dir)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        # Wait for embedding server to be ready (up to 120s for model loading)
+        emb_ready = False
+        for attempt in range(120):
+            try:
+                import urllib.request
+                # Build a proxy-less opener to bypass system http_proxy
+                # which can break localhost connections (e.g. VPN/proxy tools on WSL2)
+                proxy_handler = urllib.request.ProxyHandler({})
+                opener = urllib.request.build_opener(proxy_handler)
+                opener.open(f"http://127.0.0.1:{embedding_port}/health", timeout=3)
+                emb_ready = True
+                break
+            except Exception:
+                # Check if process died
+                if embedding_proc.poll() is not None:
+                    stderr_out = embedding_proc.stderr.read().decode("utf-8", errors="replace")
+                    _warn(f"嵌入服务启动失败: {stderr_out[:2000]}")
+                    embedding_proc = None
+                    break
+                time.sleep(1)
+        if emb_ready:
+            _ok(f"BGE-M3 嵌入服务就绪 (port {embedding_port}, dim=1024)")
+        elif embedding_proc is not None:
+            _warn("BGE-M3 嵌入服务启动超时，将使用哈希后备")
+    else:
+        _info("  未找到 BGE-M3 模型，跳过本地嵌入服务")
 
     # 启动后端
     _info("  启动后端服务...")
     backend_env = {**os.environ, "PORT": str(port)}
     if pg_available:
-        backend_env["PG_HOST"] = "localhost"
-        backend_env["PG_PORT"] = os.environ.get("PG_PORT", "5432")
-        backend_env["PG_DATABASE"] = os.environ.get("PG_DATABASE", "deepanalyze")
-        backend_env["PG_USER"] = os.environ.get("PG_USER", "deepanalyze")
-        backend_env["PG_PASSWORD"] = os.environ.get("PG_PASSWORD", "deepanalyze_dev")
+        # Prefer: OS env > .env file > defaults
+        backend_env["PG_HOST"] = os.environ.get("PG_HOST", dotenv_vars.get("PG_HOST", "localhost"))
+        backend_env["PG_PORT"] = os.environ.get("PG_PORT", dotenv_vars.get("PG_PORT", "5432"))
+        backend_env["PG_DATABASE"] = os.environ.get("PG_DATABASE", dotenv_vars.get("PG_DATABASE", "deepanalyze"))
+        backend_env["PG_USER"] = os.environ.get("PG_USER", dotenv_vars.get("PG_USER", "deepanalyze"))
+        backend_env["PG_PASSWORD"] = os.environ.get("PG_PASSWORD", dotenv_vars.get("PG_PASSWORD", "deepanalyze_dev"))
+        _info(f"  PG: {backend_env['PG_HOST']}:{backend_env['PG_PORT']}/{backend_env['PG_DATABASE']}")
+    if embedding_proc is not None:
+        backend_env["EMBEDDING_PORT"] = str(embedding_port)
 
     backend_proc = subprocess.Popen(
         [npx_cmd, "tsx", "src/main.ts"],
@@ -618,7 +744,7 @@ def start_server(host: str, port: int, dev: bool = False, pg_available: bool = F
     if pg_available:
         print(f"  数据库:   PostgreSQL (向量检索 + 全文搜索)")
     else:
-        print(f"  数据库:   SQLite")
+        print(f"  数据库:   PostgreSQL (未连接)")
     if dev:
         print(f"  前端开发: http://127.0.0.1:3000")
     else:
@@ -642,6 +768,12 @@ def start_server(host: str, port: int, dev: bool = False, pg_available: bool = F
             backend_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             backend_proc.kill()
+        if embedding_proc is not None:
+            embedding_proc.terminate()
+            try:
+                embedding_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                embedding_proc.kill()
         # Stop Docker containers
         if pg_available:
             _info("停止数据库和模型容器...")
@@ -686,7 +818,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"监听端口 (默认: {DEFAULT_PORT})")
     parser.add_argument("--dev", action="store_true", help="开发模式（前端热重载）")
     parser.add_argument("--skip-frontend", action="store_true", help="跳过前端构建")
-    parser.add_argument("--no-docker", action="store_true", help="不启动 Docker 容器（仅 SQLite）")
+    parser.add_argument("--no-docker", action="store_true", help="不启动 Docker 容器（需自行提供 PostgreSQL）")
     args = parser.parse_args()
 
     print_banner()

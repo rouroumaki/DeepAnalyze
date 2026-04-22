@@ -48,7 +48,7 @@ interface ManagedProcess {
 // SubprocessManager
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 600_000;
 
 export class SubprocessManager {
   private processes: Map<string, ManagedProcess> = new Map();
@@ -139,6 +139,11 @@ export class SubprocessManager {
   // -----------------------------------------------------------------------
   // Shutdown
   // -----------------------------------------------------------------------
+
+  /** Check whether a named process is currently running. */
+  isRunning(name: string): boolean {
+    return this.processes.has(name);
+  }
 
   /** Stop a single named process. */
   async stop(name: string): Promise<void> {

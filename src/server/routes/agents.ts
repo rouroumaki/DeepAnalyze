@@ -13,6 +13,8 @@ import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
+import { DEFAULT_AGENT_SETTINGS } from "../../services/agent/types.js";
+import { ContextManager } from "../../services/agent/context-manager.js";
 import { getPluginManager } from "../../services/agent/agent-system.js";
 import { getRepos } from "../../store/repos/index.js";
 
@@ -25,6 +27,7 @@ interface RunRequest {
   input: string;
   agentType?: string;
   maxTurns?: number;
+  scope?: Record<string, unknown>;
 }
 
 interface RunCoordinatedRequest {
@@ -38,6 +41,8 @@ interface RunSkillRequest {
   variables: Record<string, string>;
   /** Optional user input to append to the resolved prompt. */
   input?: string;
+  /** Optional knowledge base ID to scope the skill execution. */
+  kbId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +61,62 @@ interface RunSkillRequest {
  *   GET  /task/:taskId     - Get a single task status
  *   POST /cancel/:taskId   - Cancel a running task
  */
+// ---------------------------------------------------------------------------
+// Context loading helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Load conversation context for a session using token-aware, boundary-aware loading.
+ * - Finds the latest compact boundary (if any) and only loads messages after it
+ * - Uses token-based budget instead of fixed message count
+ * - Excludes compact boundary messages from the context
+ */
+async function loadContextMessages(
+  orchestrator: Orchestrator,
+  sessionId: string,
+): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+  const repos = await getRepos();
+
+  // Check for compact boundary — only load messages after it
+  const boundary = await repos.message.getLatestCompactBoundary(sessionId);
+  const allMessages = await repos.message.list(sessionId);
+
+  // Determine starting point: after the boundary, or skip just the current user message
+  let startIndex: number;
+  if (boundary) {
+    const boundaryIndex = allMessages.findIndex((m) => m.id === boundary.id);
+    startIndex = boundaryIndex >= 0 ? boundaryIndex + 1 : 0;
+  } else {
+    startIndex = 0;
+  }
+
+  // Filter to user/assistant, exclude compact boundary markers, exclude current (last) user message
+  const contextCandidates = allMessages
+    .slice(startIndex, -1) // Exclude last message (just-saved user input, already in `input`)
+    .filter((m) =>
+      (m.role === "user" || m.role === "assistant") &&
+      !m.content.startsWith("[COMPACT_BOUNDARY:")
+    );
+
+  if (contextCandidates.length === 0) return [];
+
+  // Token-aware loading: use a ContextManager to estimate tokens
+  const modelRouter = orchestrator.getModelRouter();
+  const contextManager = new ContextManager(modelRouter, "", []);
+  const settings = { ...DEFAULT_AGENT_SETTINGS };
+
+  // Budget: 50% of context window for loaded history
+  // (remaining 50% for system prompt, tools, output, session memory)
+  const maxTokens = Math.floor(settings.contextWindow * settings.contextLoadRatio);
+
+  const { messages } = contextManager.loadContextMessages(
+    contextCandidates.map((m) => ({ role: m.role, content: m.content || "" })),
+    maxTokens,
+  );
+
+  return messages;
+}
+
 export function createAgentRoutes(orchestrator: Orchestrator): Hono {
   const router = new Hono();
 
@@ -81,12 +142,16 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
     // Save user message to the chat session
     await repos.message.create(body.sessionId, "user", body.input);
 
+    // Load previous conversation history with token-aware, boundary-aware loading
+    const contextMessages = await loadContextMessages(orchestrator, body.sessionId);
+
     try {
       const result = await orchestrator.runSingle({
         input: body.input,
         agentType: body.agentType || "general",
         sessionId: body.sessionId,
         maxTurns: body.maxTurns,
+        contextMessages,
       });
 
       // Save assistant response to the chat session
@@ -138,6 +203,9 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
     // Save user message
     await repos.message.create(body.sessionId, "user", body.input);
 
+    // Load previous conversation history with token-aware, boundary-aware loading
+    const contextMessages = await loadContextMessages(orchestrator, body.sessionId);
+
     // Set up SSE response
     c.header("Content-Type", "text/event-stream");
     c.header("Cache-Control", "no-cache");
@@ -166,6 +234,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
       let fullContent = "";
       let taskId = "";
+      let reportData: { id: string; title: string; content: string; sourceCount?: number; reportType?: string } | null = null;
 
       const onEvent = (event: AgentEvent) => {
         switch (event.type) {
@@ -176,6 +245,11 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
           case "turn":
             sendEvent("turn", { turn: event.turn, taskId: event.taskId });
+            // Forward any text content from the turn as a content event
+            if (event.content) {
+              fullContent += (fullContent ? "\n\n" : "") + event.content;
+              sendEvent("content", { content: event.content, accumulated: fullContent });
+            }
             break;
 
           case "tool_call": {
@@ -188,6 +262,13 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
             };
             toolCalls.push(tc);
             sendEvent("tool_call", tc);
+            // For the "think" tool, emit the reasoning as streaming content
+            // so it appears inline in the chat message between tool calls.
+            if (event.toolName === "think" && event.input?.thought) {
+              const thoughtText = String(event.input.thought);
+              fullContent += (fullContent ? "\n\n" : "") + thoughtText;
+              sendEvent("content", { content: thoughtText, accumulated: fullContent });
+            }
             break;
           }
 
@@ -202,14 +283,27 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
               existingTc.output = outputStr;
             }
             sendEvent("tool_result", { id: tcId, toolName: event.toolName, output: outputStr });
+
+            // Capture report_generate results for displaying in chat
+            if (event.toolName === "report_generate" && typeof event.result === "object" && event.result !== null) {
+              const r = event.result as Record<string, unknown>;
+              if (r.reportId && !r.error) {
+                reportData = {
+                  id: String(r.reportId),
+                  title: String(r.title || ""),
+                  content: String(r.content || ""),
+                  sourceCount: typeof r.sourceCount === "number" ? r.sourceCount : undefined,
+                  reportType: String(r.reportType || "analysis"),
+                };
+              }
+            }
             break;
           }
 
           case "progress":
-            if (event.progress.type === "text" && event.progress.content) {
-              fullContent += event.progress.content;
-              sendEvent("content", { content: event.progress.content, accumulated: fullContent });
-            }
+            // Only forward progress events — content accumulation is handled
+            // by the "turn" handler to avoid double-counting text that both
+            // recordProgress() and emitEvent("turn") emit.
             sendEvent("progress", event.progress);
             break;
 
@@ -249,7 +343,9 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
           agentType: body.agentType || "general",
           sessionId: body.sessionId,
           maxTurns: body.maxTurns,
+          contextMessages,
           onEvent,
+          scope: body.scope,
         });
 
         // Determine if the agent actually failed (orchestrator catches errors
@@ -271,6 +367,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
           turnsUsed: result.turnsUsed,
           usage: result.usage,
           compactionEvents: result.compactionEvents,
+          report: reportData ?? undefined,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -381,6 +478,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         maxTurns: skill.maxTurns,
         systemPromptOverride: resolvedPrompt,
         toolsOverride: skill.tools,
+        kbId: body.kbId,
       });
 
       // Save assistant response to the chat session

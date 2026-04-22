@@ -56,31 +56,30 @@ export function createGraphTool(deps: GraphToolDeps): AgentTool {
   return {
     name: "graph_build",
     description:
-      "Build a relationship graph from knowledge base content. Extracts " +
-      "entities and their relationships from wiki pages and link data. " +
-      "Returns nodes and edges for visualization.",
+      "从知识库内容构建关系图谱。从 Wiki 页面和链接数据中提取" +
+      "实体及其关系。返回节点和边数据用于可视化。",
     inputSchema: {
       type: "object",
       properties: {
         kbId: {
           type: "string",
-          description: "Knowledge base ID to build the graph from",
+          description: "要构建图谱的知识库 ID",
         },
         query: {
           type: "string",
-          description: "Optional search query to scope the graph to relevant pages",
+          description: "可选的搜索查询，用于限定图谱范围到相关页面",
         },
         startPageId: {
           type: "string",
-          description: "Optional page ID to start BFS traversal from (builds a subgraph)",
+          description: "可选的起始页面 ID，从此处开始 BFS 遍历（构建子图）",
         },
         depth: {
           type: "number",
-          description: "BFS traversal depth when using startPageId (default: 2, max: 3)",
+          description: "使用 startPageId 时的 BFS 遍历深度（默认：2，最大：3）",
         },
         maxNodes: {
           type: "number",
-          description: "Maximum number of nodes to include (default: 100)",
+          description: "包含的最大节点数（默认：100）",
         },
       },
       required: ["kbId"],

@@ -35,9 +35,8 @@ export interface ExpandOutput {
 export class ExpandTool {
   readonly name = "expand";
   readonly description =
-    "Expand from summary to detailed content by drilling down through " +
-    "wiki layers (L0 abstract -> L1 overview -> L2 fulltext -> raw). " +
-    "Supports targeting a specific level, section, or token budget.";
+    "从摘要逐层深入到详细内容，通过 Wiki 层级展开 " +
+    "（L0 摘要 -> L1 结构概述 -> L2 全文 -> 原始数据）。支持指定层级、章节或 token 预算。";
 
   private expander: Expander;
 

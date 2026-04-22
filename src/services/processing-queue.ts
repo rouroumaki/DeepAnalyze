@@ -22,6 +22,9 @@ export interface ProcessingJob {
   fileType: string;
 }
 
+/** Per-job timeout (ms). Individual steps that exceed this are aborted. */
+const JOB_TIMEOUT_MS = 120_000;
+
 // ---------------------------------------------------------------------------
 // ProcessingQueue
 // ---------------------------------------------------------------------------
@@ -31,7 +34,7 @@ export class ProcessingQueue {
   private active: Map<string, AbortController> = new Map();
   private concurrency: number;
 
-  constructor(concurrency: number = 1) {
+  constructor(concurrency: number = 2) {
     this.concurrency = concurrency;
   }
 
@@ -66,7 +69,7 @@ export class ProcessingQueue {
    * Cancel a job. Removes it from the queue if pending, or aborts
    * the active job if it is currently being processed.
    */
-  cancel(docId: string): void {
+  async cancel(docId: string): Promise<void> {
     // Remove from queue
     const queueIndex = this.queue.findIndex((j) => j.docId === docId);
     if (queueIndex !== -1) {
@@ -83,7 +86,7 @@ export class ProcessingQueue {
       console.log(`[ProcessingQueue] Aborted active job for ${docId}`);
 
       // Update DB status
-      this.updateDbStatus(docId, "error", null, 0, "Cancelled by user");
+      await this.updateDbStatus(docId, "error", null, 0, "Cancelled by user");
 
       // Broadcast cancellation
       this.broadcast(docId, "kb", {
@@ -141,6 +144,13 @@ export class ProcessingQueue {
 
     console.log(`[ProcessingQueue] Starting processing: ${filename} (${docId})`);
 
+    // Set up per-job timeout to prevent large files from blocking the queue
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, JOB_TIMEOUT_MS);
+
     try {
       // === Step 1: Parsing ===
       this.throwIfAborted(abortController, docId);
@@ -150,17 +160,19 @@ export class ProcessingQueue {
       this.throwIfAborted(abortController, docId);
       await this.stepCompiling(job, abortController);
 
-      // === Step 3: Indexing (Phase A: no-op placeholder) ===
+      // === Step 3: Indexing ===
       this.throwIfAborted(abortController, docId);
       await this.stepIndexing(job, abortController);
 
-      // === Step 4: Linking (Phase A: no-op placeholder) ===
-      this.throwIfAborted(abortController, docId);
-      await this.stepLinking(job, abortController);
+      // === Step 4: Linking — SKIPPED (paused due to performance concerns) ===
+      // L0Linker is too slow for large document sets. Code is retained in
+      // stepLinking() for future re-activation when performance improves.
+      // this.throwIfAborted(abortController, docId);
+      // await this.stepLinking(job, abortController);
 
       // === Complete ===
       this.throwIfAborted(abortController, docId);
-      this.updateDbStatus(docId, "ready", null, 1.0);
+      await this.updateDbStatus(docId, "ready", null, 1.0);
       this.broadcast(kbId, "kb", {
         type: "doc_ready",
         kbId,
@@ -171,10 +183,27 @@ export class ProcessingQueue {
       console.log(
         `[ProcessingQueue] Completed processing: ${filename} (${docId})`,
       );
+
+      // Clear timeout on success
+      clearTimeout(timeoutId);
     } catch (err) {
-      // Check if this was an abort (cancellation) — if so, don't overwrite
+      // Clear timeout on error path
+      clearTimeout(timeoutId);
+
+      // Check if this was an abort (cancellation or timeout)
       if (abortController.signal.aborted) {
-        console.log(`[ProcessingQueue] Job aborted: ${filename} (${docId})`);
+        const msg = timedOut
+          ? `处理超时（超过 ${JOB_TIMEOUT_MS / 1000} 秒）。文件可能过大或格式复杂。`
+          : "Cancelled by user";
+        console.log(`[ProcessingQueue] Job ${timedOut ? "timed out" : "cancelled"}: ${filename} (${docId})`);
+        await this.updateDbStatus(docId, "error", null, 0, msg);
+        this.broadcast(kbId, "kb", {
+          type: "doc_error",
+          kbId,
+          docId,
+          filename,
+          error: msg,
+        });
         return;
       }
 
@@ -184,7 +213,7 @@ export class ProcessingQueue {
         `[ProcessingQueue] Error processing ${filename} (${docId}): ${message}`,
       );
 
-      this.updateDbStatus(docId, "error", null, 0, message);
+      await this.updateDbStatus(docId, "error", null, 0, message);
       this.broadcast(kbId, "kb", {
         type: "doc_error",
         kbId,
@@ -205,8 +234,8 @@ export class ProcessingQueue {
   ): Promise<void> {
     const { kbId, docId, filename, filePath, fileType } = job;
 
-    // Update DB status
-    this.updateDbStatus(docId, "parsing", "parsing", 0.0);
+    // Update DB status (await to ensure status is persisted)
+    await this.updateDbStatus(docId, "parsing", "parsing", 0.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -214,7 +243,7 @@ export class ProcessingQueue {
       filename,
       status: "parsing",
       step: "parsing",
-      progress: 0.0,
+      progress: this.overallProgress("parsing", 0.0),
     });
 
     // Parse the document using the same logic as knowledge.ts route
@@ -224,7 +253,7 @@ export class ProcessingQueue {
     (job as ProcessingJob & { _parsedContent: ParsedContent })._parsedContent = parsedContent;
 
     // Update progress
-    this.updateDbStatus(docId, "parsing", "parsing", 1.0);
+    await this.updateDbStatus(docId, "parsing", "parsing", 1.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -232,7 +261,7 @@ export class ProcessingQueue {
       filename,
       status: "parsing",
       step: "parsing",
-      progress: 1.0,
+      progress: this.overallProgress("parsing", 1.0),
     });
   }
 
@@ -276,7 +305,7 @@ export class ProcessingQueue {
       ._parsedContent;
 
     // Update DB status
-    this.updateDbStatus(docId, "compiling", "compiling", 0.0);
+    await this.updateDbStatus(docId, "compiling", "compiling", 0.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -284,7 +313,7 @@ export class ProcessingQueue {
       filename,
       status: "compiling",
       step: "compiling",
-      progress: 0.0,
+      progress: this.overallProgress("compiling", 0.0),
     });
 
     // Use WikiCompiler for three-layer compilation (Raw→Structure→Abstract)
@@ -297,7 +326,7 @@ export class ProcessingQueue {
     // WikiCompiler.compile() calls updateDocumentStatus("ready") internally,
     // but we still need to set our processing_step tracking for the queue.
     // We update the step info without changing the overall status.
-    this.updateDbStatus(docId, "compiling", "compiling", 1.0);
+    await this.updateDbStatus(docId, "compiling", "compiling", 1.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -305,7 +334,7 @@ export class ProcessingQueue {
       filename,
       status: "compiling",
       step: "compiling",
-      progress: 1.0,
+      progress: this.overallProgress("compiling", 1.0),
     });
   }
 
@@ -320,7 +349,7 @@ export class ProcessingQueue {
     const { kbId, docId, filename } = job;
 
     // Update DB status
-    this.updateDbStatus(docId, "indexing", "indexing", 0.0);
+    await this.updateDbStatus(docId, "indexing", "indexing", 0.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -328,7 +357,7 @@ export class ProcessingQueue {
       filename,
       status: "indexing",
       step: "indexing",
-      progress: 0.0,
+      progress: this.overallProgress("indexing", 0.0),
     });
 
     // Index the document's wiki pages into FTS5 and embeddings
@@ -353,7 +382,7 @@ export class ProcessingQueue {
     }
 
     // Update progress
-    this.updateDbStatus(docId, "indexing", "indexing", 1.0);
+    await this.updateDbStatus(docId, "indexing", "indexing", 1.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -361,7 +390,7 @@ export class ProcessingQueue {
       filename,
       status: "indexing",
       step: "indexing",
-      progress: 1.0,
+      progress: this.overallProgress("indexing", 1.0),
     });
   }
 
@@ -376,7 +405,7 @@ export class ProcessingQueue {
     const { kbId, docId, filename } = job;
 
     // Update DB status
-    this.updateDbStatus(docId, "linking", "linking", 0.0);
+    await this.updateDbStatus(docId, "linking", "linking", 0.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -384,7 +413,7 @@ export class ProcessingQueue {
       filename,
       status: "linking",
       step: "linking",
-      progress: 0.0,
+      progress: this.overallProgress("linking", 0.0),
     });
 
     // Use L0Linker to build cross-document associations based on shared entities
@@ -397,7 +426,7 @@ export class ProcessingQueue {
     );
 
     // Update progress
-    this.updateDbStatus(docId, "linking", "linking", 1.0);
+    await this.updateDbStatus(docId, "linking", "linking", 1.0);
     this.broadcast(kbId, "kb", {
       type: "doc_processing_step",
       kbId,
@@ -405,13 +434,29 @@ export class ProcessingQueue {
       filename,
       status: "linking",
       step: "linking",
-      progress: 1.0,
+      progress: this.overallProgress("linking", 1.0),
     });
   }
 
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Map a processing step + its local progress (0-1) to an overall percentage (0-100).
+   * Active steps: parsing=0-33, compiling=33-66, indexing=66-100.
+   * Linking is currently skipped.
+   */
+  private overallProgress(step: string, stepProgress: number): number {
+    const stepBase: Record<string, number> = {
+      parsing: 0,
+      compiling: 33,
+      indexing: 66,
+      linking: 66, // skipped — shares indexing range
+    };
+    const base = stepBase[step] ?? 0;
+    return Math.min(100, Math.round(base + stepProgress * 33));
+  }
 
   /**
    * Update document status in the database.

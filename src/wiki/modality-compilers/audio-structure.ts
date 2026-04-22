@@ -33,7 +33,8 @@ export async function compileAudioStructure(
 
   for (const chunk of chunks) {
     const title = formatChunkTitle(chunk, raw);
-    const content = chunk.map(t => DocTagsFormatters.audioTurn(t)).join('\n');
+    const dtContent = chunk.map(t => DocTagsFormatters.audioTurn(t)).join('\n');
+    const mdContent = chunk.map(t => `**${raw.speakers.find(s => s.id === t.speaker)?.label ?? t.speaker}** [${formatTime(t.startTime)}]: ${t.text}`).join('\n\n');
     const chunkAnchorIds = chunk
       .map((t, i) => {
         const globalIdx = raw.turns.indexOf(t);
@@ -41,12 +42,31 @@ export async function compileAudioStructure(
       })
       .filter((id): id is string => !!id);
 
-    const page = await wikiPageRepo.create({
+    // L1_dt: DocTags format page
+    const dtPage = await wikiPageRepo.create({
       kb_id: kbId,
       doc_id: docId,
-      page_type: 'structure',
+      page_type: 'structure_dt',
       title,
-      content,
+      content: dtContent,
+      file_path: `${kbId}/documents/${docId}/structure_dt/${sanitizeFilename(title)}.dt.md`,
+      metadata: {
+        anchorIds: chunkAnchorIds,
+        modality: 'audio',
+        elementTypes: ['turn'],
+        speaker: chunk[0].speaker,
+        timeRange: `${formatTime(chunk[0].startTime)}-${formatTime(chunk[chunk.length - 1].endTime)}`,
+        turnCount: chunk.length,
+      },
+    });
+
+    // L1_md: Markdown format page
+    const mdPage = await wikiPageRepo.create({
+      kb_id: kbId,
+      doc_id: docId,
+      page_type: 'structure_md',
+      title,
+      content: mdContent,
       file_path: `${kbId}/documents/${docId}/structure/${sanitizeFilename(title)}.md`,
       metadata: {
         anchorIds: chunkAnchorIds,
@@ -58,9 +78,10 @@ export async function compileAudioStructure(
       },
     });
 
-    await anchorRepo.updateStructurePageId(chunkAnchorIds, page.id);
-    await ftsRepo.upsertFTSEntry(page.id, title, content);
-    pageIds.push(page.id);
+    await anchorRepo.updateStructurePageId(chunkAnchorIds, mdPage.id);
+    await ftsRepo.upsertFTSEntry(dtPage.id, title, dtContent);
+    await ftsRepo.upsertFTSEntry(mdPage.id, title, mdContent);
+    pageIds.push(dtPage.id, mdPage.id);
   }
 
   return pageIds;

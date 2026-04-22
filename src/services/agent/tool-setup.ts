@@ -62,40 +62,39 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "kb_search",
     description:
-      "Search the knowledge base using semantic and keyword matching. " +
-      "Returns ranked results with snippets. Combines vector similarity, " +
-      "BM25 full-text search, and link traversal for comprehensive results.",
+      "使用语义和关键词匹配搜索知识库。返回带摘录的排序结果。" +
+      "结合向量相似度、BM25 全文搜索和链接遍历，实现全面检索。",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query text",
+          description: "搜索查询文本",
         },
         kbIds: {
           type: "array",
           items: { type: "string" },
           description:
-            "Knowledge base IDs to search within. Omit to search all KBs.",
+            "要搜索的知识库 ID 列表。省略则搜索所有知识库。",
         },
         topK: {
           type: "number",
-          description: "Maximum number of results to return (default: 10)",
+          description: "返回结果的最大数量（默认：10）",
         },
         linkedFrom: {
           type: "string",
           description:
-            "Page ID to start link traversal from (adds linked results).",
+            "链接遍历的起始页面 ID（添加关联结果）。",
         },
         pageTypes: {
           type: "array",
           items: { type: "string" },
           description:
-            "Filter results to specific page types (abstract, overview, fulltext, entity, concept, report).",
+            "按页面类型过滤结果（abstract, overview, fulltext, structure_md, structure_dt, entity, concept, report）。",
         },
         minScore: {
           type: "number",
-          description: "Minimum relevance score threshold (0-1 scale).",
+          description: "最低相关性分数阈值（0-1 范围）。",
         },
       },
       required: ["query"],
@@ -145,35 +144,25 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "wiki_browse",
     description:
-      "Browse wiki pages and follow links between related documents. " +
-      "Can view a specific page by ID, list pages in a knowledge base, " +
-      "or explore linked pages through link traversal.",
+      "浏览 Wiki 页面并跟踪相关文档之间的链接。" +
+      "可通过 ID 查看特定页面、列出知识库中的页面，" +
+      "或按类型浏览页面。",
     inputSchema: {
       type: "object",
       properties: {
         pageId: {
           type: "string",
-          description: "Specific page ID to view. Returns page content and metadata.",
+          description: "要查看的特定页面 ID。返回页面内容和元数据。",
         },
         kbId: {
           type: "string",
           description:
-            "Knowledge base ID. Returns a list of all pages in the KB.",
-        },
-        followLinks: {
-          type: "boolean",
-          description:
-            "When viewing a page, also include outgoing and incoming links (default: false).",
-        },
-        depth: {
-          type: "number",
-          description:
-            "Link traversal depth when followLinks is true (max 3, default: 1).",
+            "知识库 ID。返回该知识库中所有页面的列表。",
         },
         pageType: {
           type: "string",
           description:
-            "Filter pages by type when listing KB pages (abstract, overview, fulltext, entity, concept, report).",
+            "列出知识库页面时按类型过滤（abstract, overview, fulltext, structure_md, structure_dt, entity, concept, report）。",
         },
       },
     },
@@ -190,7 +179,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
 
         const content = page.content || "[Content could not be read]";
 
-        const result: Record<string, unknown> = {
+        return {
           id: page.id,
           kbId: page.kb_id,
           docId: page.doc_id,
@@ -199,38 +188,6 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           tokenCount: page.token_count,
           content,
         };
-
-        // Optionally include link information
-        if (input.followLinks) {
-          const depth = Math.min((input.depth as number) || 1, 3);
-
-          const outgoingLinks = await deps.linker.getOutgoingLinks(pageId);
-          const incomingLinks = await deps.linker.getIncomingLinks(pageId);
-
-          const linkedPages = await deps.linker.getLinkedPages(pageId, depth);
-
-          result.outgoingLinks = outgoingLinks.map((link) => ({
-            targetPageId: link.targetPageId,
-            linkType: link.linkType,
-            entityName: link.entityName,
-          }));
-
-          result.incomingLinks = incomingLinks.map((link) => ({
-            sourcePageId: link.sourcePageId,
-            linkType: link.linkType,
-            entityName: link.entityName,
-          }));
-
-          result.linkedPages = linkedPages.map((lp) => ({
-            pageId: lp.page.id,
-            title: lp.page.title,
-            pageType: lp.page.pageType,
-            distance: lp.distance,
-            linkType: lp.linkType,
-          }));
-        }
-
-        return result;
       }
 
       // Mode 2: List pages in a knowledge base
@@ -267,35 +224,43 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "expand",
     description:
-      "Expand from summary to detailed content. Drills down through " +
-      "L0 (abstract) -> L1 (overview) -> L2 (fulltext) layers. " +
-      "Use this to get more detail on a document or page.",
+      "从摘要逐层深入到详细内容。逐层展开 " +
+      "L0（摘要）-> L1（结构概述）-> L2（全文）。" +
+      "用于获取文档或页面的更多细节。" +
+      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。" +
+      "可通过多次调用反复深入阅读，直到充分理解所需信息。",
     inputSchema: {
       type: "object",
       properties: {
         pageId: {
           type: "string",
-          description: "Page ID to expand. Returns content at its current level.",
+          description: "要展开的页面 ID。返回当前层级的内容。",
         },
         docId: {
           type: "string",
-          description: "Document ID to expand to a specific level.",
+          description: "要展开到特定层级的文档 ID。",
         },
         targetLevel: {
           type: "string",
           enum: ["L0", "L1", "L2"],
           description:
-            "Target expansion level when expanding by docId. L0=abstract, L1=overview, L2=fulltext.",
+            "按文档 ID 展开时的目标层级。L0=摘要，L1=结构，L2=全文。",
+        },
+        format: {
+          type: "string",
+          enum: ["md", "dt"],
+          description:
+            "L1 格式选择：'md' 为 Markdown（人类可读），'dt' 为 DocTags（LLM 友好）。默认：'dt'。",
         },
         heading: {
           type: "string",
           description:
-            "Specific section heading to extract within a page.",
+            "要提取的页面内特定章节标题。",
         },
         tokenBudget: {
           type: "number",
           description:
-            "Maximum tokens to return when expanding by docId. Automatically picks the best level.",
+            "按文档 ID 展开时返回的最大 token 数。自动选择能容纳的最深层级内容。注意：仅返回单个层级的内容，不跨层累积。",
         },
       },
     },
@@ -354,6 +319,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           const result = await deps.expander.expandToLevel(
             input.docId as string,
             input.targetLevel as "L0" | "L1" | "L2",
+            input.format as "md" | "dt" | undefined,
           );
 
           return {
@@ -414,7 +380,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   // report_generate tool
   // -----------------------------------------------------------------------
 
-  registry.register(createReportTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
+  registry.register(createReportTool({ dataDir: deps.dataDir }));
 
   // -----------------------------------------------------------------------
   // timeline_build tool
@@ -423,10 +389,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register(createTimelineTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
 
   // -----------------------------------------------------------------------
-  // graph_build tool
+  // graph_build tool — DISABLED per design decision
   // -----------------------------------------------------------------------
-
-  registry.register(createGraphTool({ linker: deps.linker, retriever: deps.retriever, dataDir: deps.dataDir }));
+  // registry.register(createGraphTool({ linker: deps.linker, retriever: deps.retriever, dataDir: deps.dataDir }));
 
   // -----------------------------------------------------------------------
   // read_file tool — read files from the data directory
@@ -435,24 +400,24 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "read_file",
     description:
-      "Read the contents of a file. Returns the file content as text. " +
-      "Use this to inspect uploaded documents, configuration files, logs, or any " +
-      "file within the data directory. For files outside the data directory, " +
-      "use the bash tool with 'cat <path>'. Supports text files, markdown, CSV, JSON, etc.",
+      "读取文件内容。以文本形式返回文件内容。" +
+      "可用于检查上传的文档、配置文件、日志或数据目录中的任何文件。" +
+      "数据目录外的文件请使用 bash 工具执行 'cat <路径>'。" +
+      "支持文本文件、Markdown、CSV、JSON 等格式。",
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Path to the file (relative to data directory, or absolute within data/)",
+          description: "文件路径（相对于数据目录，或数据目录内的绝对路径）",
         },
         offset: {
           type: "number",
-          description: "Line number to start reading from (0-based, default: 0)",
+          description: "起始行号（从0开始，默认：0）",
         },
         limit: {
           type: "number",
-          description: "Maximum number of lines to read (default: 2000)",
+          description: "最大读取行数（默认：2000）",
         },
       },
       required: ["path"],
@@ -497,23 +462,23 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "grep",
     description:
-      "Search for a pattern in files within the data directory. " +
-      "Returns matching lines with file paths and line numbers. " +
-      "Supports basic text search and regex patterns.",
+      "在数据目录的文件中搜索模式。" +
+      "返回匹配的行及文件路径和行号。" +
+      "支持基本文本搜索和正则表达式。",
     inputSchema: {
       type: "object",
       properties: {
         pattern: {
           type: "string",
-          description: "Search pattern (text or regex)",
+          description: "搜索模式（文本或正则表达式）",
         },
         path: {
           type: "string",
-          description: "Directory or file to search in (relative to data directory). Default: entire data dir.",
+          description: "要搜索的目录或文件（相对于数据目录）。默认：整个数据目录。",
         },
         maxResults: {
           type: "number",
-          description: "Maximum number of matching lines to return (default: 50)",
+          description: "返回匹配行的最大数量（默认：50）",
         },
       },
       required: ["pattern"],
@@ -571,18 +536,18 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "glob",
     description:
-      "Find files matching a pattern in the data directory. " +
-      "Returns a list of matching file paths. Supports glob patterns like *.pdf, **/*.md, etc.",
+      "在数据目录中按模式查找文件。" +
+      "返回匹配的文件路径列表。支持 glob 模式，如 *.pdf、**/*.md 等。",
     inputSchema: {
       type: "object",
       properties: {
         pattern: {
           type: "string",
-          description: "Glob pattern (e.g. '**/*.md', '*.pdf', 'wiki/**/*.md')",
+          description: "Glob 匹配模式（如 '**/*.md'、'*.pdf'、'wiki/**/*.md'）",
         },
         path: {
           type: "string",
-          description: "Base directory for search (relative to data directory). Default: data root.",
+          description: "搜索的基础目录（相对于数据目录）。默认：数据根目录。",
         },
       },
       required: ["pattern"],
@@ -621,19 +586,19 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "bash",
     description:
-      "Execute a shell command and return its output. Use with caution. " +
-      "The working directory is the project data directory. " +
-      "Commands time out after 30 seconds.",
+      "执行 Shell 命令并返回输出。请谨慎使用。" +
+      "工作目录为项目数据目录。" +
+      "命令超时时间为 30 秒。",
     inputSchema: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: "Shell command to execute",
+          description: "要执行的 Shell 命令",
         },
         timeout: {
           type: "number",
-          description: "Timeout in seconds (default: 30, max: 120)",
+          description: "超时时间（秒，默认：30，最大：120）",
         },
       },
       required: ["command"],
@@ -669,18 +634,18 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "web_search",
     description:
-      "Search the web for information. Returns search results with titles, URLs, and snippets. " +
-      "Useful for finding current information not available in the knowledge base.",
+      "搜索网络获取信息。返回包含标题、URL 和摘要的搜索结果。" +
+      "适用于查找知识库中没有的最新信息。",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query",
+          description: "搜索查询",
         },
         maxResults: {
           type: "number",
-          description: "Maximum results to return (default: 10)",
+          description: "返回结果的最大数量（默认：10）",
         },
       },
       required: ["query"],
@@ -767,22 +732,22 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "tts_generate",
     description:
-      "Generate speech audio from text. Converts text input to natural-sounding speech. " +
-      "Returns the audio file path and metadata. Supports Chinese and English.",
+      "从文本生成语音音频。将文本输入转换为自然语音。" +
+      "返回音频文件路径和元数据。支持中文和英文。",
     inputSchema: {
       type: "object",
       properties: {
         text: {
           type: "string",
-          description: "Text to convert to speech",
+          description: "要转换为语音的文本",
         },
         voice: {
           type: "string",
-          description: "Voice name (default: male-qn-qingse)",
+          description: "语音名称（默认：male-qn-qingse）",
         },
         speed: {
           type: "number",
-          description: "Speech speed (default: 1.0)",
+          description: "语速（默认：1.0）",
         },
       },
       required: ["text"],
@@ -816,22 +781,22 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "image_generate",
     description:
-      "Generate an image from a text description. Creates a visual based on the prompt. " +
-      "Returns the image file path.",
+      "根据文本描述生成图片。根据提示词创建视觉内容。" +
+      "返回图片文件路径。",
     inputSchema: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
-          description: "Image generation prompt describing the desired image",
+          description: "图片生成提示词，描述所需图片",
         },
         width: {
           type: "number",
-          description: "Image width in pixels",
+          description: "图片宽度（像素）",
         },
         height: {
           type: "number",
-          description: "Image height in pixels",
+          description: "图片高度（像素）",
         },
       },
       required: ["prompt"],
@@ -865,14 +830,14 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "video_generate",
     description:
-      "Generate a video from a text prompt. Creates an AI video (may take several minutes). " +
-      "Returns the video file URL or path.",
+      "根据文本提示生成视频。创建 AI 视频（可能需要几分钟）。" +
+      "返回视频文件 URL 或路径。",
     inputSchema: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
-          description: "Video generation prompt describing the desired video content",
+          description: "视频生成提示词，描述所需的视频内容",
         },
       },
       required: ["prompt"],
@@ -895,18 +860,18 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "music_generate",
     description:
-      "Generate music from a text prompt. Creates an audio file based on the description. " +
-      "Returns the audio file path.",
+      "根据文本提示生成音乐。根据描述创建音频文件。" +
+      "返回音频文件路径。",
     inputSchema: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
-          description: "Music generation prompt describing the desired music style/mood",
+          description: "音乐生成提示词，描述所需的音乐风格/情绪",
         },
         duration: {
           type: "number",
-          description: "Desired duration in seconds",
+          description: "所需时长（秒）",
         },
       },
       required: ["prompt"],

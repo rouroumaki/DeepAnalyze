@@ -36,8 +36,8 @@ export interface OpenAICompatibleOptions {
   /** Default model to use when ChatOptions.model is not provided. */
   model: string;
 
-  /** Default maximum tokens for responses. */
-  maxTokens: number;
+  /** Default maximum tokens for responses. When omitted or 0, the API provider decides. */
+  maxTokens?: number;
 
   /** Default sampling temperature (0-2). */
   temperature?: number;
@@ -123,7 +123,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
   private readonly apiKey: string | undefined;
   private readonly defaultModel: string;
-  private readonly defaultMaxTokens: number;
+  private readonly defaultMaxTokens: number | undefined;
   private readonly defaultTemperature: number | undefined;
   private readonly defaultTopP: number | undefined;
   private readonly defaultTopK: number | undefined;
@@ -402,9 +402,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       model: options.model ?? this.defaultModel,
       messages: openaiMessages,
-      max_tokens: options.maxTokens ?? this.defaultMaxTokens,
       stream,
     };
+
+    // Only send max_tokens when explicitly configured.
+    // When omitted, the API provider uses its own model-specific default,
+    // which avoids mismatched limits across different providers.
+    // Per-request overrides take precedence over provider defaults.
+    const maxTokens = options.maxTokens ?? this.defaultMaxTokens;
+    if (maxTokens > 0) {
+      body.max_tokens = maxTokens;
+    }
 
     if (options.temperature !== undefined) {
       body.temperature = options.temperature;

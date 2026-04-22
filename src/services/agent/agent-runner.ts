@@ -25,6 +25,8 @@ import type {
   AgentResult,
   AgentEvent,
   AgentProgressEntry,
+  AgentSettings,
+  CompactBoundaryMeta,
 } from "./types.js";
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
 import type {
@@ -42,10 +44,12 @@ import type {
 const DEFAULT_AGENT_DEFINITION: AgentDefinition = {
   agentType: "general",
   description: "General-purpose agent for any task",
+  // [ORIGINAL ENGLISH] "You are a helpful AI assistant. Analyze the user's request carefully and use available tools as needed to accomplish the task. When you have completed the task, call the 'finish' tool with your final answer."
   systemPrompt:
-    "You are a helpful AI assistant. Analyze the user's request carefully " +
-    "and use available tools as needed to accomplish the task. " +
-    "When you have completed the task, call the 'finish' tool with your final answer.",
+    "你是一个有帮助的 AI 助手。请仔细分析用户的请求，根据需要使用可用工具来完成任务。" +
+    "当你完成任务时，调用 'finish' 工具返回最终答案。\n\n" +
+    "## 语言规则\n" +
+    "始终使用与用户提问相同的语言进行思考和回复。如果用户用中文提问，你必须用中文思考和回复（包括 think 工具中的推理过程）；如果用户用英文提问，用英文思考和回复。工具调用参数中的技术术语和标识符保持原样。",
   tools: ["*"],
   modelRole: "main",
   maxTurns: -1,
@@ -194,7 +198,7 @@ export class AgentRunner {
     // Initialize context management components (reused across turns, L1/L2 fix)
     const contextManager = new ContextManager(this.modelRouter, modelId, toolDefs, agentSettings);
     const microCompactor = new MicroCompactor();
-    const compactionEngine = new CompactionEngine(this.modelRouter, contextManager);
+    const compactionEngine = new CompactionEngine(this.modelRouter, contextManager, agentSettings);
 
     // Initialize SessionMemory (if sessionId is provided)
     let sessionMemory: SessionMemoryManager | null = null;
@@ -274,6 +278,12 @@ export class AgentRunner {
                 method: `emergency-${result.method}`,
                 tokensSaved: result.tokensSaved,
               });
+              // Persist compact boundary (emergency)
+              this.persistCompactBoundary(
+                options.sessionId,
+                `emergency-${result.method}` as CompactBoundaryMeta["method"],
+                result.preCompactTokens, turn,
+              );
               // Retry the LLM call after compaction
               continue;
             }
@@ -296,7 +306,14 @@ export class AgentRunner {
         consecutiveLLMErrors = 0; // Reset on non-transient or exhausted retries
         this.recordProgress(options.onEvent, taskId, turn, "error", `Model call failed: ${errorMsg}`);
         this.emitEvent(options.onEvent, { type: "error", taskId, error: errorMsg });
-        return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, `Agent failed: ${errorMsg}`, options.onEvent);
+
+        // Build a user-friendly error with suggestions
+        const availableProviders = this.modelRouter.listProviderNames();
+        const suggestion = availableProviders.length > 0
+          ? `可用的模型: ${availableProviders.join(", ")}。请在设置中检查模型配置。`
+          : "请在设置中配置至少一个可用的模型。";
+
+        return this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, `模型调用失败: ${errorMsg}\n\n${suggestion}`, options.onEvent);
       }
 
       // 5. Track token usage
@@ -342,6 +359,7 @@ export class AgentRunner {
             turn,
             options.onEvent,
             accessedPages,
+            agentSettings,
           );
           messages.push(toolResultMessage);
         }
@@ -350,9 +368,13 @@ export class AgentRunner {
       }
 
       // 6. Context management
-      // 6a. Microcompact
+      // 6a. Microcompact — use token-aware pruning when possible
       if (contextManager.shouldMicrocompact(messages)) {
-        const result = microCompactor.prune(messages, agentSettings.microcompactKeepTurns);
+        const result = microCompactor.prune(messages, {
+          keepRecent: agentSettings.toolResultKeepRecent,
+          maxTokens: agentSettings.toolResultMaxTokens,
+          modelRouter: this.modelRouter,
+        });
         if (result.prunedCount > 0) {
           messages.length = 0;
           messages.push(...result.messages);
@@ -374,6 +396,8 @@ export class AgentRunner {
               method: result.method,
               tokensSaved: result.tokensSaved,
             });
+            // Persist compact boundary to DB so next request knows where to load from
+            this.persistCompactBoundary(options.sessionId, result.method, result.preCompactTokens, turn);
           }
         } catch (err) {
           console.warn("[AgentRunner] Compaction failed:", err instanceof Error ? err.message : String(err));
@@ -412,7 +436,7 @@ export class AgentRunner {
     // Build final result
     const result = this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
 
-    // Auto-compound on task completion
+    // Auto-compound on task completion — emit event and write back to wiki
     const finalOutput = result.output;
     const kbId = options.kbId;
     if (finalOutput && finalOutput.trim().length >= 100 && kbId) {
@@ -426,12 +450,9 @@ export class AgentRunner {
           output: finalOutput,
         });
 
-        // Trigger compound with source tracing
         const { KnowledgeCompounder, compoundWithAnchors } = await import("../../wiki/knowledge-compound.js");
         const { DEEPANALYZE_CONFIG } = await import("../../core/config.js");
         const compounder = new KnowledgeCompounder(DEEPANALYZE_CONFIG.dataDir);
-
-        // Check if we have anchor-level data for enhanced tracing
         const anchorData = Array.from(accessedPages.values())
           .filter(p => p.anchorId && p.docId)
           .map(p => ({
@@ -442,36 +463,18 @@ export class AgentRunner {
             pageNumber: p.pageNumber ?? null,
             role: "supporting" as const,
           }));
-
         if (anchorData.length > 0) {
-          // Anchor-level tracing
-          const anchorContent = compoundWithAnchors(
-            kbId,
-            agentType,
-            options.input,
-            finalOutput,
-            anchorData,
-          );
+          const anchorContent = compoundWithAnchors(kbId, agentType, options.input, finalOutput, anchorData);
           if (anchorContent) {
-            await compounder.compoundAgentResult(
-              kbId,
-              agentType,
-              options.input,
-              finalOutput + "\n\n" + anchorContent,
-            );
+            await compounder.compoundAgentResult(kbId, agentType, options.input, finalOutput + "\n\n" + anchorContent);
           }
         } else {
-          // Fallback to page-level tracing
           await compounder.compoundWithTracing(
-            kbId,
-            agentType,
-            options.input,
-            finalOutput,
+            kbId, agentType, options.input, finalOutput,
             Array.from(accessedPages.values()).map(p => ({ pageId: p.pageId, title: p.title })),
           );
         }
       } catch (err) {
-        // Compound failure should not break the agent flow
         console.warn("[AgentRunner] Auto-compound failed:", err instanceof Error ? err.message : String(err));
       }
     }
@@ -506,18 +509,28 @@ export class AgentRunner {
         signal: options.signal,
       });
     } catch (primaryError) {
+      const primaryMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
       // Try fallback model if not already using it
       if (!usingFallback) {
         try {
           const fallbackModelId = this.modelRouter.getDefaultModel(fallbackRole);
-          console.warn(`[AgentRunner] Primary model (${modelRole}: ${modelId}) failed, switching to fallback (${fallbackRole}: ${fallbackModelId})`);
+          // Skip fallback if it resolves to the same provider — no point retrying
+          if (fallbackModelId === modelId) {
+            console.warn(`[AgentRunner] Primary model (${modelRole}: ${modelId}) failed, fallback (${fallbackRole}) is the same provider — skipping. Error: ${primaryMsg}`);
+            throw primaryError;
+          }
+          console.warn(`[AgentRunner] Primary model (${modelRole}: ${modelId}) failed (${primaryMsg.substring(0, 200)}), switching to fallback (${fallbackRole}: ${fallbackModelId})`);
           onFallback(fallbackModelId);
           return await this.modelRouter.chat(messages, {
             model: fallbackModelId,
             tools: toolDefs.length > 0 ? toolDefs : undefined,
             signal: options.signal,
           });
-        } catch {
+        } catch (fallbackError) {
+          const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          if (fallbackMsg !== primaryMsg) {
+            console.warn(`[AgentRunner] Fallback model (${fallbackRole}) also failed: ${fallbackMsg.substring(0, 200)}`);
+          }
           throw primaryError;
         }
       }
@@ -558,6 +571,7 @@ export class AgentRunner {
     turn: number,
     onEvent?: (event: AgentEvent) => void,
     accessedPages?: Map<string, { pageId: string; title: string }>,
+    agentSettings?: AgentSettings,
   ): Promise<ChatMessage> {
     const toolName = toolCall.function.name;
     let toolInput: Record<string, unknown>;
@@ -608,8 +622,19 @@ export class AgentRunner {
     let resultContent: string;
     try {
       resultContent = JSON.stringify(result);
-      if (resultContent.length > 100_000) {
-        resultContent = resultContent.substring(0, 100_000) + "\n...[truncated]";
+      // Apply token-based tool result budget instead of fixed 100K char limit
+      const estimatedTokens = this.modelRouter.estimateTokens(resultContent);
+      // Allow more tokens for expand results since they contain document content
+      const baseMaxTokens = agentSettings?.toolResultMaxTokens ?? 4_000;
+      const maxTokens = ["expand"].includes(toolName) ? baseMaxTokens * 3 : baseMaxTokens;
+      if (estimatedTokens > maxTokens) {
+        const previewChars = Math.floor(maxTokens * 3); // ~3 chars per token
+        // Provide informative truncation message so the LLM can decide whether to read more
+        const truncationHint = toolName === "expand"
+          ? `[... 内容被截断: 共约 ${estimatedTokens} tokens, 已展示前 ~${maxTokens} tokens. 如需完整信息, 可用 heading 参数指定章节逐段阅读]`
+          : `[... result truncated: ${estimatedTokens} tokens total, showing first ~${maxTokens} tokens]`;
+        resultContent = resultContent.substring(0, previewChars)
+          + `\n\n${truncationHint}`;
       }
     } catch {
       resultContent = String(result);
@@ -802,6 +827,51 @@ export class AgentRunner {
       lower.includes("token limit exceeded")
     );
   }
+
+  // -----------------------------------------------------------------------
+  // Compact boundary persistence
+  // -----------------------------------------------------------------------
+
+  /**
+   * Persist a compact boundary marker to the session's message history.
+   * This allows the route handler's context loader to skip pre-boundary
+   * messages on subsequent requests, avoiding loading already-compacted
+   * history that would waste the context budget.
+   *
+   * Fire-and-forget: boundary persistence failure is non-critical.
+   */
+  private persistCompactBoundary(
+    sessionId: string | undefined,
+    method: CompactBoundaryMeta["method"],
+    preCompactTokens: number,
+    turnNumber: number,
+  ): void {
+    if (!sessionId) return;
+
+    const meta: CompactBoundaryMeta = {
+      type: "compact_boundary",
+      method,
+      preCompactTokens,
+      turnNumber,
+      timestamp: new Date().toISOString(),
+    };
+
+    const content = `[COMPACT_BOUNDARY:${JSON.stringify(meta)}]`;
+
+    // Fire-and-forget: don't block the TAOR loop
+    getRepos()
+      .then((repos) => repos.message.create(sessionId, "user", content))
+      .catch((err) => {
+        console.warn(
+          "[AgentRunner] Failed to persist compact boundary:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+  }
+
+  // -----------------------------------------------------------------------
+  // Emergency compaction detection
+  // -----------------------------------------------------------------------
 
   private isTransientError(errorMsg: string): boolean {
     const lower = errorMsg.toLowerCase();

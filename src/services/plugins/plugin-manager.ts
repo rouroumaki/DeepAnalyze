@@ -377,7 +377,7 @@ export class PluginManager {
     await repos.skill.create({
       id,
       name: skill.name,
-      pluginId: skill.pluginId ?? "",
+      pluginId: skill.pluginId ?? null,
       description: skill.description,
       config: {
         systemPrompt: skill.systemPrompt,

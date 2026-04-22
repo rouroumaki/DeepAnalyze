@@ -35,7 +35,7 @@ export class Indexer {
 
     // Get all pages for this document
     // Fetch all page types and combine
-    const pageTypes = ["abstract", "overview", "fulltext", "structure", "entity", "concept", "report"];
+    const pageTypes = ["abstract", "overview", "fulltext", "structure", "structure_md", "structure_dt", "entity", "concept", "report"];
     const allPages: WikiPage[] = [];
 
     for (const pageType of pageTypes) {

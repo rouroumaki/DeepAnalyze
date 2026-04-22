@@ -84,9 +84,9 @@ export function SettingsPanel() {
   const [apiKey, setApiKey] = useState("");
   const [apiBase, setApiBase] = useState("");
   const [modelName, setModelName] = useState("");
-  const [maxTokens, setMaxTokens] = useState(32768);
-  const [temperature, setTemperature] = useState(0.7);
-  const [contextWindow, setContextWindow] = useState(128000);
+  const [maxTokens, setMaxTokens] = useState(0);
+  const [temperature, setTemperature] = useState(1.0);
+  const [contextWindow, setContextWindow] = useState(200000);
   const [enabled, setEnabled] = useState(true);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -128,17 +128,21 @@ export function SettingsPanel() {
       setApiKey(configured.apiKey);
       setApiBase(configured.endpoint);
       setModelName(configured.model);
-      setMaxTokens(configured.maxTokens);
-      setTemperature(configured.temperature ?? 0.7);
-      setContextWindow(configured.contextWindow ?? 128000);
+      setMaxTokens(configured.maxTokens ?? 0);
+      // Use saved temperature, or model-level recommended default, or 1.0
+      const modelMeta = meta?.models?.find((m) => m.id === configured.model);
+      setTemperature(configured.temperature ?? modelMeta?.recommendedTemperature?.default ?? 1.0);
+      setContextWindow(configured.contextWindow ?? meta?.contextWindow ?? 200000);
       setEnabled(configured.enabled);
     } else {
       setApiKey("");
       setApiBase(meta?.apiBase ?? "");
       setModelName(meta?.defaultModel ?? "");
-      setMaxTokens(meta?.recommendedMaxTokens ?? 32768);
-      setTemperature(0.7);
-      setContextWindow(meta?.contextWindow ?? 128000);
+      setMaxTokens(meta?.recommendedMaxTokens ?? 0);
+      // Use model-level recommended temperature, default to 1.0
+      const defaultModelMeta = meta?.models?.find((m) => m.id === meta?.defaultModel);
+      setTemperature(defaultModelMeta?.recommendedTemperature?.default ?? 1.0);
+      setContextWindow(meta?.contextWindow ?? 200000);
       setEnabled(true);
     }
     setTestResult(null);
@@ -171,26 +175,32 @@ export function SettingsPanel() {
 
   // --- Provider CRUD handlers ---
 
+  /** Internal save without user-facing toast (used by test button) */
+  const handleSaveInternal = async () => {
+    if (!selectedProvider) return;
+    const provider: ProviderConfig = {
+      id: selectedProvider,
+      name: currentMeta?.name ?? selectedProvider,
+      type: "openai-compatible",
+      endpoint: apiBase,
+      apiKey,
+      model: modelName,
+      maxTokens: maxTokens > 0 ? maxTokens : undefined,
+      temperature,
+      contextWindow,
+      supportsToolUse: true,
+      enabled,
+    };
+    await api.saveProvider(provider);
+    await loadData();
+  };
+
   const handleSave = async () => {
     if (!selectedProvider) return;
     setSaving(true);
     try {
-      const provider: ProviderConfig = {
-        id: selectedProvider,
-        name: currentMeta?.name ?? selectedProvider,
-        type: "openai-compatible",
-        endpoint: apiBase,
-        apiKey,
-        model: modelName,
-        maxTokens,
-        temperature,
-        contextWindow,
-        supportsToolUse: true,
-        enabled,
-      };
-      await api.saveProvider(provider);
+      await handleSaveInternal();
       success("配置已保存");
-      await loadData();
     } catch {
       showError("保存失败");
     } finally {
@@ -203,7 +213,8 @@ export function SettingsPanel() {
     setTesting(true);
     setTestResult(null);
     try {
-      await handleSave();
+      // Save first so test endpoint can read current config from DB
+      await handleSaveInternal();
       const result = await api.testProvider(selectedProvider);
       setTestResult({
         success: result.success,
@@ -365,7 +376,25 @@ export function SettingsPanel() {
                     }}>
                       <div>
                         <label style={labelStyle}>模型名称</label>
-                        <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder={currentMeta?.defaultModel || "模型 ID"} style={inputStyle} />
+                        {currentMeta && currentMeta.models && currentMeta.models.length > 0 ? (
+                          <>
+                            <input
+                              list={`sp-models-${selectedProvider}`}
+                              type="text"
+                              value={modelName}
+                              onChange={(e) => setModelName(e.target.value)}
+                              placeholder={currentMeta.defaultModel || "模型 ID"}
+                              style={inputStyle}
+                            />
+                            <datalist id={`sp-models-${selectedProvider}`}>
+                              {currentMeta.models.map((m) => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                            </datalist>
+                          </>
+                        ) : (
+                          <input type="text" value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder={currentMeta?.defaultModel || "模型 ID"} style={inputStyle} />
+                        )}
                       </div>
                       <div>
                         <label style={labelStyle}>API Key {isLocal && <span style={{ color: "var(--text-tertiary)" }}>(可选)</span>}</label>
@@ -378,7 +407,8 @@ export function SettingsPanel() {
                       </div>
                       <div>
                         <label style={labelStyle}>最大 Tokens</label>
-                        <input type="number" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value) || 32768)} style={inputStyle} />
+                        <input type="number" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value) || 0)} min={0} style={inputStyle} />
+                        <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: 0, marginTop: 2 }}>设为 0 表示由 API 自动决定（推荐）</p>
                       </div>
                       <div>
                         <label style={labelStyle}>
@@ -392,7 +422,7 @@ export function SettingsPanel() {
                       </div>
                       <div>
                         <label style={labelStyle}>上下文窗口 (tokens)</label>
-                        <input type="number" value={contextWindow} onChange={(e) => setContextWindow(parseInt(e.target.value) || 128000)} style={inputStyle} />
+                        <input type="number" value={contextWindow} onChange={(e) => setContextWindow(parseInt(e.target.value) || 200000)} style={inputStyle} />
                       </div>
                       <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer" }}>
                         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
@@ -554,8 +584,8 @@ export function SettingsPanel() {
                       <select value={agentSettings.contextWindow} onChange={(e) => setAgentSettings({ ...agentSettings, contextWindow: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
                         <option value={32000}>32K</option>
                         <option value={64000}>64K</option>
-                        <option value={128000}>128K (默认)</option>
-                        <option value={200000}>200K</option>
+                        <option value={128000}>128K</option>
+                        <option value={200000}>200K (默认)</option>
                         <option value={256000}>256K</option>
                       </select>
                     </div>

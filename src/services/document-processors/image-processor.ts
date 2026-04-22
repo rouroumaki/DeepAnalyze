@@ -114,7 +114,10 @@ export class ImageProcessor implements DocumentProcessor {
       const router = new ModelRouter();
       await router.initialize();
 
-      const vlmModel = router.getDefaultModel("vlm");
+      // Use strict lookup: only use a model if VLM role is explicitly configured.
+      // getDefaultModel("vlm") falls back to main model which may not support vision,
+      // causing hangs or errors.
+      const vlmModel = router.getDefaultModelStrict("vlm");
 
       if (vlmModel) {
         const result = await router.chat(
@@ -133,7 +136,7 @@ export class ImageProcessor implements DocumentProcessor {
               ],
             },
           ],
-          { model: vlmModel },
+          { model: vlmModel, signal: AbortSignal.timeout(60_000) },
         );
         description = result.content;
       } else {
@@ -144,12 +147,21 @@ export class ImageProcessor implements DocumentProcessor {
     }
 
     // ---- OCR via Docling (best-effort, non-blocking) ----
+    // NOTE: We call DoclingProcessor.parse() directly (not parseDocumentFile)
+    // to avoid infinite recursion — parseDocumentFile routes "image" back to
+    // ImageProcessor.  If Docling is unavailable, the processor returns
+    // success=false and we silently skip OCR.
     let ocrText = "";
     try {
-      const { parseDocumentFile } = await import(
-        "../../server/routes/knowledge.js"
-      );
-      ocrText = await parseDocumentFile(filePath, "image");
+      const { DoclingProcessor } = await import("./docling-processor.js");
+      const docling = new DoclingProcessor();
+      const result = await Promise.race([
+        docling.parse(filePath),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+      ]);
+      if (result && result.success && result.text) {
+        ocrText = result.text;
+      }
     } catch {
       ocrText = "";
     }

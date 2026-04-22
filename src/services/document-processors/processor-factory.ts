@@ -1,7 +1,7 @@
 import type { DocumentProcessor, ParsedContent } from "./types.js";
 import { TextProcessor } from "./text-processor.js";
 import { DoclingProcessor } from "./docling-processor.js";
-import { ExcelProcessor } from "./excel-processor.js";
+import { NativeExcelProcessor } from "./native-excel-processor.js";
 import { ImageProcessor } from "./image-processor.js";
 import { AudioProcessor } from "./audio-processor.js";
 import { VideoProcessor } from "./video-processor.js";
@@ -12,19 +12,18 @@ export class ProcessorFactory {
 
   private constructor() {
     this.processors = [
-      // Specialized processors first (higher priority)
-      // ExcelProcessor handles xlsx/xls before DoclingProcessor
-      new ExcelProcessor(),
-      // ImageProcessor handles image types before DoclingProcessor
-      new ImageProcessor(),
-      // AudioProcessor handles audio types (no Docling overlap)
-      new AudioProcessor(),
-      // VideoProcessor handles video types (no Docling overlap)
+      // Priority 1: Native Excel — handles xlsx/xls natively to avoid
+      // Docling issues with large spreadsheets (timeouts, memory)
+      new NativeExcelProcessor(),
+      // Priority 2: Video (not supported by Docling)
       new VideoProcessor(),
-      // TextProcessor handles plain text (cheapest)
-      new TextProcessor(),
-      // DoclingProcessor is the fallback for anything else it supports
+      // Priority 3: Docling handles remaining supported formats (PDF, DOCX, etc.)
       new DoclingProcessor(),
+      // Fallback chain for other modalities
+      new ImageProcessor(),
+      new AudioProcessor(),
+      // Text formats not handled by Docling (json, xml, rtf, epub, etc.)
+      new TextProcessor(),
     ];
   }
 
@@ -37,8 +36,8 @@ export class ProcessorFactory {
 
   getProcessor(fileType: string): DocumentProcessor {
     const processor = this.processors.find(p => p.canHandle(fileType));
-    // Default to DoclingProcessor (last in list) for unknown types
-    return processor ?? this.processors[this.processors.length - 1];
+    // Default to DoclingProcessor for unknown types
+    return processor ?? this.processors.find(p => p instanceof DoclingProcessor) ?? this.processors[0];
   }
 
   async parse(filePath: string, fileType: string): Promise<ParsedContent> {

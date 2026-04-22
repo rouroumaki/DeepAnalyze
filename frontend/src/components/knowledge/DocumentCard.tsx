@@ -179,6 +179,10 @@ export function DocumentCard({
   // Loading state for level fetch
   const [levelLoading, setLevelLoading] = useState(false);
   const [levelError, setLevelError] = useState<string | null>(null);
+  // L1 format toggle: "md" (Markdown) or "dt" (DocTags)
+  const [l1Format, setL1Format] = useState<"md" | "dt">("md");
+  // Processor selector: "auto" | "docling" | "native"
+  const [processor, setProcessor] = useState<"auto" | "docling" | "native">("auto");
 
   // Use ref to avoid stale closures in fetch
   const abortRef = useRef<AbortController | null>(null);
@@ -207,8 +211,9 @@ export function DocumentCard({
         abortRef.current = controller;
 
         setLevelLoading(true);
+        const format = key === "L1" ? l1Format : undefined;
         api
-          .expandWiki(kbId, doc.id, key)
+          .expandWiki(kbId, doc.id, key, format)
           .then((result) => {
             if (!controller.signal.aborted) {
               setLevelCache((prev) => ({
@@ -235,7 +240,9 @@ export function DocumentCard({
   // -------------------------------------------------------------------------
 
   const isReady = doc.status === "ready";
-  const hasProcessing = processing != null;
+  // Once the server reports "ready", clear stale processing state (can happen
+  // if the doc_ready WebSocket event was missed during a reconnect).
+  const hasProcessing = processing != null && !isReady;
   const hasError = doc.status === "error" || (processing?.error != null);
   const statusInfo = getStatusDisplay(doc.status, processing);
   const progressPct = processing ? Math.min(100, Math.max(0, processing.progress)) : 0;
@@ -697,6 +704,45 @@ export function DocumentCard({
         >
           {renderLevelButton("L0")}
           {renderLevelButton("L1")}
+
+          {/* L1 Format toggle (MD/DT) */}
+          {expandedKey === "L1" && (
+            <div
+              style={{
+                display: "inline-flex",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-sm)",
+                overflow: "hidden",
+              }}
+            >
+              {(["md", "dt"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => {
+                    setL1Format(fmt);
+                    // Clear cache and refetch with new format
+                    setLevelCache((prev) => { const next = { ...prev }; delete next.L1; return next; });
+                    handleToggleExpand("L1");
+                    setExpandedKey("L1");
+                  }}
+                  style={{
+                    padding: "var(--space-1) var(--space-2)",
+                    border: "none",
+                    backgroundColor: l1Format === fmt ? "var(--interactive-light, rgba(59, 130, 246, 0.12))" : "transparent",
+                    color: l1Format === fmt ? "var(--interactive)" : "var(--text-tertiary)",
+                    fontSize: "var(--text-xs)",
+                    fontWeight: l1Format === fmt ? "var(--font-medium)" : "var(--font-normal)",
+                    cursor: "pointer",
+                    transition: "all var(--transition-fast)",
+                  }}
+                  title={fmt === "md" ? "Markdown 格式" : "DocTags 格式"}
+                >
+                  {fmt.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+
           {renderLevelButton("L2")}
 
           {/* Media toggle button */}
@@ -732,6 +778,29 @@ export function DocumentCard({
               预览
               {expandedKey === "media" && <ChevronDown size={10} style={{ marginLeft: -2 }} />}
             </button>
+          )}
+
+          {/* Processor selector */}
+          {!isMedia && (
+            <select
+              value={processor}
+              onChange={(e) => setProcessor(e.target.value as "auto" | "docling" | "native")}
+              title="处理器选择"
+              style={{
+                padding: "var(--space-1) var(--space-2)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-sm)",
+                backgroundColor: "var(--bg-primary)",
+                color: "var(--text-secondary)",
+                fontSize: "var(--text-xs)",
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              <option value="auto">Auto</option>
+              <option value="docling">Docling</option>
+              <option value="native">Native</option>
+            </select>
           )}
         </div>
       )}

@@ -1,6 +1,13 @@
 version: "3.8"
 
 services:
+  socat-embedding:
+    image: alpine/socat:latest
+    command: TCP-LISTEN:11436,fork,reuseaddr TCP:host.docker.internal:11435
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -20,7 +27,10 @@ services:
       - PG_DATABASE=deepanalyze
       - PG_USER=deepanalyze
       - PG_PASSWORD=deepanalyze_dev
+      - HF_ENDPOINT=https://hf-mirror.com
     depends_on:
+      socat-embedding:
+        condition: service_started
       ollama:
         condition: service_started
       postgres:

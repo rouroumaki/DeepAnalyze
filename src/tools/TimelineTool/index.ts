@@ -302,23 +302,22 @@ export function createTimelineTool(deps: TimelineToolDeps): AgentTool {
   return {
     name: "timeline_build",
     description:
-      "Build a chronological timeline from knowledge base content. " +
-      "Extracts date-referenced events and organizes them chronologically. " +
-      "Returns timeline events with dates and descriptions.",
+      "从知识库内容构建时间线。提取包含日期引用的事件并按时间排序。" +
+      "返回带日期和描述的时间线事件。",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query to find relevant pages for timeline extraction",
+          description: "搜索查询，用于查找与时间线提取相关的页面",
         },
         kbId: {
           type: "string",
-          description: "Knowledge base ID to search within",
+          description: "要搜索的知识库 ID",
         },
         maxEvents: {
           type: "number",
-          description: "Maximum number of timeline events to return (default: 50)",
+          description: "返回时间线事件的最大数量（默认：50）",
         },
       },
       required: ["query", "kbId"],

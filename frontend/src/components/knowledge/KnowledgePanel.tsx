@@ -849,55 +849,51 @@ export function KnowledgePanel() {
             </div>
 
             {/* ============================================================ */}
-            {/* Upload progress indicators                                   */}
+            {/* Upload progress — minimal indicator while uploading           */}
+            {/* After upload completes, documents appear in the list below     */}
+            {/* with per-DocumentCard status tracking via WebSocket            */}
             {/* ============================================================ */}
-            {uploads.map((upload) => (
+            {uploads.filter((u) => u.stage !== "Ready").length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-2)",
+                  padding: "var(--space-2) var(--space-3)",
+                  backgroundColor: "var(--bg-tertiary)",
+                  border: "1px solid var(--border-primary)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: "var(--text-xs)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--interactive)" }} />
+                <span>
+                  正在上传 {uploads.filter((u) => u.stage === "Upload").length} 个文件...
+                </span>
+              </div>
+            )}
+            {/* Show error items that need retry */}
+            {uploads.filter((u) => u.stage === "Error").map((upload) => (
               <div
                 key={upload.docId}
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: "var(--space-3)",
-                  padding: "var(--space-3) var(--space-4)",
-                  backgroundColor: upload.stage === "Error" ? "var(--error-light)" : "var(--bg-tertiary)",
-                  border: upload.stage === "Error" ? "1px solid var(--error)" : "1px solid var(--border-primary)",
-                  borderRadius: "var(--radius-lg)",
+                  gap: "var(--space-2)",
+                  padding: "var(--space-2) var(--space-3)",
+                  backgroundColor: "var(--error-light, rgba(239, 68, 68, 0.06))",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: "var(--text-xs)",
+                  color: "var(--error)",
                 }}
               >
-                {upload.stage === "Error" ? (
-                  <AlertCircle size={14} style={{ color: "var(--error)" }} />
-                ) : upload.stage === "Ready" ? (
-                  <CheckCircle size={14} style={{ color: "var(--success)" }} />
-                ) : (
-                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite", color: "var(--interactive)" }} />
-                )}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontSize: "var(--text-sm)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {upload.filename}
-                  </p>
-                  {upload.stage !== "Ready" && upload.stage !== "Error" && (
-                    <div style={{ marginTop: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                      <div style={{ flex: 1, height: 4, backgroundColor: "var(--border-primary)", borderRadius: 2 }}>
-                        <div style={{ width: `${upload.progress}%`, height: "100%", backgroundColor: "var(--interactive)", borderRadius: 2, transition: "width 0.3s" }} />
-                      </div>
-                      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", flexShrink: 0 }}>
-                        {upload.stage} {upload.progress}%
-                      </span>
-                    </div>
-                  )}
-                  {upload.stage === "Error" && (
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--error)", margin: "var(--space-1) 0 0" }}>
-                      {upload.error ?? "上传失败"}
-                    </p>
-                  )}
-                </div>
-                {upload.stage === "Error" && (
+                <AlertCircle size={14} />
+                <span style={{ flex: 1 }}>{upload.filename}: {upload.error ?? "上传失败"}</span>
+                {!upload.docId.startsWith("temp-") && (
                   <button
-                    onClick={() => {
-                      if (!upload.docId.startsWith("temp-")) {
-                        retryFailed(upload.docId);
-                      }
-                    }}
+                    onClick={() => retryFailed(upload.docId)}
                     style={{
                       padding: "var(--space-1) var(--space-2)",
                       border: "1px solid var(--interactive)",
@@ -907,7 +903,6 @@ export function KnowledgePanel() {
                       backgroundColor: "transparent",
                       fontSize: "var(--text-xs)",
                       fontWeight: "var(--font-medium)",
-                      flexShrink: 0,
                       whiteSpace: "nowrap",
                     }}
                   >

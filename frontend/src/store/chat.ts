@@ -8,6 +8,46 @@ import { api } from "../api/client.js";
 import type { SessionInfo, MessageInfo, AgentTaskInfo, ToolCallInfo } from "../types/index.js";
 import { useWorkflowStore } from "./workflow.js";
 
+// ---------------------------------------------------------------------------
+// Map API messages to MessageInfo, enriching toolCalls from metadata
+// ---------------------------------------------------------------------------
+
+function mapMessages(msgs: any[]): MessageInfo[] {
+  return msgs.map((msg) => {
+    const result: MessageInfo = {
+      id: msg.id,
+      role: msg.role,
+      content: msg.content,
+      createdAt: msg.created_at ?? msg.createdAt ?? "",
+    };
+    // Map tool calls from persisted metadata (backend enriches these)
+    if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
+      result.toolCalls = msg.toolCalls.map((tc: any) => ({
+        id: tc.id,
+        toolName: tc.toolName,
+        input: tc.inputSummary ? { _summary: tc.inputSummary } : {},
+        output: tc.outputSummary,
+        status: tc.status || "completed",
+      }));
+    }
+    // Map report
+    if (msg.report) {
+      result.report = msg.report;
+    }
+    // Map pushed contents from persisted metadata
+    if (msg.pushedContents && Array.isArray(msg.pushedContents)) {
+      result.pushedContents = msg.pushedContents.map((pc: any) => ({
+        type: pc.type,
+        title: pc.title,
+        data: pc.data,
+        format: pc.format,
+        timestamp: pc.timestamp,
+      }));
+    }
+    return result;
+  });
+}
+
 interface ChatState {
   // Data
   sessions: SessionInfo[];
@@ -26,12 +66,22 @@ interface ChatState {
   streamingContent: string;
   streamingToolCalls: ToolCallInfo[];
 
+  // Agent todo list
+  todos: import("../types/index.js").TodoItem[];
+
+  // ask_user state
+  pendingQuestion: {
+    taskId: string;
+    question: string;
+    options: string[];
+  } | null;
+
   // Actions
   loadSessions: () => Promise<void>;
   createSession: (title?: string) => Promise<string>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, scope?: import("../types/index.js").AnalysisScope) => Promise<void>;
   clearError: () => void;
 
   // Streaming actions (called by WebSocket handlers)
@@ -51,6 +101,14 @@ interface ChatState {
   runAgent: (input: string, agentType?: string) => Promise<void>;
   cancelAgentTask: (taskId: string) => Promise<void>;
   regenerateMessage: (messageId: string) => void;
+
+  // Todo list actions
+  updateTodos: (todos: import("../types/index.js").TodoItem[]) => void;
+  clearTodos: () => void;
+
+  // ask_user actions
+  setPendingQuestion: (q: { taskId: string; question: string; options: string[] } | null) => void;
+  answerQuestion: (taskId: string, answer: string) => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -62,6 +120,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   currentSessionId: savedSession,
   messages: [],
   agentTasks: [],
+  todos: [],
+  pendingQuestion: null,
   isLoading: false,
   isSending: false,
   isStreaming: false,
@@ -89,7 +149,7 @@ export const useChatStore = create<ChatState>((set, get) => {
               api.getMessages(currentSessionId),
               api.getAgentTasks(currentSessionId).catch(() => []),
             ]);
-            set({ messages: msgs, agentTasks: tasks });
+            set({ messages: mapMessages(msgs), agentTasks: tasks });
           } catch {
             // Silently fail — user can click to retry
           }
@@ -133,7 +193,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         api.getMessages(id),
         api.getAgentTasks(id).catch(() => []),
       ]);
-      set({ messages, agentTasks: tasks });
+      set({ messages: mapMessages(messages), agentTasks: tasks });
     } catch (err) {
       set({ error: String(err) });
     }
@@ -225,6 +285,62 @@ export const useChatStore = create<ChatState>((set, get) => {
           onComplete: (_data) => {
             // Agent completed with final output
           },
+          onPushContent: (data) => {
+            // Agent pushed structured content directly to frontend
+            const state = get();
+            const msgId = state.streamingMessageId;
+            if (!msgId) return;
+            const pushedItem = {
+              type: data.type,
+              title: data.title,
+              data: data.data,
+              format: data.format,
+              timestamp: data.timestamp,
+            };
+            set((s) => ({
+              messages: s.messages.map((m) =>
+                m.id === msgId
+                  ? { ...m, pushedContents: [...(m.pushedContents || []), pushedItem] }
+                  : m
+              ),
+            }));
+          },
+          onTodoUpdate: (data) => {
+            // Agent updated todo list
+            if (Array.isArray((data as any).todos)) {
+              try {
+                const lines = (data as any).todos as string;
+                // Parse the todo text format: "⬜ [task-1] Subject — desc (pending)"
+                const todoItems: import("../types/index.js").TodoItem[] = [];
+                const regex = /[⬜🔄✅]\s+\[([^\]]+)\]\s+(.+?)\s*\((pending|in_progress|completed)\)/g;
+                let match;
+                while ((match = regex.exec(lines)) !== null) {
+                  todoItems.push({
+                    id: match[1],
+                    subject: match[2].replace(/\s*—\s*.+$/, '').trim(),
+                    status: match[3] as "pending" | "in_progress" | "completed",
+                  });
+                }
+                if (todoItems.length > 0) {
+                  set({ todos: todoItems });
+                }
+              } catch {
+                // Ignore parse errors
+              }
+            }
+          },
+          onAskUser: (data) => {
+            set({
+              pendingQuestion: {
+                taskId: data.taskId,
+                question: data.question,
+                options: data.options ?? [],
+              },
+            });
+          },
+          onAskUserAnswered: () => {
+            set({ pendingQuestion: null });
+          },
           onError: (data) => {
             set({ error: data.error });
           },
@@ -275,7 +391,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             // If still no content, reload messages from server as last resort
             if (!finalContent) {
               api.getMessages(currentSessionId).then((messages) => {
-                set({ messages });
+                set({ messages: mapMessages(messages) });
               }).catch(() => {});
             }
 
@@ -330,7 +446,7 @@ export const useChatStore = create<ChatState>((set, get) => {
                     messages.filter((m, i) => m.role === "assistant" && i > userMsgIndex)[0]?.content ?? "",
                   );
                 }
-                set({ messages, isSending: false });
+                set({ messages: mapMessages(messages), isSending: false });
                 api.getAgentTasks(currentSessionId).then((tasks) => {
                   set({ agentTasks: tasks });
                 }).catch(() => {});
@@ -397,7 +513,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           const hasAssistantResponse = userMsgIndex >= 0 &&
             messages.some((m, i) => m.role === "assistant" && i > userMsgIndex);
           if (hasAssistantResponse) {
-            set({ messages, isSending: false });
+            set({ messages: mapMessages(messages), isSending: false });
             // Also reload agent tasks
             api.getAgentTasks(currentSessionId).then((tasks) => {
               set({ agentTasks: tasks });
@@ -591,6 +707,59 @@ export const useChatStore = create<ChatState>((set, get) => {
           onToolResult: (data) => {
             get().updateStreamToolResult(data.id, data.output, "completed");
           },
+          onPushContent: (data) => {
+            const state = get();
+            const msgId = state.streamingMessageId;
+            if (!msgId) return;
+            const pushedItem = {
+              type: data.type,
+              title: data.title,
+              data: data.data,
+              format: data.format,
+              timestamp: data.timestamp,
+            };
+            set((s) => ({
+              messages: s.messages.map((m) =>
+                m.id === msgId
+                  ? { ...m, pushedContents: [...(m.pushedContents || []), pushedItem] }
+                  : m
+              ),
+            }));
+          },
+          onTodoUpdate: (data) => {
+            if (Array.isArray((data as any).todos)) {
+              try {
+                const lines = (data as any).todos as string;
+                const todoItems: import("../types/index.js").TodoItem[] = [];
+                const regex = /[⬜🔄✅]\s+\[([^\]]+)\]\s+(.+?)\s*\((pending|in_progress|completed)\)/g;
+                let match;
+                while ((match = regex.exec(lines)) !== null) {
+                  todoItems.push({
+                    id: match[1],
+                    subject: match[2].replace(/\s*—\s*.+$/, '').trim(),
+                    status: match[3] as "pending" | "in_progress" | "completed",
+                  });
+                }
+                if (todoItems.length > 0) {
+                  set({ todos: todoItems });
+                }
+              } catch {
+                // Ignore parse errors
+              }
+            }
+          },
+          onAskUser: (data) => {
+            set({
+              pendingQuestion: {
+                taskId: data.taskId,
+                question: data.question,
+                options: data.options ?? [],
+              },
+            });
+          },
+          onAskUserAnswered: () => {
+            set({ pendingQuestion: null });
+          },
           onError: (data) => {
             set({ error: data.error });
           },
@@ -609,10 +778,34 @@ export const useChatStore = create<ChatState>((set, get) => {
             }));
             state.finishStreaming(finalContent, finalToolCalls);
 
+            // Extract report data if present in the done event
+            const reportPayload = (data as { report?: { id: string; title: string; content: string; sourceCount?: number; reportType?: string } }).report;
+            if (reportPayload) {
+              const msgId = state.streamingMessageId;
+              set((s) => ({
+                messages: s.messages.map((m) =>
+                  m.id === msgId
+                    ? {
+                        ...m,
+                        report: {
+                          id: reportPayload.id,
+                          title: reportPayload.title,
+                          content: reportPayload.content,
+                          summary: reportPayload.content.slice(0, 200),
+                          references: [],
+                          entities: [],
+                          createdAt: new Date().toISOString(),
+                        },
+                      }
+                    : m
+                ),
+              }));
+            }
+
             // If still no content, reload from server
             if (!finalContent) {
               api.getMessages(currentSessionId).then((messages) => {
-                set({ messages });
+                set({ messages: mapMessages(messages) });
               }).catch(() => {});
             }
 
@@ -659,7 +852,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             setTimeout(() => pollForResult(attempts + 1), 1000);
           } else {
             const messages = await api.getMessages(currentSessionId);
-            set({ messages, isSending: false });
+            set({ messages: mapMessages(messages), isSending: false });
           }
         } catch {
           set({ isSending: false });
@@ -698,6 +891,27 @@ export const useChatStore = create<ChatState>((set, get) => {
           t.id === taskId ? { ...t, status: "cancelled" as const } : t,
         ),
       }));
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  updateTodos: (todos: import("../types/index.js").TodoItem[]) => {
+    set({ todos });
+  },
+
+  clearTodos: () => {
+    set({ todos: [] });
+  },
+
+  setPendingQuestion: (q) => {
+    set({ pendingQuestion: q });
+  },
+
+  answerQuestion: async (taskId, answer) => {
+    try {
+      await api.answerAskUser(taskId, answer);
+      set({ pendingQuestion: null });
     } catch (err) {
       set({ error: String(err) });
     }

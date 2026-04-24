@@ -8,6 +8,7 @@ import { api } from "../../api/client";
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { useToast } from "../../hooks/useToast";
 import { Spinner } from "../ui/Spinner";
+import { VirtualizedContent } from "../common/VirtualizedContent";
 import { LevelSwitcher } from "../search/LevelSwitcher";
 import {
   Search,
@@ -155,21 +156,27 @@ export function WikiBrowser({ kbId, onNavigateEntity }: WikiBrowserProps) {
   const renderContent = () => {
     if (expandedLevel === "L0") {
       return (
-        <div
+        <VirtualizedContent
+          content={selectedPage?.content ?? ""}
+          maxHeight={600}
+          markdown
+          markdownHtml={markdownL0}
           style={{
             animation: "fadeIn var(--transition-base) ease-out",
           }}
-          dangerouslySetInnerHTML={{ __html: markdownL0 }}
         />
       );
     }
     if (expandedContent) {
       return (
-        <div
+        <VirtualizedContent
+          content={expandedContent.content}
+          maxHeight={600}
+          markdown
+          markdownHtml={markdownExpanded}
           style={{
             animation: "fadeIn var(--transition-base) ease-out",
           }}
-          dangerouslySetInnerHTML={{ __html: markdownExpanded }}
         />
       );
     }

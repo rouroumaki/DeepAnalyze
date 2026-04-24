@@ -151,6 +151,9 @@ export const PROVIDER_REGISTRY: Record<string, ProviderMetadata> = {
     isLocal: false, recommendedMaxTokens: 16384, contextWindow: 131072,
     features: { chat: true, embeddings: true, tts: false, imageGeneration: false, videoGeneration: false, musicGeneration: false, audioTranscription: false, vision: true },
     models: [
+      chatModel('qwen3.6-plus', 'Qwen 3.6 Plus', 131072, 16384, true, true, true,
+        { min: 0, max: 2, default: 1.0 },
+        { support: 'native', config: { type: 'extra_body', field: 'enable_thinking', values: { enabled: true, disabled: false } } }),
       chatModel('qwen3.5-plus', 'Qwen 3.5 Plus', 131072, 16384, true, false, true,
         { min: 0, max: 2, default: 1.0 },
         { support: 'native', config: { type: 'extra_body', field: 'enable_thinking', values: { enabled: true, disabled: false } } }),
@@ -220,7 +223,7 @@ export const PROVIDER_REGISTRY: Record<string, ProviderMetadata> = {
     defaultModel: 'MiniMax-M2.7',
     apiKeyEnvVar: 'MINIMAX_API_KEY',
     isLocal: false, recommendedMaxTokens: 131072, contextWindow: 1000000,
-    features: { chat: true, embeddings: true, tts: true, imageGeneration: true, videoGeneration: true, musicGeneration: true, audioTranscription: false, vision: false },
+    features: { chat: true, embeddings: true, tts: true, imageGeneration: true, videoGeneration: true, musicGeneration: true, audioTranscription: false, vision: true },
     models: [
       chatModel('MiniMax-M2.7', 'MiniMax M2.7', 1000000, 131072, true, false, true,
         { min: 0, max: 1, default: 1.0 }),

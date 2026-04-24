@@ -253,6 +253,34 @@ const TEMPLATES: TeamTemplate[] = [
       },
     ],
   },
+  {
+    name: "通用并行检索",
+    description: "通用并行检索模板：多个检索 Agent 并行搜索不同角度，汇总后输出结果。适合快速覆盖大量文档。",
+    mode: "parallel",
+    members: [
+      {
+        role: "语义检索员",
+        task: "使用 kb_search 从多个语义角度搜索相关文档，用 expand 阅读关键文档的 L1 层内容。返回所有发现的文档和关键信息摘要。",
+        tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
+        dependsOn: [],
+        sortOrder: 0,
+      },
+      {
+        role: "精确检索员",
+        task: "使用 grep 和 kb_search 精确匹配关键词、编号、人名、数据，定位具体的文档段落。返回所有精确匹配结果及上下文。",
+        tools: ["kb_search", "grep", "glob", "read_file", "think", "finish"],
+        dependsOn: [],
+        sortOrder: 1,
+      },
+      {
+        role: "文档浏览员",
+        task: "使用 wiki_browse 浏览知识库中所有文档的列表和摘要，识别与任务相关的所有文档。用 expand 展开有潜力的文档获取详细信息。返回完整的文档清单和每个文档的核心要点。",
+        tools: ["wiki_browse", "expand", "kb_search", "think", "finish"],
+        dependsOn: [],
+        sortOrder: 2,
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

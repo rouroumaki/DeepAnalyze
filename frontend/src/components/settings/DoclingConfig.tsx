@@ -14,6 +14,7 @@ import {
   Table2,
   Eye,
   RefreshCw,
+  Layers,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -248,6 +249,32 @@ export function DoclingConfig() {
             )}
           </select>
         )}
+      </div>
+
+      {/* Parallelism */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+          <Layers size={16} style={{ color: "var(--interactive)" }} />
+          <h3 style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-semibold)", color: "var(--text-primary)", margin: 0 }}>
+            并行度
+          </h3>
+        </div>
+        <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: "0 0 var(--space-3) 0" }}>
+          同时处理的文档数量，增大可提升吞吐但增加 CPU/GPU 负载
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+          <input
+            type="range"
+            min={1}
+            max={10}
+            value={config.parallelism ?? 5}
+            onChange={(e) => updateConfig({ parallelism: parseInt(e.target.value) })}
+            style={{ flex: 1, accentColor: "var(--interactive)" }}
+          />
+          <span style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-medium)", color: "var(--text-primary)", minWidth: "2ch", textAlign: "center" }}>
+            {config.parallelism ?? 5}
+          </span>
+        </div>
       </div>
 
       {/* Actions */}

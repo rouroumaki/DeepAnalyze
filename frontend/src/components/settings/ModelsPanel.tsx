@@ -9,6 +9,7 @@ import { useToast } from "../../hooks/useToast";
 import { MainModelConfig } from "./MainModelConfig";
 import { SubModelConfig } from "./SubModelConfig";
 import { EmbeddingModelConfig } from "./EmbeddingModelConfig";
+import { VLMModelConfig } from "./VLMModelConfig";
 import { ASRModelConfig } from "./ASRModelConfig";
 import { VideoUnderstandModelConfig } from "./VideoUnderstandModelConfig";
 import { EnhancedModelsConfig } from "./EnhancedModelsConfig";
@@ -18,21 +19,23 @@ import {
   Bot,
   Sparkles,
   Binary,
+  Eye,
   Mic,
   Video,
   Wand,
   FileText,
 } from "lucide-react";
 
-type ModelTabId = "main" | "sub" | "embedding" | "audio_transcribe" | "video_understand" | "enhanced" | "docling";
+type ModelTabId = "main" | "sub" | "embedding" | "vlm" | "audio_transcribe" | "video_understand" | "enhanced" | "docling";
 
 const modelTabs: { id: ModelTabId; label: string; shortLabel: string; icon: React.ReactNode }[] = [
   { id: "main", label: "主模型", shortLabel: "主模型", icon: <Bot size={14} /> },
   { id: "sub", label: "辅助模型", shortLabel: "辅助", icon: <Sparkles size={14} /> },
   { id: "embedding", label: "嵌入模型", shortLabel: "嵌入", icon: <Binary size={14} /> },
+  { id: "vlm", label: "图像理解", shortLabel: "VLM", icon: <Eye size={14} /> },
   { id: "audio_transcribe", label: "ASR 模型", shortLabel: "ASR", icon: <Mic size={14} /> },
   { id: "video_understand", label: "视频理解", shortLabel: "视频", icon: <Video size={14} /> },
-  { id: "enhanced", label: "增强模型", shortLabel: "增强", icon: <Wand size={14} /> },
+  { id: "enhanced", label: "生成模型", shortLabel: "生成", icon: <Wand size={14} /> },
   { id: "docling", label: "文档处理", shortLabel: "文档", icon: <FileText size={14} /> },
 ];
 
@@ -121,6 +124,9 @@ export function ModelsPanel({ providers, settings, registry, onSettingsChanged }
       )}
       {activeTab === "embedding" && (
         <EmbeddingModelConfig providers={providers} defaults={defaults} onSave={handleEmbeddingSave} onTest={handleEmbeddingTest} />
+      )}
+      {activeTab === "vlm" && (
+        <VLMModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />
       )}
       {activeTab === "audio_transcribe" && (
         <ASRModelConfig providers={providers} defaults={defaults} registry={registry} onSetDefault={handleSetDefault} onSaveProvider={handleSaveProvider} />

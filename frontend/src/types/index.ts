@@ -35,6 +35,14 @@ export interface ChatEntity {
   occurrenceCount: number;
 }
 
+export interface PushedContent {
+  type: string;
+  title: string;
+  data: string;
+  format?: string;
+  timestamp: string;
+}
+
 export interface MessageInfo {
   id: string;
   role: "user" | "assistant" | "system";
@@ -43,6 +51,7 @@ export interface MessageInfo {
   toolCalls?: ToolCallInfo[];
   isStreaming?: boolean;
   report?: ChatReportData;
+  pushedContents?: PushedContent[];
 }
 
 export interface ToolCallInfo {
@@ -53,6 +62,15 @@ export interface ToolCallInfo {
   status: "running" | "completed" | "error";
   startedAt?: string;
   completedAt?: string;
+}
+
+// --- Agent Todo Items ---
+
+export interface TodoItem {
+  id: string;
+  subject: string;
+  description?: string;
+  status: "pending" | "in_progress" | "completed";
 }
 
 // --- Agent Tasks ---
@@ -124,14 +142,10 @@ export interface ProviderSettings {
 // --- Enhanced Models ---
 
 export type EnhancedModelType =
-  | "multimodal"
   | "image_gen"
   | "video_gen"
   | "music_gen"
-  | "audio_gen"
-  | "audio_transcribe"
-  | "three_d_gen"
-  | "custom";
+  | "tts";
 
 export interface EnhancedModelEntry {
   id: string;
@@ -554,6 +568,7 @@ export interface DoclingConfig {
   table_mode: "accurate" | "fast";
   use_vlm: boolean;
   vlm_model: string;
+  parallelism?: number;
 }
 
 export interface DoclingModelEntry {

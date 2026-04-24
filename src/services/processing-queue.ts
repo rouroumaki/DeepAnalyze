@@ -20,10 +20,57 @@ export interface ProcessingJob {
   filename: string;
   filePath: string;
   fileType: string;
+  /** Retry tracking */
+  retryCount?: number;
+  maxRetries?: number;
+  lastError?: string;
+  /** Processor override: "auto" | "docling" | "native" | "asr" */
+  processor?: string;
 }
 
-/** Per-job timeout (ms). Individual steps that exceed this are aborted. */
-const JOB_TIMEOUT_MS = 120_000;
+// ---------------------------------------------------------------------------
+// Per-file-type timeout configuration (ms)
+// ---------------------------------------------------------------------------
+
+const FILE_TYPE_TIMEOUTS: Record<string, number> = {
+  // PDF/DOCX/XLSX/audio: 10 minutes
+  pdf: 600_000,
+  docx: 600_000,
+  doc: 600_000,
+  xlsx: 600_000,
+  xls: 600_000,
+  mp3: 600_000,
+  wav: 600_000,
+  flac: 600_000,
+  m4a: 600_000,
+  aac: 600_000,
+  ogg: 600_000,
+  // PPTX/MP4: 15 minutes (complex layouts / video extraction)
+  pptx: 900_000,
+  ppt: 900_000,
+  mp4: 900_000,
+  avi: 900_000,
+  mov: 900_000,
+  mkv: 900_000,
+  webm: 900_000,
+};
+
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
+
+/** Maximum retry attempts */
+const MAX_RETRIES = 3;
+/** Exponential backoff delays in ms (5s, 10s, 20s) */
+const RETRY_DELAYS = [5_000, 10_000, 20_000];
+
+function getTimeoutForFileType(fileType: string): number {
+  // Allow env var override
+  const envOverride = process.env.JOB_TIMEOUT_MS;
+  if (envOverride) {
+    const parsed = parseInt(envOverride, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return FILE_TYPE_TIMEOUTS[fileType] ?? DEFAULT_TIMEOUT_MS;
+}
 
 // ---------------------------------------------------------------------------
 // ProcessingQueue
@@ -34,7 +81,7 @@ export class ProcessingQueue {
   private active: Map<string, AbortController> = new Map();
   private concurrency: number;
 
-  constructor(concurrency: number = 2) {
+  constructor(concurrency: number = 5) {
     this.concurrency = concurrency;
   }
 
@@ -141,15 +188,16 @@ export class ProcessingQueue {
     abortController: AbortController,
   ): Promise<void> {
     const { kbId, docId, filename, filePath, fileType } = job;
+    const timeoutMs = getTimeoutForFileType(fileType);
 
-    console.log(`[ProcessingQueue] Starting processing: ${filename} (${docId})`);
+    console.log(`[ProcessingQueue] Starting processing: ${filename} (${docId}), timeout=${timeoutMs / 1000}s`);
 
     // Set up per-job timeout to prevent large files from blocking the queue
     let timedOut = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
       abortController.abort();
-    }, JOB_TIMEOUT_MS);
+    }, timeoutMs);
 
     try {
       // === Step 1: Parsing ===
@@ -193,17 +241,10 @@ export class ProcessingQueue {
       // Check if this was an abort (cancellation or timeout)
       if (abortController.signal.aborted) {
         const msg = timedOut
-          ? `处理超时（超过 ${JOB_TIMEOUT_MS / 1000} 秒）。文件可能过大或格式复杂。`
+          ? `处理超时（超过 ${timeoutMs / 1000} 秒）。文件可能过大或格式复杂。`
           : "Cancelled by user";
         console.log(`[ProcessingQueue] Job ${timedOut ? "timed out" : "cancelled"}: ${filename} (${docId})`);
-        await this.updateDbStatus(docId, "error", null, 0, msg);
-        this.broadcast(kbId, "kb", {
-          type: "doc_error",
-          kbId,
-          docId,
-          filename,
-          error: msg,
-        });
+        await this.handleJobError(job, msg);
         return;
       }
 
@@ -213,13 +254,61 @@ export class ProcessingQueue {
         `[ProcessingQueue] Error processing ${filename} (${docId}): ${message}`,
       );
 
-      await this.updateDbStatus(docId, "error", null, 0, message);
+      await this.handleJobError(job, message);
+    }
+  }
+
+  /**
+   * Handle a job error: retry if attempts remain, otherwise mark as failed.
+   */
+  private async handleJobError(job: ProcessingJob, errorMsg: string): Promise<void> {
+    const { kbId, docId, filename } = job;
+    const retryCount = job.retryCount ?? 0;
+    const maxRetries = job.maxRetries ?? MAX_RETRIES;
+
+    if (retryCount < maxRetries) {
+      // Schedule retry with exponential backoff
+      const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
+      const nextRetry = retryCount + 1;
+      console.log(
+        `[ProcessingQueue] Retrying ${filename} (${docId}) in ${delay / 1000}s (attempt ${nextRetry}/${maxRetries})`,
+      );
+
+      // Update DB status to show retrying
+      await this.updateDbStatus(docId, "parsing", "retrying", 0);
+      this.broadcast(kbId, "kb", {
+        type: "doc_processing_step",
+        kbId,
+        docId,
+        filename,
+        status: "retrying",
+        step: "retrying",
+        progress: 0,
+        retryAttempt: nextRetry,
+        maxRetries,
+      });
+
+      // Schedule retry after delay
+      setTimeout(() => {
+        const retryJob: ProcessingJob = {
+          ...job,
+          retryCount: nextRetry,
+          lastError: errorMsg,
+        };
+        this.enqueue(retryJob);
+      }, delay);
+    } else {
+      // Max retries exceeded — mark as error
+      const finalMsg = retryCount > 0
+        ? `处理失败（已重试 ${maxRetries} 次）: ${errorMsg}`
+        : errorMsg;
+      await this.updateDbStatus(docId, "error", null, 0, finalMsg);
       this.broadcast(kbId, "kb", {
         type: "doc_error",
         kbId,
         docId,
         filename,
-        error: message,
+        error: finalMsg,
       });
     }
   }
@@ -268,16 +357,33 @@ export class ProcessingQueue {
   /**
    * Parse a document using the ProcessorFactory.
    * Routes to the correct processor based on file type.
+   * Supports fallback when primary processor fails.
    * Returns full ParsedContent including raw/doctags when available.
    */
   private async parseDocument(
     job: ProcessingJob,
     abortController: AbortController,
   ): Promise<ParsedContent> {
-    const { filePath, fileType, filename } = job;
+    const { filePath, fileType, filename, processor } = job;
 
     const factory = ProcessorFactory.getInstance();
-    const result = await factory.parse(filePath, fileType);
+
+    // If processor override is specified, use it directly
+    if (processor && processor !== "auto") {
+      const result = await factory.parseWithChannel(filePath, fileType, processor);
+      if (!result.success) {
+        throw new Error(result.error ?? `Parse failed for ${filename} (via ${processor})`);
+      }
+      console.log(
+        `[ProcessingQueue] Parsed ${filename}: ${result.text.length} chars (via ${processor})` +
+          (result.raw ? `, raw JSON available` : "") +
+          (result.doctags ? `, doctags available` : ""),
+      );
+      return result;
+    }
+
+    // Auto mode: try primary processor, then fallback
+    const result = await factory.parseWithFallback(filePath, fileType);
 
     if (!result.success) {
       throw new Error(result.error ?? `Parse failed for ${filename}`);

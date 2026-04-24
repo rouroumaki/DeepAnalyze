@@ -572,11 +572,11 @@ export function SettingsPanel() {
                     <div>
                       <label style={labelStyle}>最大轮次</label>
                       <select value={agentSettings.maxTurns} onChange={(e) => setAgentSettings({ ...agentSettings, maxTurns: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
-                        <option value={50}>50 轮</option>
+                        <option value={-1}>无限制（默认）</option>
                         <option value={100}>100 轮</option>
-                        <option value={200}>200 轮</option>
                         <option value={500}>500 轮</option>
-                        <option value={-1}>无限制</option>
+                        <option value={1000}>1000 轮</option>
+                        <option value={9999}>9999 轮</option>
                       </select>
                     </div>
                     <div>

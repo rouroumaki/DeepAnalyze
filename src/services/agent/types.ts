@@ -246,9 +246,9 @@ export interface AgentSettings {
   autoDreamSessionThreshold: number;
   /** Maximum fraction of context window usable for loaded history. Default: 0.5 */
   contextLoadRatio: number;
-  /** Maximum tokens per individual tool result in context. Default: 4000 */
+  /** Maximum tokens per individual tool result in context. Default: 8000 */
   toolResultMaxTokens: number;
-  /** Number of recent tool results to keep at full size. Default: 5 */
+  /** Number of recent tool results to keep at full size. Default: 10 */
   toolResultKeepRecent: number;
   /** SM-compact minimum tokens of recent context to keep. Default: 10000 */
   smCompactMinTokens: number;
@@ -266,8 +266,8 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   autoDreamIntervalHours: 24,
   autoDreamSessionThreshold: 5,
   contextLoadRatio: 0.5,
-  toolResultMaxTokens: 4_000,
-  toolResultKeepRecent: 5,
+  toolResultMaxTokens: 8_000,
+  toolResultKeepRecent: 10,
   smCompactMinTokens: 10_000,
   smCompactMaxTokens: 40_000,
 };

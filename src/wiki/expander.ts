@@ -30,6 +30,8 @@ export interface ExpandResult {
   childPages?: ExpandResult[];
   /** Estimated token count. */
   tokenCount: number;
+  /** Content source for L2: "raw_json" (Docling output) or "fulltext" (fallback). */
+  source?: "raw_json" | "fulltext";
 }
 
 /** Result of expanding to the raw layer for a specific anchor. */
@@ -131,6 +133,15 @@ export class Expander {
   ): Promise<ExpandResult> {
     const repos = await getRepos();
 
+    // For L2: prefer raw Docling JSON over markdown fulltext
+    if (targetLevel === "L2") {
+      const rawResult = await this.expandRawJson(docId);
+      if (rawResult) {
+        return { ...rawResult, source: "raw_json" as const };
+      }
+      // Fall through to fulltext page if raw JSON not available
+    }
+
     // Resolve page type with fallback for legacy "structure" pages at L1
     let targetPageType: string | null;
     if (targetLevel === "L1") {
@@ -187,6 +198,7 @@ export class Expander {
       title: page.title,
       childPages,
       tokenCount: page.token_count,
+      ...(targetLevel === "L2" ? { source: "fulltext" as const } : {}),
     };
   }
 
@@ -530,16 +542,20 @@ export class Expander {
     const repos = await getRepos();
     const preferred = format === "md" ? "structure_md" : "structure_dt";
     const page = await repos.wikiPage.getByDocAndType(docId, preferred);
-    if (page) return preferred;
+    if (page && page.content) return preferred;
 
     // Fallback: try the legacy "structure" type
     const legacy = await repos.wikiPage.getByDocAndType(docId, "structure");
-    if (legacy) return "structure";
+    if (legacy && legacy.content) return "structure";
 
     // Fallback: try the other format
     const other = format === "md" ? "structure_dt" : "structure_md";
     const otherPage = await repos.wikiPage.getByDocAndType(docId, other);
-    if (otherPage) return other;
+    if (otherPage && otherPage.content) return other;
+
+    // Final fallback: try "overview" type
+    const overview = await repos.wikiPage.getByDocAndType(docId, "overview");
+    if (overview && overview.content) return "overview";
 
     return null;
   }
@@ -561,6 +577,40 @@ export class Expander {
         return null;
       default:
         return null;
+    }
+  }
+
+  /**
+   * Try to expand the raw Docling JSON for a document's L2 layer.
+   * Returns null if the raw JSON file doesn't exist on disk.
+   */
+  private async expandRawJson(docId: string): Promise<ExpandResult | null> {
+    const repos = await getRepos();
+    const doc = await repos.document.getById(docId);
+    if (!doc) return null;
+
+    // Try to find the KB that contains this document
+    const kbId = doc.kb_id;
+    const rawPath = join(this.dataDir, "wiki", kbId, "documents", docId, "raw", "docling.json");
+
+    try {
+      const rawContent = readFileSync(rawPath, "utf-8");
+      // Validate it's JSON
+      JSON.parse(rawContent);
+
+      // Get the fulltext page for metadata (pageId, title)
+      const fulltextPage = await repos.wikiPage.getByDocAndType(docId, "fulltext");
+
+      return {
+        pageId: fulltextPage?.id ?? `raw-${docId}`,
+        docId,
+        level: "L2",
+        content: rawContent,
+        title: fulltextPage?.title ?? `Raw JSON: ${doc.filename}`,
+        tokenCount: Math.ceil(rawContent.length / 4),
+      };
+    } catch {
+      return null;
     }
   }
 }

@@ -57,6 +57,14 @@ export class PgWikiPageRepo implements WikiPageRepo {
     return rows.map((r: any) => this.mapRow(r));
   }
 
+  async getManyByDocAndTypePrefix(docId: string, pageTypePrefix: string): Promise<WikiPage[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM wiki_pages WHERE doc_id = $1 AND page_type LIKE $2 ORDER BY created_at',
+      [docId, `${pageTypePrefix}%`],
+    );
+    return rows.map((r: any) => this.mapRow(r));
+  }
+
   async getByKbAndType(kbId: string, pageType?: string): Promise<WikiPage[]> {
     if (pageType) {
       const { rows } = await this.pool.query(
@@ -68,6 +76,14 @@ export class PgWikiPageRepo implements WikiPageRepo {
     const { rows } = await this.pool.query(
       'SELECT * FROM wiki_pages WHERE kb_id = $1',
       [kbId],
+    );
+    return rows.map((r: any) => this.mapRow(r));
+  }
+
+  async getAllByType(pageType: string, limit: number = 100, offset: number = 0): Promise<WikiPage[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM wiki_pages WHERE page_type = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [pageType, limit, offset],
     );
     return rows.map((r: any) => this.mapRow(r));
   }

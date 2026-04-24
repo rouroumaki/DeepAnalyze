@@ -15,7 +15,7 @@ import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
 import { DEFAULT_AGENT_SETTINGS } from "../../services/agent/types.js";
 import { ContextManager } from "../../services/agent/context-manager.js";
-import { getPluginManager } from "../../services/agent/agent-system.js";
+import { getPluginManager, getToolRegistry } from "../../services/agent/agent-system.js";
 import { getRepos } from "../../store/repos/index.js";
 
 // ---------------------------------------------------------------------------
@@ -212,6 +212,27 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
     c.header("Connection", "keep-alive");
     c.header("X-Accel-Buffering", "no");
 
+    // Set up execution context for ask_user tool before streaming starts
+    const toolRegistry = await getToolRegistry();
+    let pendingTaskId = "";
+
+    toolRegistry.setExecutionContext({
+      askUserCallback: async (question: string, options?: string[]) => {
+        // Send ask_user SSE event to frontend
+        const eventData = { question, options: options ?? [], taskId: pendingTaskId };
+        // We write directly to the SSE stream via a closure that captures `s`
+        // but the stream hasn't started yet. Instead we use a deferred approach:
+        // store the event to be emitted from the onEvent callback.
+        // Actually, we can use the orchestrator's waitForUserAnswer which returns a Promise.
+        // The route handler's onEvent will emit the SSE event when the tool_call comes in.
+        // For now, emit directly via a stored sendEvent reference.
+        if (toolRegistry.getExecutionContext()._sendSse) {
+          (toolRegistry.getExecutionContext()._sendSse as (ev: string, d: unknown) => void)("ask_user", eventData);
+        }
+        return orchestrator.waitForUserAnswer(pendingTaskId);
+      },
+    });
+
     return stream(c, async (s) => {
       // Helper to send SSE events
       const sendEvent = (event: string, data: unknown) => {
@@ -222,6 +243,10 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
         s.write(": keepalive\n\n");
       }, 15_000);
+
+      // Store sendEvent in execution context so ask_user callback can emit SSE
+      const ctx = toolRegistry.getExecutionContext();
+      ctx._sendSse = sendEvent;
 
       // Collect tool calls for the final message
       const toolCalls: Array<{
@@ -236,10 +261,14 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
       let taskId = "";
       let reportData: { id: string; title: string; content: string; sourceCount?: number; reportType?: string } | null = null;
 
+      // Collect push_content items for persistence
+      const pushedContents: Array<{ type: string; title: string; data: string; format?: string; timestamp?: string }> = [];
+
       const onEvent = (event: AgentEvent) => {
         switch (event.type) {
           case "start":
             taskId = event.taskId;
+            pendingTaskId = event.taskId;
             sendEvent("start", { taskId: event.taskId, agentType: event.agentType });
             break;
 
@@ -297,6 +326,47 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
                 };
               }
             }
+
+            // Forward push_content results directly to frontend
+            if (event.toolName === "push_content" && typeof event.result === "object" && event.result !== null) {
+              const r = event.result as Record<string, unknown>;
+              if (r.pushed && !r.error) {
+                const pcItem = {
+                  type: String(r.type || ""),
+                  title: String(r.title || ""),
+                  data: String(r.data || ""),
+                  format: r.format ? String(r.format) : undefined,
+                  timestamp: r.timestamp ? String(r.timestamp) : undefined,
+                };
+                sendEvent("push_content", pcItem);
+                pushedContents.push(pcItem);
+              }
+            }
+
+            // Forward agent_todo results to frontend for TodoPanel
+            if (event.toolName === "agent_todo" && typeof event.result === "object" && event.result !== null) {
+              const r = event.result as Record<string, unknown>;
+              sendEvent("todo_update", r);
+            }
+
+            // Forward ask_user tool results to frontend so it can clear the question UI
+            if (event.toolName === "ask_user" && typeof event.result === "object" && event.result !== null) {
+              const r = event.result as Record<string, unknown>;
+              sendEvent("ask_user_answered", { taskId: event.taskId, answer: r.answer });
+            }
+
+            // Forward workflow_run events to frontend for SubAgentPanel
+            if (event.toolName === "workflow_run" && typeof event.result === "object" && event.result !== null) {
+              const r = event.result as Record<string, unknown>;
+              if (r.status === "completed" && r.results) {
+                sendEvent("workflow_complete", {
+                  status: r.status,
+                  goal: r.goal,
+                  totalAgents: (r.results as unknown[]).length,
+                  results: r.results,
+                });
+              }
+            }
             break;
           }
 
@@ -352,10 +422,42 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         // and returns a result with error output, so we check the output text)
         const agentFailed = result.output?.startsWith("Agent failed:") ?? false;
 
-        // Save assistant response
-        const savedContent = fullContent || result.output;
+        // Build the content to save: prefer pushed content (the actual report),
+        // fall back to streaming text, then agent output
+        let savedContent = fullContent || result.output || "";
+
+        // If push_content was used, append those items as the substantive output
+        if (pushedContents.length > 0) {
+          // For markdown push_content, use it as the primary content
+          const markdownItems = pushedContents.filter(pc => pc.type === "markdown");
+          if (markdownItems.length > 0) {
+            // Use markdown push_content as the main content body
+            savedContent = markdownItems.map(pc => pc.data).join("\n\n---\n\n");
+          }
+        }
+
         if (savedContent) {
-          await repos.message.create(body.sessionId, "assistant", savedContent);
+          const metadata: Record<string, unknown> = {};
+          if (reportData) {
+            metadata.reportId = reportData.id;
+          }
+          // Persist push_content items so frontend can reconstruct them for history
+          if (pushedContents.length > 0) {
+            metadata.pushedContents = pushedContents;
+          }
+          // Persist tool call summaries (truncated to avoid large metadata)
+          if (toolCalls.length > 0) {
+            metadata.toolCalls = toolCalls.map((tc) => ({
+              id: tc.id,
+              toolName: tc.toolName,
+              status: tc.status,
+              inputSummary: JSON.stringify(tc.input).slice(0, 200),
+              outputSummary: (tc.output || "").slice(0, 200),
+            }));
+          }
+          await repos.message.create(body.sessionId, "assistant", savedContent,
+            Object.keys(metadata).length > 0 ? metadata : undefined
+          );
         }
 
         // Send done event with final metadata
@@ -551,6 +653,25 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
     }
 
     return c.json({ taskId, status: "cancelled" });
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /message/:taskId - Send user reply to a pending ask_user question
+  // -----------------------------------------------------------------------
+  router.post("/message/:taskId", async (c) => {
+    const taskId = c.req.param("taskId");
+    const body = await c.req.json<{ answer?: string }>().catch(() => ({} as { answer?: string }));
+
+    if (!body.answer) {
+      return c.json({ error: "answer is required" }, 400);
+    }
+
+    const resolved = orchestrator.resolveUserAnswer(taskId, body.answer);
+    if (!resolved) {
+      return c.json({ error: "No pending question for this task" }, 404);
+    }
+
+    return c.json({ taskId, status: "answered" });
   });
 
   return router;

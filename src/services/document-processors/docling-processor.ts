@@ -1,22 +1,42 @@
 import { resolve } from "node:path";
 import type { DocumentProcessor, ParsedContent } from "./types.js";
 import { getRepos } from "../../store/repos/index.js";
+import { sanitizeDoctags } from "./doctags-sanitizer.js";
 
 // ---------------------------------------------------------------------------
-// Docling availability cache
+// Shared singleton Docling subprocess manager
 // ---------------------------------------------------------------------------
 
-let doclingAvailable: boolean | null = null;
+/** Module-level shared manager — persists across parse() calls */
+let _sharedMgr: import("../../subprocess/manager.js").SubprocessManager | null = null;
+let _sharedMgrStarting = false;
+let _doclingAvailable: boolean | null = null;
 
-/**
- * Check whether the Docling Python service can be started.
- * Result is cached after the first successful check (positive or negative).
- * Failed checks due to timeouts or transient errors are NOT cached,
- * allowing retries on subsequent parse attempts.
- */
-async function checkDoclingAvailable(): Promise<boolean> {
-  if (doclingAvailable !== null) return doclingAvailable;
+async function getSharedManager(): Promise<import("../../subprocess/manager.js").SubprocessManager | null> {
+  // If we already have a running manager, check it's still alive
+  if (_sharedMgr) {
+    if (_sharedMgr.isRunning("docling")) {
+      return _sharedMgr;
+    }
+    // Process died — discard and recreate
+    console.warn("[DoclingProcessor] Shared process died, will restart");
+    try { await _sharedMgr.stop("docling"); } catch { /* ignore */ }
+    _sharedMgr = null;
+    _doclingAvailable = null;
+  }
 
+  // Prevent concurrent initialization
+  if (_sharedMgrStarting) {
+    // Wait for the other initialization to complete
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      if (_sharedMgr && _sharedMgr.isRunning("docling")) return _sharedMgr;
+      if (!_sharedMgrStarting) break;
+    }
+    return null;
+  }
+
+  _sharedMgrStarting = true;
   try {
     const { SubprocessManager } = await import("../../subprocess/manager.js");
     const { startDocling } = await import("../../subprocess/docling-client.js");
@@ -27,27 +47,28 @@ async function checkDoclingAvailable(): Promise<boolean> {
     const mgr = new SubprocessManager();
     await startDocling(projectRoot, mgr);
 
-    // Wait for the process to either stabilize or crash.
-    // Use 5s to accommodate slower environments (model downloads, cold starts).
-    await new Promise((r) => setTimeout(r, 5000));
+    // Wait for the process to stabilize
+    await new Promise((r) => setTimeout(r, 3000));
 
-    // If the process already exited, docling is not available
-    const running = mgr.isRunning("docling");
-    if (running) {
-      await mgr.stop("docling");
-      doclingAvailable = true;
-    } else {
-      // Do NOT cache negative results — allow retry on next parse call
-      console.warn("[DoclingProcessor] Docling process exited during availability check, will retry next time");
+    if (mgr.isRunning("docling")) {
+      _sharedMgr = mgr;
+      _doclingAvailable = true;
+      console.log("[DoclingProcessor] Shared Docling process started");
+      return _sharedMgr;
     }
 
-    return running;
+    // Process exited during startup
+    console.warn("[DoclingProcessor] Docling process exited during startup");
+    _doclingAvailable = false;
+    return null;
   } catch (err) {
     console.warn(
-      `[DoclingProcessor] Docling not available: ${err instanceof Error ? err.message : String(err)}`,
+      `[DoclingProcessor] Failed to start shared process: ${err instanceof Error ? err.message : String(err)}`,
     );
-    // Do NOT cache failures — transient issues should be retried
-    return false;
+    _doclingAvailable = false;
+    return null;
+  } finally {
+    _sharedMgrStarting = false;
   }
 }
 
@@ -78,8 +99,8 @@ export class DoclingProcessor implements DocumentProcessor {
   }
 
   async parse(filePath: string): Promise<ParsedContent> {
-    const available = await checkDoclingAvailable();
-    if (!available) {
+    const mgr = await getSharedManager();
+    if (!mgr) {
       return {
         text: "",
         metadata: { sourceType: "docling" },
@@ -89,11 +110,9 @@ export class DoclingProcessor implements DocumentProcessor {
       };
     }
 
-    const { SubprocessManager } = await import("../../subprocess/manager.js");
-    const { startDocling, parseWithDocling } = await import("../../subprocess/docling-client.js");
+    const { parseWithDocling } = await import("../../subprocess/docling-client.js");
 
     const dataDir = process.env.DATA_DIR ?? "data";
-    const projectRoot = resolve(dataDir, "..");
 
     // Read docling config from settings
     const repos = await getRepos();
@@ -121,13 +140,10 @@ export class DoclingProcessor implements DocumentProcessor {
       artifacts_path: artifactsPath,
     };
 
-    // Resolve to absolute path — the docling subprocess CWD is docling-service/,
-    // so relative paths like "data/original/..." would not resolve correctly.
+    // Resolve to absolute path
     const absFilePath = resolve(filePath);
 
-    const mgr = new SubprocessManager();
     try {
-      await startDocling(projectRoot, mgr);
       const result = await parseWithDocling(mgr, absFilePath, {
         ocr: true,
         extract_tables: true,
@@ -135,16 +151,28 @@ export class DoclingProcessor implements DocumentProcessor {
         model_config: modelConfig,
       });
 
+      // Sanitize doctags — detect and clear garbled Unicode output
+      const { doctags: sanitizedDoctags, wasGarbled, fallbackUsed } =
+        sanitizeDoctags(result.doctags ?? "", result.content || "");
+
       return {
         text: result.content,
-        metadata: { sourceType: "docling" },
+        metadata: {
+          sourceType: "docling",
+          doctagsGarbled: wasGarbled,
+          doctagsFallbackUsed: fallbackUsed,
+        },
         success: true,
         raw: result.raw,
-        doctags: result.doctags,
+        doctags: sanitizedDoctags,
         markdown: result.content || "",
         modality: "document",
       };
     } catch (err) {
+      // If the shared process died, mark it for restart on next call
+      if (!mgr.isRunning("docling")) {
+        _doclingAvailable = null;
+      }
       return {
         text: "",
         metadata: { sourceType: "docling" },
@@ -152,8 +180,6 @@ export class DoclingProcessor implements DocumentProcessor {
         error: `Docling 解析失败: ${err instanceof Error ? err.message : String(err)}`,
         modality: "document",
       };
-    } finally {
-      try { await mgr.stop("docling"); } catch { /* ignore */ }
     }
   }
 }

@@ -41,6 +41,7 @@ export function AudioPlayer({ src, duration, speakers, turns }: AudioPlayerProps
   const transcriptRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [activeTurnIndex, setActiveTurnIndex] = useState(-1);
+  const [loadError, setLoadError] = useState(false);
 
   const handleTimeUpdate = useCallback(() => {
     const t = audioRef.current?.currentTime ?? 0;
@@ -64,14 +65,28 @@ export function AudioPlayer({ src, duration, speakers, turns }: AudioPlayerProps
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
       {/* Audio element */}
+      {loadError ? (
+        <div style={{
+          padding: "var(--space-3)",
+          backgroundColor: "rgba(239, 68, 68, 0.06)",
+          border: "1px solid rgba(239, 68, 68, 0.2)",
+          borderRadius: "var(--radius-md)",
+          color: "var(--error)",
+          fontSize: "var(--text-sm)",
+        }}>
+          音频文件加载失败。请确认文件已正确上传。
+        </div>
+      ) : (
       <audio
         ref={audioRef}
         src={src}
         controls
         preload="metadata"
         onTimeUpdate={handleTimeUpdate}
+        onError={() => setLoadError(true)}
         style={{ width: "100%", height: 40 }}
       />
+      )}
 
       {/* Duration info */}
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--text-xs)", color: "var(--text-tertiary)" }}>

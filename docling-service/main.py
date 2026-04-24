@@ -6,6 +6,8 @@ Communicates over stdin/stdout using JSON-line protocol.
 Each line read from stdin is a JSON request; each line written to stdout is a
 JSON response.
 
+Supports concurrent parsing via thread pool executor.
+
 Request format:
     {"id": "<string>", "file_path": "<string>", "options": {"ocr": false, "extract_tables": true}}
 
@@ -19,8 +21,17 @@ import asyncio
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
-from parser import parse_document
+from parser import parse_document_sync
+
+
+# Maximum concurrent parsing tasks
+MAX_CONCURRENT_PARSES = 5
+
+# Thread pool for CPU-intensive document parsing
+_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PARSES)
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSES)
 
 
 async def handle_request(raw: str) -> str:
@@ -28,7 +39,6 @@ async def handle_request(raw: str) -> str:
     try:
         request = json.loads(raw)
     except json.JSONDecodeError as exc:
-        # We cannot correlate an ID if the JSON is invalid.
         return json.dumps({"id": None, "status": "error", "error": f"Invalid JSON: {exc}"})
 
     request_id = request.get("id")
@@ -39,7 +49,11 @@ async def handle_request(raw: str) -> str:
         return json.dumps({"id": request_id, "status": "error", "error": "Missing file_path"})
 
     try:
-        data = await parse_document(file_path, options)
+        async with _semaphore:
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                _executor, parse_document_sync, file_path, options
+            )
         return json.dumps({"id": request_id, "status": "ok", "data": data})
     except Exception as exc:
         tb = traceback.format_exc()

@@ -433,7 +433,7 @@ export class Retriever {
   /**
    * Extract a short snippet from text around the query match.
    */
-  private extractSnippet(text: string, query: string, maxLen: number = 200): string {
+  private extractSnippet(text: string, query: string, maxLen: number = 500): string {
     if (!text) return "";
     if (!query) return text.substring(0, maxLen);
 
@@ -445,9 +445,9 @@ export class Retriever {
       return text.substring(0, maxLen);
     }
 
-    // Extract context around the match
-    const start = Math.max(0, idx - 50);
-    const end = Math.min(text.length, idx + query.length + 100);
+    // Extract context around the match (wider window for better context)
+    const start = Math.max(0, idx - 100);
+    const end = Math.min(text.length, idx + query.length + 300);
     let snippet = text.substring(start, end);
 
     if (start > 0) snippet = "..." + snippet;

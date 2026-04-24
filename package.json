@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "test:watch": "vitest",
     "services:up": "docker compose -f docker-compose.dev.yml up -d",
     "services:down": "docker compose -f docker-compose.dev.yml down",
@@ -68,6 +70,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/bun": "^1.2.0",
     "@types/chokidar": "^1.7.5",
     "@types/diff": "^7.0.2",

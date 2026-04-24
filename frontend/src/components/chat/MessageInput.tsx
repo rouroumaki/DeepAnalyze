@@ -4,8 +4,9 @@ import { useFileUpload } from "../../hooks/useFileUpload";
 import { FilePreview } from "../ui/FilePreview";
 import { api } from "../../api/client";
 import { Send, Square, Paperclip, Loader2 } from "lucide-react";
+import type { AnalysisScope } from "../../types/index";
 
-export function MessageInput() {
+export function MessageInput({ scope }: { scope?: AnalysisScope }) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isSending = useChatStore((s) => s.isSending);
@@ -59,9 +60,9 @@ export function MessageInput() {
     }
 
     // Send via HTTP API
-    sendMessage(content);
+    sendMessage(content, scope);
     textareaRef.current?.focus();
-  }, [canSend, text, sendMessage, hasPending, uploads, removeUpload, currentSessionId]);
+  }, [canSend, text, sendMessage, hasPending, uploads, removeUpload, currentSessionId, scope]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

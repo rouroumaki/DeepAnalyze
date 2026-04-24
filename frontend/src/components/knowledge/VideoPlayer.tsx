@@ -56,6 +56,7 @@ export function VideoPlayer({ src, duration, resolution, scenes, transcript, fra
   const [currentTime, setCurrentTime] = useState(0);
   const [activeScene, setActiveScene] = useState<VideoScene | null>(null);
   const [activeTurns, setActiveTurns] = useState<typeof transcript.turns>([]);
+  const [loadError, setLoadError] = useState(false);
 
   const handleTimeUpdate = useCallback(() => {
     const t = videoRef.current?.currentTime ?? 0;
@@ -78,14 +79,31 @@ export function VideoPlayer({ src, duration, resolution, scenes, transcript, fra
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
       {/* Video player */}
       <div style={{ position: "relative" }}>
+        {loadError ? (
+          <div style={{
+            width: "100%",
+            height: 200,
+            borderRadius: "var(--radius-md)",
+            backgroundColor: "#000",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--error)",
+            fontSize: "var(--text-sm)",
+          }}>
+            视频文件加载失败。请确认文件已正确上传。
+          </div>
+        ) : (
         <video
           ref={videoRef}
           src={src}
           controls
           preload="metadata"
           onTimeUpdate={handleTimeUpdate}
+          onError={() => setLoadError(true)}
           style={{ width: "100%", maxHeight: 360, borderRadius: "var(--radius-md)", backgroundColor: "#000" }}
         />
+        )}
       </div>
 
       {/* Info row */}

@@ -481,7 +481,9 @@ export interface WikiPageRepo {
   getById(id: string): Promise<WikiPage | undefined>;
   getByDocAndType(docId: string, pageType: string): Promise<WikiPage | undefined>;
   getManyByDocAndType(docId: string, pageType: string): Promise<WikiPage[]>;
+  getManyByDocAndTypePrefix(docId: string, pageTypePrefix: string): Promise<WikiPage[]>;
   getByKbAndType(kbId: string, pageType?: string): Promise<WikiPage[]>;
+  getAllByType(pageType: string, limit?: number, offset?: number): Promise<WikiPage[]>;
   findByTitle(kbId: string, title: string, pageType: string): Promise<WikiPage | undefined>;
   updateMetadata(id: string, metadata: Record<string, unknown>): Promise<void>;
   updateContent(id: string, content: string, contentHash: string, tokenCount: number): Promise<void>;
@@ -672,6 +674,7 @@ export interface DoclingConfig {
   table_mode: "accurate" | "fast";
   use_vlm: boolean;
   vlm_model: string;
+  parallelism?: number;
 }
 
 export const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
@@ -681,6 +684,7 @@ export const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
   table_mode: "accurate",
   use_vlm: false,
   vlm_model: "",
+  parallelism: 5,
 };
 
 export interface ProviderConfig {

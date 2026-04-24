@@ -63,7 +63,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     name: "kb_search",
     description:
       "使用语义和关键词匹配搜索知识库。返回带摘录的排序结果。" +
-      "结合向量相似度、BM25 全文搜索和链接遍历，实现全面检索。",
+      "结合向量相似度、BM25 全文搜索和链接遍历，实现全面检索。" +
+      "默认排除已有报告（page_type=report），只返回原始文档内容，确保分析基于一手资料。",
     inputSchema: {
       type: "object",
       properties: {
@@ -102,6 +103,12 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     async execute(input: Record<string, unknown>) {
       const query = input.query as string;
       const kbIds = (input.kbIds as string[]) || [];
+      // Default to excluding report pages — agent should analyze source documents, not prior reports
+      const pageTypes = (input.pageTypes as string[]) || undefined;
+      const excludeReports = input.excludeReports !== false; // default true
+      const effectivePageTypes = pageTypes ?? (excludeReports
+        ? ["abstract", "overview", "fulltext", "structure_md", "structure_dt", "entity", "concept"]
+        : undefined);
 
       if (kbIds.length === 0) {
         // When no KB IDs are specified, search across all knowledge bases.
@@ -122,7 +129,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           kbIds: allKbIds,
           topK: (input.topK as number) || 10,
           linkedFrom: input.linkedFrom as string | undefined,
-          pageTypes: input.pageTypes as string[] | undefined,
+          pageTypes: effectivePageTypes,
           minScore: input.minScore as number | undefined,
         });
       }
@@ -131,7 +138,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         kbIds,
         topK: (input.topK as number) || 10,
         linkedFrom: input.linkedFrom as string | undefined,
-        pageTypes: input.pageTypes as string[] | undefined,
+        pageTypes: effectivePageTypes,
         minScore: input.minScore as number | undefined,
       });
     },
@@ -144,9 +151,11 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "wiki_browse",
     description:
-      "浏览 Wiki 页面并跟踪相关文档之间的链接。" +
-      "可通过 ID 查看特定页面、列出知识库中的页面，" +
-      "或按类型浏览页面。",
+      "浏览知识库中的文档和 Wiki 页面。" +
+      "提供 listDocuments=true 列出所有文档及其摘要，" +
+      "提供 pageId 查看特定页面，" +
+      "提供 kbId 列出页面列表。" +
+      "建议先使用 listDocuments 了解知识库中有哪些文档，再针对性地展开阅读。",
     inputSchema: {
       type: "object",
       properties: {
@@ -164,13 +173,105 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           description:
             "列出知识库页面时按类型过滤（abstract, overview, fulltext, structure_md, structure_dt, entity, concept, report）。",
         },
+        listDocuments: {
+          type: "boolean",
+          description:
+            "设为 true 时，列出知识库中所有文档（去重），每个文档附带其 L0 摘要页的摘要内容和页面ID。适用于全面了解知识库内容。",
+        },
       },
     },
     async execute(input: Record<string, unknown>) {
+      const repos = await getRepos();
+
+      // Mode: List distinct documents with L0 abstracts
+      if (input.listDocuments && input.kbId) {
+        const kbId = input.kbId as string;
+
+        // Get all documents in the KB
+        const docs = await repos.document.getByKbId(kbId);
+
+        // Get all abstract (L0) pages for quick summary
+        const abstractPages = await repos.wikiPage.getByKbAndType(kbId, "abstract");
+
+        // Build a map: docId -> abstract page
+        const abstractMap = new Map<string, { pageId: string; content: string }>();
+        for (const p of abstractPages) {
+          if (!abstractMap.has(p.doc_id)) {
+            abstractMap.set(p.doc_id, {
+              pageId: p.id,
+              content: (p.content || "").slice(0, 300),
+            });
+          }
+        }
+
+        // Auto-categorize documents by directory and file type
+        const categories = new Map<string, { type: string; count: number; docIds: string[]; sampleFiles: string[] }>();
+
+        // Generic file type labels by extension
+        const fileTypeLabel = (ext: string): string => {
+          const e = ext.toLowerCase();
+          if (["pdf"].includes(e)) return "PDF";
+          if (["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"].includes(e)) return "Image";
+          if (["mp3", "wav", "ogg", "flac", "m4a", "aac"].includes(e)) return "Audio";
+          if (["mp4", "avi", "mkv", "mov", "wmv", "webm"].includes(e)) return "Video";
+          if (["xlsx", "xls", "csv", "tsv"].includes(e)) return "Spreadsheet";
+          if (["doc", "docx"].includes(e)) return "Word";
+          if (["ppt", "pptx"].includes(e)) return "Presentation";
+          if (["txt", "md", "rtf"].includes(e)) return "Text";
+          if (["json", "xml", "yaml", "yml"].includes(e)) return "Data";
+          if (["zip", "tar", "gz", "rar", "7z"].includes(e)) return "Archive";
+          return e.toUpperCase() || "Unknown";
+        };
+
+        // Classify by parent directory first (most useful grouping), then by file type
+        const classifyDoc = (d: { id: string; filename: string; file_type: string }) => {
+          const parts = d.filename.replace(/\\/g, "/").split("/");
+          // If file is inside a subdirectory (depth >= 2), use the immediate parent folder name
+          if (parts.length >= 3) {
+            return parts[parts.length - 2]; // parent folder name
+          }
+          // Otherwise group by file type
+          return fileTypeLabel(d.file_type);
+        };
+
+        for (const d of docs) {
+          const cat = classifyDoc(d);
+          if (!categories.has(cat)) {
+            categories.set(cat, { type: cat, count: 0, docIds: [], sampleFiles: [] });
+          }
+          const entry = categories.get(cat)!;
+          entry.count++;
+          entry.docIds.push(d.id);
+          if (entry.sampleFiles.length < 3) {
+            entry.sampleFiles.push(d.filename.split("/").pop() || d.filename);
+          }
+        }
+
+        return {
+          kbId,
+          totalDocuments: docs.length,
+          categories: Array.from(categories.values()).map((c) => ({
+            type: c.type,
+            count: c.count,
+            sampleFiles: c.sampleFiles,
+          })),
+          documents: docs.map((d) => {
+            const abstract = abstractMap.get(d.id);
+            return {
+              docId: d.id,
+              filename: d.filename,
+              fileType: d.file_type,
+              status: d.status,
+              abstractPageId: abstract?.pageId,
+              abstract: abstract?.content,
+            };
+          }),
+        };
+      }
+
       // Mode 1: View a specific page by ID
       if (input.pageId) {
         const pageId = input.pageId as string;
-        const repos = await getRepos();
         const page = await repos.wikiPage.getById(pageId);
 
         if (!page) {
@@ -194,7 +295,6 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       if (input.kbId) {
         const kbId = input.kbId as string;
         const pageType = input.pageType as string | undefined;
-        const repos = await getRepos();
         const pages = await repos.wikiPage.getByKbAndType(kbId, pageType);
 
         return {
@@ -212,7 +312,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
 
       return {
         error:
-          'Provide either "pageId" to view a specific page, or "kbId" to list pages in a knowledge base.',
+          'Provide "kbId" to list pages, "pageId" to view a page, or "kbId" + "listDocuments=true" to list all documents.',
       };
     },
   });
@@ -227,8 +327,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "从摘要逐层深入到详细内容。逐层展开 " +
       "L0（摘要）-> L1（结构概述）-> L2（全文）。" +
       "用于获取文档或页面的更多细节。" +
-      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。" +
-      "可通过多次调用反复深入阅读，直到充分理解所需信息。",
+      "支持批量展开：提供 docIds 数组可同时展开多个文档的 L1 结构概述。" +
+      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。",
     inputSchema: {
       type: "object",
       properties: {
@@ -240,6 +340,11 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           type: "string",
           description: "要展开到特定层级的文档 ID。",
         },
+        docIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "批量展开多个文档 ID。返回每个文档的 L1 结构概述。适用于快速了解一批文档的内容。",
+        },
         targetLevel: {
           type: "string",
           enum: ["L0", "L1", "L2"],
@@ -250,7 +355,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           type: "string",
           enum: ["md", "dt"],
           description:
-            "L1 格式选择：'md' 为 Markdown（人类可读），'dt' 为 DocTags（LLM 友好）。默认：'dt'。",
+            "L1 格式选择：'md' 为 Markdown（人类可读），'dt' 为 DocTags（LLM 友好）。默认：'md'。",
         },
         heading: {
           type: "string",
@@ -266,6 +371,33 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     },
     async execute(input: Record<string, unknown>) {
       try {
+        // Mode 0: Batch expand multiple documents to L1
+        if (Array.isArray(input.docIds) && input.docIds.length > 0) {
+          const docIds = input.docIds as string[];
+          const format = (input.format as "md" | "dt" | undefined) || "md";
+          const results = await Promise.all(
+            docIds.map(async (docId) => {
+              try {
+                const result = await deps.expander.expandToLevel(docId, "L1", format);
+                return {
+                  docId: result.docId,
+                  title: result.title,
+                  level: result.level,
+                  content: result.content,
+                  tokenCount: result.tokenCount,
+                };
+              } catch {
+                return { docId, error: "Expand failed" };
+              }
+            }),
+          );
+          return {
+            mode: "batch",
+            totalDocs: docIds.length,
+            results,
+          };
+        }
+
         // Mode 1: Expand a specific section by heading
         if (input.heading && input.pageId) {
           const result = await deps.expander.expandSection(
@@ -387,6 +519,375 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   // -----------------------------------------------------------------------
 
   registry.register(createTimelineTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
+
+  // -----------------------------------------------------------------------
+  // push_content tool — push structured data directly to user frontend
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "push_content",
+    description:
+      "推送结构化内容到用户界面。适用于推送大型分析报告、表格数据、代码片段等。" +
+      "type=markdown 的内容会以富文本格式直接展示在聊天界面中，适合推送最终分析结果。" +
+      "type=table 适合推送 CSV/TSV 表格数据。" +
+      "比通过模型逐字输出效率高得多。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["table", "text", "code", "file", "markdown"],
+          description: "内容类型：table=表格数据, text=纯文本, code=代码块, file=文件引用, markdown=Markdown格式",
+        },
+        title: {
+          type: "string",
+          description: "内容标题（显示在卡片顶部）",
+        },
+        data: {
+          type: "string",
+          description: "内容数据。table类型传入CSV或JSON字符串；code类型传入代码；text/markdown类型传入文本内容",
+        },
+        format: {
+          type: "string",
+          description: "格式提示（如 csv, json, python, sql, markdown 等）",
+        },
+      },
+      required: ["type", "title", "data"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const contentType = input.type as string;
+      const title = input.title as string;
+      const data = input.data as string;
+      const format = input.format as string | undefined;
+
+      if (!data) {
+        return { error: "No data provided" };
+      }
+
+      return {
+        pushed: true,
+        type: contentType,
+        title,
+        data: data.slice(0, 500_000), // Cap at 500KB to avoid oversized payloads
+        format,
+        timestamp: new Date().toISOString(),
+      };
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // agent_todo tool — task list management
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "agent_todo",
+    description:
+      "任务清单管理工具。用于规划和跟踪复杂任务的执行进度。" +
+      "当任务需要多个步骤或多轮搜索时，先用此工具制定清单，再逐一完成并更新状态。" +
+      "这确保你不会遗漏任何步骤，用户也能实时看到你的工作进度。" +
+      "建议：涉及 3 个以上子步骤的任务都应先创建清单。" +
+      "action=create 批量创建（提供 todos 数组）或单条创建（提供 subject）。" +
+      "action=update 更新任务状态（提供 id 和 status：pending/in_progress/completed）。" +
+      "action=list 查看当前清单。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["create", "update", "list"],
+          description: "操作类型：create 创建任务，update 更新状态，list 查看清单",
+        },
+        id: {
+          type: "string",
+          description: "任务 ID（update 操作必填）",
+        },
+        subject: {
+          type: "string",
+          description: "任务标题（create 操作必填）",
+        },
+        description: {
+          type: "string",
+          description: "任务详情（create 操作可选）",
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed"],
+          description: "任务状态（update 操作必填）",
+        },
+        todos: {
+          type: "array",
+          description: "批量设置完整任务清单（可选，覆盖式更新）",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              subject: { type: "string" },
+              description: { type: "string" },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+            },
+            required: ["id", "subject", "status"],
+          },
+        },
+      },
+      required: ["action"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const action = input.action as string;
+
+      // Bulk set mode: Agent provides the full todo list
+      if (action === "create" && Array.isArray(input.todos)) {
+        const todos = input.todos as Array<{
+          id: string;
+          subject: string;
+          description?: string;
+          status: string;
+        }>;
+
+        const lines = todos.map((t) => {
+          const icon = t.status === "completed" ? "✅" : t.status === "in_progress" ? "🔄" : "⬜";
+          return `${icon} [${t.id}] ${t.subject}${t.description ? ` — ${t.description}` : ""} (${t.status})`;
+        });
+
+        return {
+          action: "bulk_set",
+          total: todos.length,
+          completed: todos.filter((t) => t.status === "completed").length,
+          inProgress: todos.filter((t) => t.status === "in_progress").length,
+          pending: todos.filter((t) => t.status === "pending").length,
+          todos: lines.join("\n"),
+        };
+      }
+
+      // Single create
+      if (action === "create") {
+        const id = input.id as string || `task-${Date.now()}`;
+        const subject = input.subject as string;
+        const description = input.description as string | undefined;
+        const status = "pending";
+
+        if (!subject) {
+          return { error: "subject is required for create action" };
+        }
+
+        const icon = "⬜";
+        return {
+          action: "created",
+          todo: `${icon} [${id}] ${subject}${description ? ` — ${description}` : ""} (${status})`,
+        };
+      }
+
+      // Update
+      if (action === "update") {
+        const id = input.id as string;
+        const status = input.status as string;
+
+        if (!id || !status) {
+          return { error: "id and status are required for update action" };
+        }
+
+        const icon = status === "completed" ? "✅" : status === "in_progress" ? "🔄" : "⬜";
+        return {
+          action: "updated",
+          todo: `${icon} [${id}] status → ${status}`,
+        };
+      }
+
+      // List
+      if (action === "list") {
+        return {
+          action: "list",
+          message: "Use the todos in your context to review task progress. Create or update tasks as needed.",
+        };
+      }
+
+      return { error: `Unknown action: ${action}` };
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // doc_grep tool — regex search across wiki page content
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "doc_grep",
+    description:
+      "正则搜索知识库中 wiki 页面的实际内容文本。" +
+      "支持精确匹配人名、日期、编号、金额、特定短语等。" +
+      "返回匹配的页面列表及匹配行上下文。" +
+      "与 kb_search（语义搜索）互补，适用于需要精确字符串匹配的场景。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "正则表达式模式。如：'合同编号.*2024'、'张某|赵某'、'¥\\d+\\.\\d{2}'",
+        },
+        kbIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "搜索的知识库 ID 列表。省略则搜索所有知识库。",
+        },
+        pageTypes: {
+          type: "array",
+          items: { type: "string" },
+          description: "页面类型过滤（abstract, overview, fulltext, structure_md 等）。默认搜索所有非 report 类型。",
+        },
+        maxResults: {
+          type: "number",
+          description: "最大返回结果数（默认 30）",
+        },
+      },
+      required: ["pattern"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const pattern = input.pattern as string;
+      const kbIds = (input.kbIds as string[]) || [];
+      const pageTypes = (input.pageTypes as string[]) || undefined;
+      const maxResults = (input.maxResults as number) || 30;
+
+      if (!pattern) {
+        return { error: "pattern is required" };
+      }
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, "i");
+      } catch {
+        return { error: `Invalid regex pattern: ${pattern}` };
+      }
+
+      const repos = await getRepos();
+
+      // Determine which KBs to search
+      let searchKbIds = kbIds;
+      if (searchKbIds.length === 0) {
+        const allKbs = await repos.knowledgeBase.list();
+        searchKbIds = allKbs.map((kb) => kb.id);
+      }
+
+      // Build page type filter — default exclude report pages
+      const effectivePageTypes = pageTypes ?? [
+        "abstract", "overview", "fulltext",
+        "structure_md", "structure_dt", "entity", "concept",
+      ];
+
+      const allMatches: Array<{
+        pageId: string;
+        docId: string;
+        kbId: string;
+        pageType: string;
+        title: string;
+        matchedLines: string[];
+      }> = [];
+
+      for (const kbId of searchKbIds) {
+        if (allMatches.length >= maxResults) break;
+
+        for (const pt of effectivePageTypes) {
+          if (allMatches.length >= maxResults) break;
+
+          const pages = await repos.wikiPage.getByKbAndType(kbId, pt);
+
+          for (const page of pages) {
+            if (allMatches.length >= maxResults) break;
+
+            const content = page.content || "";
+            const lines = content.split("\n");
+            const matchedLines: string[] = [];
+
+            for (let i = 0; i < lines.length; i++) {
+              if (regex.test(lines[i])) {
+                // Include 1 line of context before and after
+                const start = Math.max(0, i - 1);
+                const end = Math.min(lines.length, i + 2);
+                const contextBlock = lines.slice(start, end).join("\n");
+                matchedLines.push(`L${i + 1}: ${contextBlock}`);
+              }
+            }
+
+            if (matchedLines.length > 0) {
+              allMatches.push({
+                pageId: page.id,
+                docId: page.doc_id,
+                kbId: page.kb_id,
+                pageType: page.page_type,
+                title: page.title,
+                matchedLines: matchedLines.slice(0, 5), // Max 5 matched lines per page
+              });
+            }
+          }
+        }
+      }
+
+      return {
+        pattern,
+        totalMatches: allMatches.length,
+        matches: allMatches,
+      };
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // ask_user tool — agent asks user a question during analysis
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "ask_user",
+    description:
+      "向用户提出问题并等待回答。用于任务范围确认、歧义消除、分析方向选择等场景。" +
+      "例如：" +
+      "1) '找到大量相关文档，需要分析全部还是只分析特定类别？' " +
+      "2) '搜索到多个同名结果，你指的是哪一个？' " +
+      "3) '初步分析已完成，是否需要继续深入某个方向？'" +
+      "调用后会暂停当前任务，等待用户回复后继续。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "要向用户提出的问题",
+        },
+        options: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选的预设选项（最多 4 个），用户可以直接选择",
+        },
+      },
+      required: ["question"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const question = input.question as string;
+      const options = input.options as string[] | undefined;
+
+      if (!question) {
+        return { error: "question is required" };
+      }
+
+      // Access the ask_user callback from the execution context set by the route handler
+      const ctx = registry.getExecutionContext();
+      const askUserFn = ctx.askUserCallback as
+        | ((question: string, options?: string[]) => Promise<string>)
+        | undefined;
+
+      if (!askUserFn) {
+        return {
+          answer: null,
+          error: "ask_user not available in this context (no user connection)",
+          fallback: "Proceed with best judgment",
+        };
+      }
+
+      try {
+        const answer = await askUserFn(question, options);
+        return { answer };
+      } catch (err) {
+        return {
+          answer: null,
+          error: `ask_user failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    },
+  });
 
   // -----------------------------------------------------------------------
   // graph_build tool — DISABLED per design decision
@@ -628,6 +1129,61 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   });
 
   // -----------------------------------------------------------------------
+  // run_sql tool — execute SQL queries against the database
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "run_sql",
+    description:
+      "执行 SQL 查询并返回结果。" +
+      "用于直接查询文档元数据、wiki 页面内容、会话历史等数据库信息。" +
+      "比 listDocuments 等高级工具更灵活精确，支持任意聚合、分组、过滤。" +
+      "仅允许 SELECT 查询（只读）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sql: {
+          type: "string",
+          description: "SQL SELECT 查询语句",
+        },
+        maxRows: {
+          type: "number",
+          description: "最大返回行数（默认：100，最大：500）",
+        },
+      },
+      required: ["sql"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const sql = (input.sql as string).trim();
+      const maxRows = Math.min((input.maxRows as number) || 100, 500);
+
+      // Only allow SELECT queries
+      if (!/^SELECT\s/i.test(sql)) {
+        return { error: "Only SELECT queries are allowed" };
+      }
+      // Block dangerous patterns
+      if (/\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b/i.test(sql)) {
+        return { error: "Only SELECT queries are allowed" };
+      }
+
+      try {
+        const { getPool } = await import("../../store/pg.js");
+        const pool = await getPool();
+        const result = await pool.query(sql);
+        const rows = result.rows.slice(0, maxRows);
+        return {
+          rowCount: result.rows.length,
+          showingRows: Math.min(result.rows.length, maxRows),
+          columns: result.fields?.map((f: { name: string }) => f.name) || [],
+          rows,
+        };
+      } catch (err) {
+        return { error: `SQL error: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
   // web_search tool — search the web
   // -----------------------------------------------------------------------
 
@@ -689,6 +1245,56 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           return results
             .map((r, i) => `[${i + 1}] ${r.title}\n    ${r.link}\n    ${r.snippet}`)
             .join("\n\n");
+        } else if (backend === "minimax") {
+          // MiniMax web search — read API key from DB provider settings
+          const repos = await getRepos();
+          const providerSettings = await repos.settings.getProviderSettings();
+          const minimaxProvider = providerSettings.providers.find(
+            (p: { id: string; enabled: boolean }) =>
+              p.id.startsWith("minimax") && p.enabled,
+          );
+
+          if (!minimaxProvider?.apiKey) {
+            return "Web search (MiniMax) is not configured. Add a MiniMax provider with an API key in settings.";
+          }
+
+          const resp = await fetch("https://api.minimaxi.com/v1/web_search", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${minimaxProvider.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ query: args.query }),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (!resp.ok) {
+            return `Search request failed: HTTP ${resp.status}`;
+          }
+
+          const data = await resp.json() as {
+            data?: {
+              results?: Array<{
+                title: string;
+                url?: string;
+                link?: string;
+                content?: string;
+                snippet?: string;
+              }>;
+            };
+          };
+
+          const rawResults = data.data?.results ?? [];
+          const results = rawResults.slice(0, maxResults);
+          if (results.length === 0) return `No results found for "${args.query}".`;
+
+          return results
+            .map((r, i) => {
+              const link = r.url ?? r.link ?? "";
+              const snippet = r.content ?? r.snippet ?? "";
+              return `[${i + 1}] ${r.title}\n    ${link}\n    ${snippet}`;
+            })
+            .join("\n\n");
         } else {
           // SearXNG (self-hosted)
           const searxngUrl = process.env.SEARXNG_URL ?? "http://localhost:8888";
@@ -721,6 +1327,17 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       }
     },
   });
+
+  // -----------------------------------------------------------------------
+  // Browser tool (Playwright-based)
+  // -----------------------------------------------------------------------
+
+  try {
+    const { createBrowserTool } = await import("./tools/browser-tool.js");
+    registry.register(createBrowserTool());
+  } catch {
+    // Playwright not available
+  }
 
   // -----------------------------------------------------------------------
   // Multimedia generation tools (TTS, image, video, music)

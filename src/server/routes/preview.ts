@@ -44,8 +44,8 @@ export function createPreviewRoutes(): Hono {
           return c.json({ chunk: page, anchors });
         }
 
-        // List all structure pages for this document
-        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        // List all structure pages for this document (matches structure_md and structure_dt)
+        const pages = await repos.wikiPage.getManyByDocAndTypePrefix(docId, "structure");
         const summaries = pages.map((p) => ({
           id: p.id,
           title: p.title,
@@ -132,7 +132,7 @@ export function createPreviewRoutes(): Hono {
     const { docId } = c.req.param();
     const repos = await getRepos();
 
-    const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+    const pages = await repos.wikiPage.getManyByDocAndTypePrefix(docId, "structure");
     const anchors = await repos.anchor.getByDocId(docId);
 
     const map = pages.map((page) => ({

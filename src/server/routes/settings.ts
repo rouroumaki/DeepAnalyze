@@ -571,6 +571,14 @@ export function createSettingsRoutes(): Hono {
     const merged = { ...current, ...body };
     await repos.settings.set("docling_config", JSON.stringify(merged));
 
+    // Update queue concurrency if parallelism changed
+    if (merged.parallelism) {
+      try {
+        const { getProcessingQueue } = await import("../../services/processing-queue.js");
+        getProcessingQueue().setConcurrency(merged.parallelism);
+      } catch { /* queue not yet initialized */ }
+    }
+
     return c.json({ success: true, config: merged });
   });
 

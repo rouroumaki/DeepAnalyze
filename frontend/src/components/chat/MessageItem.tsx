@@ -1,5 +1,6 @@
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { ToolCallCard } from "./ToolCallCard";
+import { PushContentCard } from "./PushContentCard";
 import { TraceabilityLink } from "./TraceabilityLink";
 import { FilePreview } from "../ui/FilePreview";
 import { useToast } from "../../hooks/useToast";
@@ -138,7 +139,7 @@ export function MessageItem({ message }: MessageItemProps) {
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-            {/* Tool calls */}
+            {/* Tool calls (top) */}
             {message.toolCalls && message.toolCalls.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {message.toolCalls.map((tc) => (
@@ -147,7 +148,18 @@ export function MessageItem({ message }: MessageItemProps) {
               </div>
             )}
 
-            {/* Message content — report or normal markdown */}
+            {/* Pushed content / thinking process (middle) */}
+            {/* Skip if content is already the markdown report (same data persisted from push_content) */}
+            {message.pushedContents && message.pushedContents.length > 0 &&
+             !(message.content && message.content.trimStart().startsWith('#')) && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {message.pushedContents.map((pc, idx) => (
+                  <PushContentCard key={idx} item={pc} />
+                ))}
+              </div>
+            )}
+
+            {/* Message content — report or normal markdown (bottom) */}
             {message.report ? (
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
                 {/* Report badge */}

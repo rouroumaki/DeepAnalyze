@@ -61,6 +61,21 @@ export class AudioProcessor implements DocumentProcessor {
       }
     }
 
+    // ---- 2b. Local Whisper fallback -----------------------------------------
+    if (!transcription || transcription.startsWith("[")) {
+      try {
+        const { getWhisperManager, transcribeWithWhisper } = await import("../../subprocess/whisper-client.js");
+        const whisperMgr = await getWhisperManager();
+        if (whisperMgr) {
+          const result = await transcribeWithWhisper(whisperMgr, filePath, { language: null, model_size: "base" });
+          transcription = result.text;
+          detectedLanguage = result.language;
+        }
+      } catch (whisperErr) {
+        console.warn(`[AudioProcessor] Local Whisper ASR failed: ${whisperErr instanceof Error ? whisperErr.message : String(whisperErr)}`);
+      }
+    }
+
     // ---- 3. Fallback: ASR unavailable ---------------------------------------
     if (!transcription && !detectedLanguage) {
       const warning =

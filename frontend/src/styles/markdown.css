@@ -6,6 +6,7 @@
   line-height: var(--leading-relaxed);
   word-wrap: break-word;
   color: var(--text-primary);
+  overflow-x: auto;
 }
 
 .markdown-content h1,
@@ -83,9 +84,12 @@
 
 .markdown-content table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 0.75em 0;
   font-size: var(--text-sm);
+  display: block;
+  overflow-x: auto;
 }
 
 .markdown-content th,
@@ -93,6 +97,8 @@
   border: 1px solid var(--border-primary);
   padding: var(--space-2) var(--space-3);
   text-align: left;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .markdown-content th {

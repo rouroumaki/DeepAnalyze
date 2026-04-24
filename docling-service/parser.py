@@ -19,16 +19,18 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Converter cache (keyed by config hash)
+# Converter cache (keyed by config hash) — thread-safe
 # ---------------------------------------------------------------------------
 
 _converter_cache: dict[str, Any] = {}
+_cache_lock = threading.Lock()
 
 
 def _config_hash(cfg: dict) -> str:
@@ -38,6 +40,8 @@ def _config_hash(cfg: dict) -> str:
 
 def _get_converter(model_config: dict):
     """Build (or retrieve cached) DocumentConverter from a model_config dict.
+
+    Thread-safe: uses _cache_lock to protect the cache.
 
     model_config keys:
       - artifacts_path (str): Local model root directory (data/models/docling)
@@ -50,17 +54,19 @@ def _get_converter(model_config: dict):
       - vlm_model      (str): VLM repo_id e.g. "stepfun-ai/GOT-OCR-2.0-hf"
     """
     cache_key = _config_hash(model_config)
-    if cache_key in _converter_cache:
-        return _converter_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _converter_cache:
+            return _converter_cache[cache_key]
 
+    # Build outside the lock (expensive operation)
     use_vlm = model_config.get("use_vlm", False)
-
     if use_vlm:
         converter = _build_vlm_converter(model_config)
     else:
         converter = _build_standard_converter(model_config)
 
-    _converter_cache[cache_key] = converter
+    with _cache_lock:
+        _converter_cache[cache_key] = converter
     return converter
 
 
@@ -143,7 +149,7 @@ def _build_standard_converter(model_config: dict):
         pipeline_options.ocr_options = RapidOcrOptions(
             lang=ocr_lang,
             backend=ocr_backend,
-            text_score=0.4,
+            text_score=0.5,
         )
     elif ocr_engine == "easyocr":
         from docling.datamodel.pipeline_options import EasyOcrOptions
@@ -222,24 +228,25 @@ def _build_vlm_converter(model_config: dict):
 async def parse_document(file_path: str, options: dict | None = None) -> dict[str, Any]:
     """Parse a document using Docling and return a structured result.
 
+    This is the async version kept for backward compatibility.
+    For thread pool usage, prefer parse_document_sync().
+    """
+    return parse_document_sync(file_path, options)
+
+
+def parse_document_sync(file_path: str, options: dict | None = None) -> dict[str, Any]:
+    """Synchronous document parsing — safe to call from thread pool executor.
+
     Args:
         file_path: Absolute or relative path to the document file.
         options: Optional dictionary with parsing hints.
             - ocr (bool): Whether to enable OCR. Defaults to True.
             - extract_tables (bool): Whether to extract table data. Defaults to True.
             - use_vlm (bool): Use VLM pipeline for highest quality.
-            - model_config (dict): Dynamic model configuration:
-                - layout_model (str): repo_id for layout model
-                - ocr_engine (str): "rapidocr" | "easyocr" | "tesseract"
-                - ocr_backend (str): "torch" | "onnxruntime"
-                - ocr_lang (list[str]): OCR languages
-                - table_mode (str): "accurate" | "fast"
-                - use_vlm (bool): Use VLM pipeline
-                - vlm_model (str): VLM repo_id
-                - artifacts_path (str): Local model root directory
+            - model_config (dict): Dynamic model configuration.
 
     Returns:
-        A dictionary with keys: content, tables, images, metadata.
+        A dictionary with keys: content, tables, images, metadata, raw, doctags.
     """
     if options is None:
         options = {}

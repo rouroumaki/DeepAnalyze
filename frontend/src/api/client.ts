@@ -101,6 +101,11 @@ export const api = {
       onDone?: (data: { taskId: string; status: string; turnsUsed?: number }) => void;
       onAdvisoryLimit?: (data: { taskId: string; turn: number }) => void;
       onCompaction?: (data: { taskId: string; turn: number; method: string; tokensSaved: number }) => void;
+      onPushContent?: (data: { type: string; title: string; data: string; format?: string; timestamp: string }) => void;
+      onTodoUpdate?: (data: Record<string, unknown>) => void;
+      onWorkflowComplete?: (data: { status: string; goal: string; totalAgents: number; results: unknown }) => void;
+      onAskUser?: (data: { question: string; options: string[]; taskId: string }) => void;
+      onAskUserAnswered?: (data: { taskId: string; answer: string }) => void;
     },
     scope?: AnalysisScope,
   ) => {
@@ -178,6 +183,21 @@ export const api = {
                 case "compaction":
                   callbacks?.onCompaction?.(data);
                   break;
+                case "push_content":
+                  callbacks?.onPushContent?.(data);
+                  break;
+                case "todo_update":
+                  callbacks?.onTodoUpdate?.(data);
+                  break;
+                case "workflow_complete":
+                  callbacks?.onWorkflowComplete?.(data);
+                  break;
+                case "ask_user":
+                  callbacks?.onAskUser?.(data);
+                  break;
+                case "ask_user_answered":
+                  callbacks?.onAskUserAnswered?.(data);
+                  break;
               }
             } catch {
               // Ignore parse errors for individual events
@@ -203,6 +223,11 @@ export const api = {
   cancelAgentTask: (taskId: string) =>
     request<{ taskId: string; status: string }>(`/api/agents/cancel/${taskId}`, {
       method: "POST",
+    }),
+  answerAskUser: (taskId: string, answer: string) =>
+    request<{ taskId: string; status: string }>(`/api/agents/message/${taskId}`, {
+      method: "POST",
+      body: JSON.stringify({ answer }),
     }),
 
   // --- Knowledge Base ---
@@ -264,6 +289,25 @@ export const api = {
     return `/api/knowledge/kbs/${kbId}/documents/${docId}/frames/${index}`;
   },
 
+  /** Reprocess a document with a specific processor channel */
+  reprocessDocument: (kbId: string, docId: string, processor?: string) =>
+    request<{ documentId: string; status: string; message: string }>(
+      `/api/knowledge/kbs/${kbId}/process/${docId}?force=true`,
+      {
+        method: "POST",
+        body: JSON.stringify({ processor }),
+      },
+    ),
+
+  /** Get media metadata for a document (audio/video/image) */
+  getMediaMetadata: (kbId: string, docId: string) =>
+    request<{
+      type: "image" | "audio" | "video" | null;
+      image?: { width: number; height: number; description?: string; exif?: Record<string, string> };
+      audio?: { duration: number; speakers: string[]; turns: Array<{ speaker: string; text: string; start?: number; end?: number }> };
+      video?: { duration: number; scenes: Array<{ start: number; end: number; description?: string }>; transcript: { speakers: string[]; turns: Array<{ speaker: string; text: string; start?: number; end?: number }> }; frameCount: number };
+    }>(`/api/knowledge/kbs/${kbId}/documents/${docId}/media-metadata`),
+
   // --- Wiki ---
   searchWiki: (kbId: string, query: string, mode?: string, topK?: number) => {
     const params = new URLSearchParams();
@@ -284,7 +328,7 @@ export const api = {
   browseWiki: (kbId: string, path: string) =>
     request<WikiPage>(`/api/knowledge/${kbId}/wiki/${encodeURIComponent(path)}`),
   expandWiki: (kbId: string, docId: string, level: string, format?: string, section?: string) =>
-    request<{ content: string; level: string; expandable: boolean }>(
+    request<{ content: string; level: string; expandable: boolean; source?: string }>(
       `/api/knowledge/${kbId}/expand`,
       {
         method: "POST",

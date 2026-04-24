@@ -6,11 +6,12 @@
 import { Hono } from "hono";
 import { getRepos } from "../../store/repos/index.js";
 import type { WikiPage, WikiPageCreate } from "../../store/repos/index.js";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync, createReadStream } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { stream } from "hono/streaming";
 import { copyFileSync } from "node:fs";
 import { dirname, basename } from "node:path";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { statSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -792,6 +793,18 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     });
   }
 
+  // Accept optional processor channel from request body or query
+  let processor: string | undefined;
+  try {
+    const body = await c.req.json<{ processor?: string }>().catch(() => ({ processor: undefined as string | undefined }));
+    processor = body.processor;
+  } catch {
+    // No body or invalid JSON
+  }
+  if (!processor) {
+    processor = c.req.query("processor") ?? undefined;
+  }
+
   // Enqueue for asynchronous processing
   const queue = getProcessingQueue();
   queue.enqueue({
@@ -800,6 +813,7 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     filename: doc.filename,
     filePath: doc.file_path,
     fileType: doc.file_type,
+    processor,
   });
 
   return c.json({
@@ -1216,7 +1230,22 @@ knowledgeRoutes.get("/search", async (c) => {
     }
 
     allResults.sort((a, b) => b.score - a.score);
-    const results = allResults.slice(0, topK);
+    const slicedResults = allResults.slice(0, topK);
+
+    // Inject kbName into results
+    const involvedKbIds = [...new Set(slicedResults.map(r => r.kbId))];
+    const kbNames = new Map<string, string>();
+    if (involvedKbIds.length > 0) {
+      for (const kbId of involvedKbIds) {
+        try {
+          const kb = await repos.knowledgeBase.getById(kbId);
+          kbNames.set(kbId, kb?.name ?? kbId);
+        } catch {
+          kbNames.set(kbId, kbId);
+        }
+      }
+    }
+    const results = slicedResults.map(r => ({ ...r, kbName: kbNames.get(r.kbId) ?? r.kbId }));
 
     return c.json({ results, totalFound: results.length, kbIds, fallback: true });
   } catch (err) {
@@ -1562,6 +1591,7 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
         level: result.level,
         expandable: !!result.childPages && result.childPages.length > 0,
         pageId: result.pageId,
+        source: result.source,
       });
     }
 
@@ -1572,6 +1602,7 @@ knowledgeRoutes.post("/:kbId/expand", async (c) => {
         level: result.level,
         expandable: !!result.childPages && result.childPages.length > 0,
         pageId: result.pageId,
+        source: result.source,
       });
     }
 
@@ -1601,11 +1632,12 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/download", async (c) => {
   const originalName = doc.filename;
 
   try {
-    const stream = createReadStream(filePath);
-    return new Response(stream as any, {
+    const buf = readFileSync(filePath);
+    return c.body(buf, {
       headers: {
         "Content-Type": "application/octet-stream",
         "Content-Disposition": `attachment; filename="${encodeURIComponent(originalName)}"`,
+        "Content-Length": String(buf.length),
       },
     });
   } catch {
@@ -1627,12 +1659,30 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const dataDir = process.env.DATA_DIR || "data";
-  const filePath = join(dataDir, "original", kbId, docId, doc.filename);
+  // Use doc.file_path (absolute path stored during upload) for reliability
+  let filePath = doc.file_path;
+
+  // Fallback: if file_path doesn't exist, reconstruct from dataDir
+  try {
+    statSync(filePath);
+  } catch {
+    const dataDir = DEEPANALYZE_CONFIG.dataDir;
+    const docDir = join(dataDir, "original", kbId, docId);
+    try {
+      const entries = readdirSync(docDir);
+      const firstFile = entries.find((e) => !e.startsWith("."));
+      if (firstFile) {
+        console.log(`[Knowledge] Original file at "${filePath}" not found, using "${firstFile}" from ${docDir}`);
+        filePath = join(docDir, firstFile);
+      }
+    } catch {
+      // Directory doesn't exist either
+    }
+  }
 
   try {
     const stat = statSync(filePath);
-    const ext = "." + (doc.filename.split(".").pop() || "").toLowerCase();
+    const ext = "." + (filePath.split(".").pop() || "").toLowerCase();
     const mimeTypes: Record<string, string> = {
       ".mp4": "video/mp4", ".avi": "video/x-msvideo", ".mov": "video/quicktime",
       ".mkv": "video/x-matroska", ".webm": "video/webm", ".flv": "video/x-flv",
@@ -1646,6 +1696,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
     };
     const contentType = mimeTypes[ext] || "application/octet-stream";
 
+    // Hono's stream() does not accept headers/status params — use new Response() instead
     const range = c.req.header("range");
     if (range) {
       const match = /bytes=(\d+)-(\d*)/.exec(range);
@@ -1653,8 +1704,38 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
         const start = parseInt(match[1]);
         const end = match[2] ? parseInt(match[2]) : stat.size - 1;
         const chunkSize = end - start + 1;
-
-        return new Response(createReadStream(filePath, { start, end }) as any, {
+        const { createReadStream } = await import("node:fs");
+        const nodeStream = createReadStream(filePath, { start, end });
+        let closed = false;
+        const readable = new ReadableStream({
+          start(controller) {
+            nodeStream.on("data", (chunk: Buffer) => {
+              if (closed) return;
+              try {
+                controller.enqueue(new Uint8Array(chunk));
+              } catch {
+                // Controller already closed (client disconnected) — stop the stream
+                closed = true;
+                nodeStream.destroy();
+              }
+            });
+            nodeStream.on("end", () => {
+              if (!closed) {
+                try { controller.close(); } catch { /* already closed */ }
+              }
+            });
+            nodeStream.on("error", (err) => {
+              if (!closed) {
+                try { controller.error(err); } catch { /* already closed */ }
+              }
+            });
+          },
+          cancel() {
+            closed = true;
+            nodeStream.destroy();
+          },
+        });
+        return new Response(readable, {
           status: 206,
           headers: {
             "Content-Range": `bytes ${start}-${end}/${stat.size}`,
@@ -1666,7 +1747,39 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
       }
     }
 
-    return new Response(createReadStream(filePath) as any, {
+    // Full file response (no range) — use streaming to avoid loading large files into memory
+    const { createReadStream: createReadStreamFull } = await import("node:fs");
+    const fullStream = createReadStreamFull(filePath);
+    let fullClosed = false;
+    const fullReadable = new ReadableStream({
+      start(controller) {
+        fullStream.on("data", (chunk: Buffer) => {
+          if (fullClosed) return;
+          try {
+            controller.enqueue(new Uint8Array(chunk));
+          } catch {
+            fullClosed = true;
+            fullStream.destroy();
+          }
+        });
+        fullStream.on("end", () => {
+          if (!fullClosed) {
+            try { controller.close(); } catch { /* already closed */ }
+          }
+        });
+        fullStream.on("error", (err) => {
+          if (!fullClosed) {
+            try { controller.error(err); } catch { /* already closed */ }
+          }
+        });
+      },
+      cancel() {
+        fullClosed = true;
+        fullStream.destroy();
+      },
+    });
+    return new Response(fullReadable, {
+      status: 200,
       headers: {
         "Content-Length": String(stat.size),
         "Content-Type": contentType,
@@ -1682,20 +1795,41 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/original", async (c) => {
 // GET /kbs/:kbId/documents/:docId/thumbnail - Serve image thumbnail
 // =====================================================================
 
-// Serve image thumbnail
+// Serve image thumbnail (falls back to original file if no thumbnail generated)
 knowledgeRoutes.get("/kbs/:kbId/documents/:docId/thumbnail", async (c) => {
   const kbId = c.req.param("kbId");
   const docId = c.req.param("docId");
 
-  const dataDir = process.env.DATA_DIR || "data";
+  const dataDir = DEEPANALYZE_CONFIG.dataDir;
   const thumbPath = join(dataDir, "wiki", kbId, "documents", docId, "thumb.webp");
 
   try {
     statSync(thumbPath);
-    return new Response(createReadStream(thumbPath) as any, {
+    const thumbBuf = readFileSync(thumbPath);
+    return c.body(thumbBuf, {
       headers: { "Content-Type": "image/webp" },
     });
   } catch {
+    // No thumbnail — try serving the original file directly
+    try {
+      const repos = await getRepos();
+      const doc = await repos.document.getById(docId);
+      if (doc && doc.file_path) {
+        const origBuf = readFileSync(doc.file_path);
+        const ext = "." + (doc.file_path.split(".").pop() || "").toLowerCase();
+        const mimeMap: Record<string, string> = {
+          ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+          ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+          ".svg": "image/svg+xml",
+        };
+        const contentType = mimeMap[ext] || "application/octet-stream";
+        return c.body(origBuf, {
+          headers: { "Content-Type": contentType, "Content-Length": String(origBuf.length) },
+        });
+      }
+    } catch {
+      // Original file not found either
+    }
     return c.json({ error: "Thumbnail not found" }, 404);
   }
 });
@@ -1710,17 +1844,141 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/frames/:index", async (c) => {
   const docId = c.req.param("docId");
   const frameIndex = c.req.param("index");
 
-  const dataDir = process.env.DATA_DIR || "data";
+  const dataDir = DEEPANALYZE_CONFIG.dataDir;
   const framePath = join(dataDir, "wiki", kbId, "documents", docId, "frames", `frame_${frameIndex}_thumb.jpg`);
 
   try {
     statSync(framePath);
-    return new Response(createReadStream(framePath) as any, {
+    const frameBuf = readFileSync(framePath);
+    return c.body(frameBuf, {
       headers: { "Content-Type": "image/jpeg" },
     });
   } catch {
     return c.json({ error: "Frame not found" }, 404);
   }
+});
+
+// =====================================================================
+// GET /kbs/:kbId/documents/:docId/media-metadata - Media metadata for preview
+// =====================================================================
+
+knowledgeRoutes.get("/kbs/:kbId/documents/:docId/media-metadata", async (c) => {
+  const kbId = c.req.param("kbId");
+  const docId = c.req.param("docId");
+  const repos = await getRepos();
+
+  const doc = await repos.document.getById(docId);
+  if (!doc || doc.kb_id !== kbId) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  // Determine file category
+  const ext = doc.filename.split(".").pop()?.toLowerCase() ?? "";
+  const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]);
+  const VIDEO_EXTS = new Set(["mp4", "avi", "mov", "mkv", "webm", "flv", "wmv"]);
+  const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp", "svg"]);
+
+  const result: Record<string, unknown> = { type: null };
+
+  // Read raw JSON from disk (the canonical raw data source)
+  const dataDir = DEEPANALYZE_CONFIG.dataDir;
+  const rawJsonPath = join(dataDir, "wiki", kbId, "documents", docId, "raw", "docling.json");
+
+  let rawData: Record<string, unknown> | null = null;
+  try {
+    const rawContent = readFileSync(rawJsonPath, "utf-8");
+    rawData = JSON.parse(rawContent) as Record<string, unknown>;
+  } catch {
+    // No raw JSON on disk — try reading from fulltext page
+    try {
+      const rawPage = await repos.wikiPage.getByDocAndType(docId, "fulltext");
+      if (rawPage?.content) {
+        rawData = JSON.parse(rawPage.content) as Record<string, unknown>;
+      }
+    } catch {
+      // Not JSON either
+    }
+  }
+
+  if (IMAGE_EXTS.has(ext)) {
+    result.type = "image";
+    if (rawData) {
+      result.image = {
+        width: rawData.width ?? rawData.imageWidth ?? 0,
+        height: rawData.height ?? rawData.imageHeight ?? 0,
+        description: rawData.description ?? rawData.vlmDescription ?? "",
+        exif: rawData.exif ?? {},
+      };
+    } else {
+      result.image = { width: 0, height: 0 };
+    }
+  } else if (AUDIO_EXTS.has(ext)) {
+    result.type = "audio";
+    if (rawData) {
+      // rawData.speakers can be string[] or {id,label,totalDuration}[] depending on modality
+      const rawSpeakers = rawData.speakers as Array<Record<string, unknown>> ?? [];
+      const speakers = rawSpeakers.map((s) =>
+        typeof s === "string" ? s : (s.label as string ?? s.id as string ?? String(s)),
+      );
+      const turns = (rawData.turns as Array<Record<string, unknown>>) ?? [];
+      result.audio = {
+        duration: rawData.duration ?? 0,
+        speakers,
+        turns: turns.map((t) => ({
+          speaker: (t as Record<string, unknown>).speaker as string ?? "",
+          text: (t as Record<string, unknown>).text as string ?? "",
+          start: ((t as Record<string, unknown>).startTime ?? (t as Record<string, unknown>).start) as number | undefined,
+          end: ((t as Record<string, unknown>).endTime ?? (t as Record<string, unknown>).end) as number | undefined,
+        })),
+      };
+    } else {
+      result.audio = { duration: 0, speakers: [], turns: [] };
+    }
+  } else if (VIDEO_EXTS.has(ext)) {
+    result.type = "video";
+    if (rawData) {
+      const scenes = (rawData.scenes as Array<Record<string, unknown>>) ?? [];
+      const transcript = rawData.transcript as Record<string, unknown> | undefined;
+      // Handle both string[] and {id,label}[] speaker formats
+      const rawSpeakers = (transcript?.speakers ?? rawData.speakers) as Array<Record<string, unknown>> ?? [];
+      const speakers = rawSpeakers.map((s) =>
+        typeof s === "string" ? s : (s.label as string ?? s.id as string ?? String(s)),
+      );
+      const turns = ((transcript?.turns ?? rawData.turns) as Array<Record<string, unknown>>) ?? [];
+
+      // Count available frames
+      const framesDir = join(dataDir, "wiki", kbId, "documents", docId, "frames");
+      let frameCount = 0;
+      try {
+        const { readdirSync } = await import("node:fs");
+        const entries = readdirSync(framesDir);
+        frameCount = entries.filter((e) => e.includes("_thumb.jpg")).length;
+      } catch { /* no frames */ }
+
+      result.video = {
+        duration: rawData.duration ?? 0,
+        scenes: scenes.map((s) => ({
+          start: (s as Record<string, unknown>).startTime ?? (s as Record<string, unknown>).start as number ?? 0,
+          end: (s as Record<string, unknown>).endTime ?? (s as Record<string, unknown>).end as number ?? 0,
+          description: (s as Record<string, unknown>).description as string | undefined,
+        })),
+        transcript: {
+          speakers,
+          turns: turns.map((t) => ({
+            speaker: (t as Record<string, unknown>).speaker as string ?? "",
+            text: (t as Record<string, unknown>).text as string ?? "",
+            start: ((t as Record<string, unknown>).startTime ?? (t as Record<string, unknown>).start) as number | undefined,
+            end: ((t as Record<string, unknown>).endTime ?? (t as Record<string, unknown>).end) as number | undefined,
+          })),
+        },
+        frameCount,
+      };
+    } else {
+      result.video = { duration: 0, scenes: [], transcript: { speakers: [], turns: [] }, frameCount: 0 };
+    }
+  }
+
+  return c.json(result);
 });
 
 // =====================================================================
@@ -1736,7 +1994,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
 
     switch (format) {
       case "raw-json": {
-        const rawPath = join(DEEPANALYZE_CONFIG.dataDir, kbId, "documents", docId, "raw", "docling.json");
+        const rawPath = join(DEEPANALYZE_CONFIG.dataDir, "wiki", kbId, "documents", docId, "raw", "docling.json");
         try {
           const content = readFileSync(rawPath, "utf-8");
           return new Response(content, {
@@ -1751,7 +2009,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
       }
 
       case "doctags": {
-        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure_dt");
         if (pages.length === 0) return c.json({ error: "No structure pages found" }, 404);
         const doctags = pages.map((p) => `# ${p.title}\n\n${p.content}`).join("\n\n---\n\n");
         return new Response(doctags, {
@@ -1763,7 +2021,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
       }
 
       case "markdown": {
-        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure_md");
         if (pages.length === 0) return c.json({ error: "No structure pages found" }, 404);
         const md = pages.map((p) => `## ${p.title}\n\n${p.content}`).join("\n\n");
         return new Response(md, {
@@ -1775,7 +2033,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/export/:format", async (c) => {
       }
 
       case "structure-bundle": {
-        const pages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+        const pages = await repos.wikiPage.getManyByDocAndTypePrefix(docId, "structure");
         const anchors = await repos.anchor.getByDocId(docId);
         const manifest = JSON.stringify({
           docId,

@@ -503,6 +503,21 @@ export class VideoProcessor implements DocumentProcessor {
       }
     }
 
+    // Local Whisper fallback
+    if (!transcription || transcription.startsWith("[")) {
+      try {
+        const { getWhisperManager, transcribeWithWhisper } = await import("../../subprocess/whisper-client.js");
+        const whisperMgr = await getWhisperManager();
+        if (whisperMgr) {
+          const result = await transcribeWithWhisper(whisperMgr, wavPath, { language: null, model_size: "base" });
+          transcription = result.text;
+          detectedLanguage = result.language;
+        }
+      } catch (whisperErr) {
+        console.warn(`[VideoProcessor] Local Whisper ASR failed: ${whisperErr instanceof Error ? whisperErr.message : String(whisperErr)}`);
+      }
+    }
+
     if (!transcription) {
       return {
         duration,

@@ -65,11 +65,52 @@ export interface SystemCapabilities {
   webSearch: boolean;
 }
 
+export interface VisionAnalysisResult {
+  /** Text description/analysis of the image */
+  content: string;
+}
+
 // ---------------------------------------------------------------------------
 // CapabilityDispatcher
 // ---------------------------------------------------------------------------
 
 export class CapabilityDispatcher {
+  /**
+   * Retry wrapper for transient API errors (404, 429, 502-504, timeout, network).
+   */
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    options: { maxRetries?: number; delayMs?: number } = {},
+  ): Promise<T> {
+    const { maxRetries = 2, delayMs = 1000 } = options;
+    const isTransient = (err: unknown): boolean => {
+      if (err instanceof Error) {
+        const msg = err.message;
+        return /HTTP (404|429|502|503|504)/.test(msg) ||
+               /timeout|ECONNREFUSED|ECONNRESET|fetch failed/i.test(msg);
+      }
+      return false;
+    };
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRetries && isTransient(err)) {
+          console.warn(
+            `[CapabilityDispatcher] Retry ${attempt + 1}/${maxRetries} after transient error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+        } else {
+          throw err;
+        }
+      }
+    }
+    throw lastError;
+  }
+
   /**
    * Resolve a provider config for a given role by reading settings.
    */
@@ -175,11 +216,40 @@ export class CapabilityDispatcher {
 
     if (protocol === 'minimax') {
       // MiniMax TTS API: POST /tts/text_to_speech
-      const url = `${endpoint}/tts/text_to_speech`;
+      return this.withRetry(async () => {
+        const url = `${endpoint}/tts/text_to_speech`;
+        const body = {
+          model,
+          text,
+          voice: options?.voice ?? "male-qn-qingse",
+          speed: options?.speed ?? 1.0,
+          response_format: "mp3",
+        };
+
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+
+        if (!resp.ok) {
+          const errorText = await resp.text().catch(() => "unknown error");
+          throw new Error(`TTS API returned HTTP ${resp.status}: ${errorText}`);
+        }
+
+        const audio = await resp.arrayBuffer();
+        const contentType = resp.headers.get("content-type") ?? "audio/mp3";
+        return { audio, contentType };
+      });
+    }
+
+    // OpenAI-compatible: POST /audio/speech
+    return this.withRetry(async () => {
+      const url = `${endpoint}/audio/speech`;
       const body = {
         model,
-        text,
-        voice: options?.voice ?? "male-qn-qingse",
+        input: text,
+        voice: options?.voice ?? "alloy",
         speed: options?.speed ?? 1.0,
         response_format: "mp3",
       };
@@ -198,32 +268,7 @@ export class CapabilityDispatcher {
       const audio = await resp.arrayBuffer();
       const contentType = resp.headers.get("content-type") ?? "audio/mp3";
       return { audio, contentType };
-    }
-
-    // OpenAI-compatible: POST /audio/speech
-    const url = `${endpoint}/audio/speech`;
-    const body = {
-      model,
-      input: text,
-      voice: options?.voice ?? "alloy",
-      speed: options?.speed ?? 1.0,
-      response_format: "mp3",
-    };
-
-    const resp = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
     });
-
-    if (!resp.ok) {
-      const errorText = await resp.text().catch(() => "unknown error");
-      throw new Error(`TTS API returned HTTP ${resp.status}: ${errorText}`);
-    }
-
-    const audio = await resp.arrayBuffer();
-    const contentType = resp.headers.get("content-type") ?? "audio/mp3";
-    return { audio, contentType };
   }
 
   // -----------------------------------------------------------------------
@@ -482,27 +527,133 @@ export class CapabilityDispatcher {
       headers["Authorization"] = `Bearer ${provider.apiKey}`;
     }
 
-    const resp = await fetch(`${endpoint}/audio/transcriptions`, {
-      method: "POST",
-      headers,
-      body: formData,
-    });
+    return this.withRetry(async () => {
+      const resp = await fetch(`${endpoint}/audio/transcriptions`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
 
-    if (!resp.ok) {
-      const errorText = await resp.text().catch(() => "unknown error");
-      throw new Error(`ASR API returned HTTP ${resp.status}: ${errorText}`);
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "unknown error");
+        throw new Error(`ASR API returned HTTP ${resp.status}: ${errorText}`);
+      }
+
+      const data = await resp.json() as {
+        text?: string;
+        language?: string;
+        duration?: number;
+      };
+
+      return {
+        text: data.text ?? "",
+        language: data.language,
+        duration: data.duration,
+      };
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // Vision / Image Understanding (VLM)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Analyze an image using the configured VLM provider.
+   * For MiniMax: uses the /v1/coding_plan/vlm endpoint (Token Plan VLM API).
+   * For OpenAI-compatible: uses /chat/completions with vision-format messages.
+   */
+  async analyzeImage(
+    imageDataUrl: string,
+    prompt: string,
+    options?: {
+      signal?: AbortSignal;
+    },
+  ): Promise<VisionAnalysisResult> {
+    const provider = await this.resolveProvider("vlm");
+    if (!provider) throw new Error("No VLM provider configured. Set the 'vlm' role default.");
+
+    const protocol = this.detectProtocol(provider);
+    const endpoint = provider.endpoint.replace(/\/+$/, "");
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (provider.apiKey) {
+      headers["Authorization"] = `Bearer ${provider.apiKey}`;
     }
 
-    const data = await resp.json() as {
-      text?: string;
-      language?: string;
-      duration?: number;
-    };
+    if (protocol === 'minimax') {
+      // MiniMax Token Plan VLM: POST /v1/coding_plan/vlm
+      return this.withRetry(async () => {
+        const url = `${endpoint}/coding_plan/vlm`;
+        const body = {
+          prompt,
+          image_url: imageDataUrl,
+        };
 
-    return {
-      text: data.text ?? "",
-      language: data.language,
-      duration: data.duration,
-    };
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: options?.signal,
+        });
+
+        if (!resp.ok) {
+          const errorText = await resp.text().catch(() => "unknown error");
+          throw new Error(`MiniMax VLM API returned HTTP ${resp.status}: ${errorText}`);
+        }
+
+        const data = await resp.json() as {
+          content?: string;
+          base_resp?: { status_code: number; status_msg: string };
+        };
+
+        if (data.base_resp?.status_code !== undefined && data.base_resp.status_code !== 0) {
+          throw new Error(`MiniMax VLM API error: ${data.base_resp.status_msg} (code ${data.base_resp.status_code})`);
+        }
+
+        return { content: data.content ?? "" };
+      });
+    }
+
+    // OpenAI-compatible vision: POST /chat/completions with image_url content
+    return this.withRetry(async () => {
+      const url = `${endpoint}/chat/completions`;
+      const body = {
+        model: provider.model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageDataUrl } },
+            ],
+          },
+        ],
+        max_tokens: 4096,
+      };
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: options?.signal,
+      });
+
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "unknown error");
+        throw new Error(`VLM API returned HTTP ${resp.status}: ${errorText}`);
+      }
+
+      const data = await resp.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+
+      if (!data.choices?.[0]?.message?.content) {
+        throw new Error("VLM API returned no content");
+      }
+
+      return { content: data.choices[0].message.content };
+    });
   }
 }

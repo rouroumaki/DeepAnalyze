@@ -71,11 +71,23 @@ const finishTool: AgentTool = {
  */
 export class ToolRegistry {
   private tools = new Map<string, AgentTool>();
+  /** Shared context that tools can read at execution time. Set per-request by the route handler. */
+  private _executionContext: Record<string, unknown> = {};
 
   constructor() {
     // Pre-register the built-in tools
     this.tools.set(thinkTool.name, thinkTool);
     this.tools.set(finishTool.name, finishTool);
+  }
+
+  /** Set execution context for the current request (taskId, sendEvent, etc.) */
+  setExecutionContext(ctx: Record<string, unknown>): void {
+    this._executionContext = ctx;
+  }
+
+  /** Get the current execution context */
+  getExecutionContext(): Record<string, unknown> {
+    return this._executionContext;
   }
 
   // -----------------------------------------------------------------------

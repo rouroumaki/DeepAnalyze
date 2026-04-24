@@ -6,11 +6,13 @@ import { MessageList } from "./chat/MessageList";
 import { MessageInput } from "./chat/MessageInput";
 import { SubtaskPanel } from "./chat/SubtaskPanel";
 import { ScopeSelector } from "./chat/ScopeSelector";
+import { TodoPanel } from "./chat/TodoPanel";
 import { SubAgentPanel } from "./teams/SubAgentPanel";
 import { useKeyboard } from "../hooks/useKeyboard";
 import { api } from "../api/client";
 import { Sparkles, Upload, BookOpen, MessageSquare } from "lucide-react";
 import type { AnalysisScope } from "../types/index";
+import { AskUserDialog } from "./chat/AskUserDialog";
 
 interface KbEntry {
   id: string;
@@ -237,6 +239,7 @@ export function ChatWindow() {
         flexDirection: "column",
         height: "100%",
         background: "var(--bg-primary)",
+        position: "relative",
       }}
     >
       {/* Chat header bar */}
@@ -266,6 +269,12 @@ export function ChatWindow() {
         <ScopeSelector kbList={kbList} currentKbId={currentKbId} onScopeChange={handleScopeChange} />
       </div>
 
+      {/* Agent Todo List */}
+      <TodoPanel />
+
+      {/* Agent ask_user dialog */}
+      <AskUserDialog />
+
       {/* Messages */}
       <div style={{ flex: 1, overflow: "hidden" }}>
         <MessageList />
@@ -284,7 +293,7 @@ export function ChatWindow() {
       )}
 
       {/* Input */}
-      <MessageInput />
+      <MessageInput scope={scope} />
     </div>
   );
 }

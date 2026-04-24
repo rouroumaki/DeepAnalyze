@@ -19,9 +19,9 @@ export interface MicroCompactResult {
 }
 
 export interface MicroCompactOptions {
-  /** Number of recent tool results to protect from pruning. Default: 5 */
+  /** Number of recent tool results to protect from pruning. Default: 10 */
   keepRecent: number;
-  /** Max tokens per tool result before truncation. Default: 4000 */
+  /** Max tokens per tool result before truncation. Default: 8000 */
   maxTokens: number;
   /** ModelRouter for token estimation */
   modelRouter: ModelRouter;

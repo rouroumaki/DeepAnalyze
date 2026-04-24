@@ -4,7 +4,7 @@
 // L0/L1/L2 buttons, media preview, and expand/collapse content areas.
 // =============================================================================
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   FileText,
   Image as ImageIcon,
@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { api } from "../../api/client";
 import { formatFileSize } from "../../utils/format";
+import { VirtualizedContent } from "../common/VirtualizedContent";
 import type { DocumentInfo } from "../../types/index";
 import { MediaPlayer } from "./MediaPlayer";
 import type { MediaType } from "./MediaPlayer";
@@ -111,6 +112,7 @@ const STEP_LABELS: Record<string, string> = {
   indexing: "索引中",
   linking: "关联中",
   uploading: "上传中",
+  retrying: "重试中",
 };
 
 // ---------------------------------------------------------------------------
@@ -152,7 +154,7 @@ export interface DocumentCardProps {
 // Cached level content state
 // ---------------------------------------------------------------------------
 
-type LevelContentCache = Record<string, { content: string; expandable: boolean }>;
+type LevelContentCache = Record<string, { content: string; expandable: boolean; source?: string }>;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -181,11 +183,30 @@ export function DocumentCard({
   const [levelError, setLevelError] = useState<string | null>(null);
   // L1 format toggle: "md" (Markdown) or "dt" (DocTags)
   const [l1Format, setL1Format] = useState<"md" | "dt">("md");
-  // Processor selector: "auto" | "docling" | "native"
-  const [processor, setProcessor] = useState<"auto" | "docling" | "native">("auto");
+  // Processor selector: "auto" | "docling" | "native" | "asr"
+  const [processor, setProcessor] = useState<"auto" | "docling" | "native" | "asr">("auto");
+  // Media metadata (fetched on demand)
+  const [mediaMeta, setMediaMeta] = useState<{
+    type: "image" | "audio" | "video" | null;
+    image?: { width: number; height: number; description?: string };
+    audio?: { duration: number; speakers: string[]; turns: Array<{ speaker: string; text: string; start?: number; end?: number }> };
+    video?: { duration: number; scenes: Array<{ start: number; end: number; description?: string }>; transcript: { speakers: string[]; turns: Array<{ speaker: string; text: string; start?: number; end?: number }> }; frameCount: number };
+  } | null>(null);
 
   // Use ref to avoid stale closures in fetch
   const abortRef = useRef<AbortController | null>(null);
+
+  // Fetch media metadata when media section is expanded
+  useEffect(() => {
+    if (expandedKey !== "media" || !isMedia) return;
+    let cancelled = false;
+    api.getMediaMetadata(kbId, doc.id).then((data) => {
+      if (!cancelled) setMediaMeta(data);
+    }).catch(() => {
+      // Metadata not available — use defaults
+    });
+    return () => { cancelled = true; };
+  }, [expandedKey, kbId, doc.id, isMedia]);
 
   // -------------------------------------------------------------------------
   // Toggle expand section
@@ -205,7 +226,8 @@ export function DocumentCard({
       setLevelError(null);
 
       // If it's a level key (L0/L1/L2) and not cached, fetch it
-      if ((key === "L0" || key === "L1" || key === "L2") && !levelCache[key]) {
+      const cacheKey = key === "L1" ? `L1:${l1Format}` : key;
+      if ((key === "L0" || key === "L1" || key === "L2") && !levelCache[cacheKey]) {
         abortRef.current?.abort();
         const controller = new AbortController();
         abortRef.current = controller;
@@ -218,7 +240,7 @@ export function DocumentCard({
             if (!controller.signal.aborted) {
               setLevelCache((prev) => ({
                 ...prev,
-                [key]: { content: result.content, expandable: result.expandable },
+                [cacheKey]: { content: result.content, expandable: result.expandable, source: result.source },
               }));
               setLevelLoading(false);
             }
@@ -353,29 +375,52 @@ export function DocumentCard({
       }
 
       if (mediaType === "audio") {
+        const audioMeta = mediaMeta?.audio;
         return (
           <MediaPlayer
             mediaType="audio"
             audioProps={{
               src: originalUrl,
-              duration: 0,
-              speakers: [],
-              turns: [],
+              duration: audioMeta?.duration ?? 0,
+              speakers: (audioMeta?.speakers ?? []).map((s, i) => ({ id: `s${i}`, label: s })),
+              turns: (audioMeta?.turns ?? []).map((t) => ({
+                speaker: t.speaker,
+                startTime: t.start ?? 0,
+                endTime: t.end ?? 0,
+                text: t.text,
+              })),
             }}
           />
         );
       }
 
       if (mediaType === "video") {
+        const videoMeta = mediaMeta?.video;
+        const transcript = videoMeta?.transcript;
         return (
           <MediaPlayer
             mediaType="video"
             videoProps={{
               src: originalUrl,
-              duration: 0,
-              scenes: [],
-              transcript: { speakers: [], turns: [] },
-              frameUrls: [],
+              duration: videoMeta?.duration ?? 0,
+              scenes: (videoMeta?.scenes ?? []).map((s) => ({
+                startTime: s.start,
+                endTime: s.end,
+                description: s.description ?? "",
+              })),
+              transcript: {
+                speakers: (transcript?.speakers ?? []).map((s, i) => ({ id: `s${i}`, label: s })),
+                turns: (transcript?.turns ?? []).map((t) => ({
+                  speaker: t.speaker,
+                  startTime: t.start ?? 0,
+                  endTime: t.end ?? 0,
+                  text: t.text,
+                })),
+              },
+              frameUrls: Array.from(
+                { length: videoMeta?.frameCount ?? 0 },
+                (_, i) => api.getFrameUrl(kbId, doc.id, i),
+              ),
             }}
           />
         );
@@ -419,8 +464,9 @@ export function DocumentCard({
         );
       }
 
-      // Show cached content
-      const cached = levelCache[expandedKey];
+      // Show cached content — use format-specific key for L1
+      const lookupKey = expandedKey === "L1" ? `L1:${l1Format}` : expandedKey;
+      const cached = levelCache[lookupKey];
       if (cached) {
         return (
           <div style={{
@@ -428,20 +474,13 @@ export function DocumentCard({
             backgroundColor: "var(--bg-tertiary)",
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius-md)",
-            maxHeight: 400,
-            overflowY: "auto",
           }}>
-            <div
-              style={{
-                fontSize: "var(--text-sm)",
-                color: "var(--text-primary)",
-                lineHeight: "var(--leading-relaxed)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {cached.content}
-            </div>
+            <VirtualizedContent
+              content={cached.content}
+              maxHeight={400}
+              fontSize={13}
+              style={{ color: "var(--text-primary)" }}
+            />
           </div>
         );
       }
@@ -705,6 +744,81 @@ export function DocumentCard({
           {renderLevelButton("L0")}
           {renderLevelButton("L1")}
 
+          {/* L2 button with source label */}
+          {(() => {
+            const l2CacheKey = "L2";
+            const l2Cached = levelCache[l2CacheKey];
+            const l2Label = l2Cached?.source === "fulltext" ? "L2 (Fulltext)" : "L2";
+            const ready = levels.L2;
+            const isExpanded = expandedKey === "L2";
+
+            let borderColor: string;
+            let dotColor: string;
+            let textColor: string;
+            let bgColor: string;
+
+            if (isExpanded) {
+              borderColor = "var(--interactive)";
+              dotColor = "var(--interactive)";
+              textColor = "var(--interactive)";
+              bgColor = "var(--interactive-light, rgba(59, 130, 246, 0.08))";
+            } else if (ready) {
+              borderColor = "var(--success)";
+              dotColor = "var(--success)";
+              textColor = "var(--success)";
+              bgColor = "transparent";
+            } else {
+              borderColor = "var(--border-primary)";
+              dotColor = "var(--text-tertiary)";
+              textColor = "var(--text-tertiary)";
+              bgColor = "transparent";
+            }
+
+            return (
+              <button
+                onClick={() => handleToggleExpand("L2")}
+                disabled={!ready && !isExpanded}
+                title={ready ? `${l2Label} 内容` : `${l2Label} 未就绪`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-1)",
+                  padding: "var(--space-1) var(--space-2)",
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: "var(--radius-sm)",
+                  backgroundColor: bgColor,
+                  color: textColor,
+                  fontSize: "var(--text-xs)",
+                  fontWeight: "var(--font-medium)",
+                  cursor: ready || isExpanded ? "pointer" : "not-allowed",
+                  opacity: !ready && !isExpanded ? 0.5 : 1,
+                  transition: "all var(--transition-fast)",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(e) => {
+                  if (ready || isExpanded) {
+                    e.currentTarget.style.opacity = "0.85";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = !ready && !isExpanded ? "0.5" : "1";
+                }}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    backgroundColor: dotColor,
+                    flexShrink: 0,
+                  }}
+                />
+                {l2Label}
+                {isExpanded && <ChevronDown size={10} style={{ marginLeft: -2 }} />}
+              </button>
+            );
+          })()}
+
           {/* L1 Format toggle (MD/DT) */}
           {expandedKey === "L1" && (
             <div
@@ -719,11 +833,50 @@ export function DocumentCard({
                 <button
                   key={fmt}
                   onClick={() => {
+                    if (l1Format === fmt) return;
                     setL1Format(fmt);
-                    // Clear cache and refetch with new format
-                    setLevelCache((prev) => { const next = { ...prev }; delete next.L1; return next; });
-                    handleToggleExpand("L1");
-                    setExpandedKey("L1");
+                    // Use independent cache key so switching doesn't clear the other format
+                    const cacheKey = `L1:${fmt}`;
+                    if (levelCache[cacheKey]) {
+                      // Already cached, just switch
+                      return;
+                    }
+                    setLevelLoading(true);
+                    setLevelError(null);
+                    const controller = new AbortController();
+                    abortRef.current?.abort();
+                    abortRef.current = controller;
+                    api
+                      .expandWiki(kbId, doc.id, "L1", fmt)
+                      .then((res) => {
+                        if (!controller.signal.aborted) {
+                          setLevelCache((prev) => ({
+                            ...prev,
+                            [cacheKey]: { content: res.content, expandable: res.expandable, source: res.source },
+                          }));
+                          setLevelLoading(false);
+                        }
+                      })
+                      .catch((err: unknown) => {
+                        if (!controller.signal.aborted) {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          // If DT format fails, show a helpful message and don't lose MD cache
+                          if (fmt === "dt" && msg.includes("No page found")) {
+                            setLevelCache((prev) => ({
+                              ...prev,
+                              [cacheKey]: { content: "该文档无 DocTags 格式数据。请使用 Markdown 格式查看。", expandable: false },
+                            }));
+                            setLevelLoading(false);
+                          } else {
+                            // On other errors, fall back to MD
+                            if (fmt === "dt" && levelCache["L1:md"]) {
+                              setL1Format("md");
+                            }
+                            setLevelError(msg);
+                            setLevelLoading(false);
+                          }
+                        }
+                      });
                   }}
                   style={{
                     padding: "var(--space-1) var(--space-2)",
@@ -743,7 +896,6 @@ export function DocumentCard({
             </div>
           )}
 
-          {renderLevelButton("L2")}
 
           {/* Media toggle button */}
           {isMedia && (
@@ -782,25 +934,63 @@ export function DocumentCard({
 
           {/* Processor selector */}
           {!isMedia && (
-            <select
-              value={processor}
-              onChange={(e) => setProcessor(e.target.value as "auto" | "docling" | "native")}
-              title="处理器选择"
-              style={{
-                padding: "var(--space-1) var(--space-2)",
-                border: "1px solid var(--border-primary)",
-                borderRadius: "var(--radius-sm)",
-                backgroundColor: "var(--bg-primary)",
-                color: "var(--text-secondary)",
-                fontSize: "var(--text-xs)",
-                cursor: "pointer",
-                outline: "none",
-              }}
-            >
-              <option value="auto">Auto</option>
-              <option value="docling">Docling</option>
-              <option value="native">Native</option>
-            </select>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+              <select
+                value={processor}
+                onChange={(e) => {
+                  setProcessor(e.target.value as "auto" | "docling" | "native" | "asr");
+                }}
+                title="选择处理器"
+                style={{
+                  padding: "var(--space-1) var(--space-2)",
+                  border: "1px solid var(--border-primary)",
+                  borderRadius: "var(--radius-sm)",
+                  backgroundColor: "var(--bg-primary)",
+                  color: "var(--text-secondary)",
+                  fontSize: "var(--text-xs)",
+                  cursor: "pointer",
+                  outline: "none",
+                }}
+              >
+                <option value="auto">Auto</option>
+                <option value="docling">Docling</option>
+                {(category === "audio") ? (
+                  <option value="asr">ASR</option>
+                ) : category === "document" ? (
+                  <option value="native">Native</option>
+                ) : null}
+              </select>
+              {processor !== "auto" && (
+                <button
+                  onClick={() => {
+                    // Clear cached level content
+                    setLevelCache({});
+                    // Trigger reprocessing with selected processor
+                    api.reprocessDocument(kbId, doc.id, processor).catch((err) => {
+                      console.error("Reprocess failed:", err);
+                    });
+                  }}
+                  title={`使用 ${processor.toUpperCase()} 重新处理`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-1)",
+                    padding: "var(--space-1) var(--space-2)",
+                    border: "1px solid var(--interactive)",
+                    borderRadius: "var(--radius-sm)",
+                    backgroundColor: "var(--interactive-light)",
+                    color: "var(--interactive)",
+                    fontSize: "var(--text-xs)",
+                    fontWeight: "var(--font-medium)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <RefreshCw size={10} />
+                  重新生成
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

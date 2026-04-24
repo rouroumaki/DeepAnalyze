@@ -42,7 +42,47 @@ sessionRoutes.get("/:id/messages", async (c) => {
     return c.json({ error: "Session not found" }, 404);
   }
   const messages = await repos.message.list(id);
-  return c.json(messages);
+
+  // Enrich assistant messages with report data and tool calls from metadata
+  const enriched = await Promise.all(messages.map(async (msg) => {
+    if (msg.role !== "assistant" || !msg.metadata) return msg;
+    try {
+      const meta = typeof msg.metadata === "string" ? JSON.parse(msg.metadata) : msg.metadata;
+      const result: Record<string, unknown> = {};
+
+      // Report enrichment
+      if (meta?.reportId) {
+        const page = await repos.wikiPage.getById(meta.reportId);
+        if (page && page.page_type === "report") {
+          result.report = {
+            id: page.id,
+            title: page.title,
+            content: page.content,
+            summary: page.content.slice(0, 200),
+            references: [],
+            entities: [],
+            createdAt: page.created_at,
+          };
+        }
+      }
+
+      // Tool call enrichment
+      if (meta?.toolCalls && Array.isArray(meta.toolCalls)) {
+        result.toolCalls = meta.toolCalls;
+      }
+
+      // Pushed contents enrichment
+      if (meta?.pushedContents && Array.isArray(meta.pushedContents)) {
+        result.pushedContents = meta.pushedContents;
+      }
+
+      return Object.keys(result).length > 0 ? { ...msg, ...result } : msg;
+    } catch {
+      return msg;
+    }
+  }));
+
+  return c.json(enriched);
 });
 
 // DELETE /:id - Delete a session

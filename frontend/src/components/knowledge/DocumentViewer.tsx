@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import { useMarkdown } from "../../hooks/useMarkdown";
 import { Spinner } from "../ui/Spinner";
+import { VirtualizedContent } from "../common/VirtualizedContent";
 import {
   X,
   FileText,
@@ -114,17 +115,23 @@ export function DocumentViewer({ kbId, docId, onClose }: DocumentViewerProps) {
   const renderContent = () => {
     if (expandedLevel === "L0" && page) {
       return (
-        <div
+        <VirtualizedContent
+          content={page.content}
+          maxHeight={600}
+          markdown
+          markdownHtml={markdownPage}
           style={{ animation: "fadeIn var(--transition-base) ease-out" }}
-          dangerouslySetInnerHTML={{ __html: markdownPage }}
         />
       );
     }
     if (expandedContent) {
       return (
-        <div
+        <VirtualizedContent
+          content={expandedContent.content}
+          maxHeight={600}
+          markdown
+          markdownHtml={markdownExpanded}
           style={{ animation: "fadeIn var(--transition-base) ease-out" }}
-          dangerouslySetInnerHTML={{ __html: markdownExpanded }}
         />
       );
     }

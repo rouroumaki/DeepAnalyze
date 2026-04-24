@@ -28,6 +28,7 @@ export interface ImagePreviewProps {
 
 export function ImagePreview({ thumbnailUrl, originalUrl, resolution, exif }: ImagePreviewProps) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const handleDownload = useCallback(() => {
     const a = document.createElement("a");
@@ -41,9 +42,26 @@ export function ImagePreview({ thumbnailUrl, originalUrl, resolution, exif }: Im
       <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "flex-start" }}>
         {/* Thumbnail */}
         <div style={{ position: "relative", flexShrink: 0 }}>
+          {loadError ? (
+            <div style={{
+              width: 120,
+              height: 90,
+              borderRadius: "var(--radius-md)",
+              border: "1px solid var(--border-primary)",
+              backgroundColor: "var(--bg-tertiary)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--text-tertiary)",
+              fontSize: "var(--text-xs)",
+            }}>
+              加载失败
+            </div>
+          ) : (
           <img
             src={thumbnailUrl}
             alt="thumbnail"
+            onError={() => setLoadError(true)}
             style={{
               width: 120,
               height: 90,
@@ -54,6 +72,7 @@ export function ImagePreview({ thumbnailUrl, originalUrl, resolution, exif }: Im
             }}
             onClick={() => setFullscreen(true)}
           />
+          )}
           <button
             onClick={() => setFullscreen(true)}
             title="查看原图"

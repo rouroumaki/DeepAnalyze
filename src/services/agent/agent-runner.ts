@@ -49,7 +49,10 @@ const DEFAULT_AGENT_DEFINITION: AgentDefinition = {
     "你是一个有帮助的 AI 助手。请仔细分析用户的请求，根据需要使用可用工具来完成任务。" +
     "当你完成任务时，调用 'finish' 工具返回最终答案。\n\n" +
     "## 语言规则\n" +
-    "始终使用与用户提问相同的语言进行思考和回复。如果用户用中文提问，你必须用中文思考和回复（包括 think 工具中的推理过程）；如果用户用英文提问，用英文思考和回复。工具调用参数中的技术术语和标识符保持原样。",
+    "始终使用与用户提问相同的语言进行思考和回复。如果用户用中文提问，你必须用中文思考和回复（包括 think 工具中的推理过程）；如果用户用英文提问，用英文思考和回复。工具调用参数中的技术术语和标识符保持原样。\n\n" +
+    "## 完成规则\n" +
+    "当你认为已经充分回答了用户的问题或完成了任务时，必须调用 'finish' 工具提交最终结果。" +
+    "不要在没有调用 finish 的情况下结束。如果还有未完成的工作，继续使用工具。",
   tools: ["*"],
   modelRole: "main",
   maxTurns: -1,
@@ -157,11 +160,58 @@ export class AgentRunner {
     }
     const effectiveSystemPrompt = options.systemPromptOverride ?? definition.systemPrompt;
 
+    // Inject scope constraints into system prompt if scope is provided
+    let scopeInjection = "";
+    if (options.scope) {
+      // Frontend sends: { knowledgeBases: [{ kbId, mode, documentIds? }], webSearch }
+      const knowledgeBases = options.scope.knowledgeBases as Array<{ kbId: string; mode: string; documentIds?: string[] }> | undefined;
+      if (knowledgeBases && knowledgeBases.length > 0) {
+        const scopeKbIds = knowledgeBases.map(kb => kb.kbId);
+        try {
+          const repos = await getRepos();
+          const allKbs = await repos.knowledgeBase.list();
+          const kbDetails: string[] = [];
+          const docDetails: string[] = [];
+
+          for (const kbScope of knowledgeBases) {
+            const kb = allKbs.find(k => k.id === kbScope.kbId);
+            const kbLabel = kb ? `"${kb.name}"` : kbScope.kbId;
+            kbDetails.push(`${kbLabel} (${kbScope.kbId})`);
+
+            // If specific documents are selected, resolve their names
+            if (kbScope.mode === "selected" && kbScope.documentIds && kbScope.documentIds.length > 0) {
+              try {
+                const docs = await repos.document.getByKbId(kbScope.kbId);
+                const selectedDocs = docs.filter(d => kbScope.documentIds!.includes(d.id));
+                for (const doc of selectedDocs) {
+                  docDetails.push(`- ${doc.filename || doc.id} (${doc.id}) in ${kbLabel}`);
+                }
+              } catch {
+                // Non-critical
+              }
+            }
+          }
+
+          const kbNames = kbDetails.join(", ");
+          let injection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。你只能在以下知识库中搜索：${kbNames}。\n使用 kb_search 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n不要搜索此范围之外的知识库。`;
+
+          if (docDetails.length > 0) {
+            injection += `\n\n用户特别关注以下文档，请优先分析：\n${docDetails.join("\n")}`;
+          }
+
+          scopeInjection = injection;
+        } catch {
+          scopeInjection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。使用 kb_search 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n不要搜索此范围之外的知识库。`;
+        }
+      }
+    }
+    const systemPromptWithScope = effectiveSystemPrompt + scopeInjection;
+
     console.log(`[AgentRunner] Starting agent run: taskId=${taskId}, agentType=${agentType}, modelRole=${modelRole}, modelId=${modelId}, providers=${this.modelRouter.listProviderNames().join(",")}`);
 
     // Build initial messages
     const messages = this.buildMessages(
-      effectiveSystemPrompt,
+      systemPromptWithScope,
       options.input,
       options.contextMessages,
     );
@@ -807,9 +857,9 @@ export class AgentRunner {
     // Some LLM providers return finishReason="stop" even with tool calls,
     // which would prematurely end the agent loop.
     if ((!toolCalls || toolCalls.length === 0) && finishReason && STOP_FINISH_REASONS.has(finishReason)) return true;
-    if (!toolCalls || toolCalls.length === 0) {
-      if (content && content.trim().length > 0) return true;
-    }
+    // NOTE: We no longer stop on text-only responses (no tool calls + non-empty content).
+    // The agent should explicitly call 'finish' or the model should return a stop finish_reason.
+    // This prevents premature termination after compaction or intermediate text responses.
     return false;
   }
 

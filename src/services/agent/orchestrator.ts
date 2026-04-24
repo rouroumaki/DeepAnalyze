@@ -64,6 +64,8 @@ export class Orchestrator {
   private modelRouter: ModelRouter;
   private autoDream: AutoDreamManager | null;
   private activeControllers: Map<string, AbortController> = new Map();
+  /** Pending ask_user promises: taskId -> resolve callback */
+  private pendingUserAnswers: Map<string, (answer: string) => void> = new Map();
 
   constructor(
     runner: AgentRunner,
@@ -409,6 +411,34 @@ export class Orchestrator {
       this.activeControllers.delete(taskId);
       // Fire-and-forget status update
       this.updateTaskStatus(taskId, "cancelled").catch(() => {});
+      return true;
+    }
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
+  // ask_user: wait for user answer during agent execution
+  // -----------------------------------------------------------------------
+
+  /**
+   * Returns a Promise that resolves when the user answers via the HTTP endpoint.
+   * Used by the ask_user tool to pause agent execution until user responds.
+   */
+  waitForUserAnswer(taskId: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+      this.pendingUserAnswers.set(taskId, resolve);
+    });
+  }
+
+  /**
+   * Resolve a pending ask_user promise with the user's answer.
+   * Called from the HTTP POST /agents/message/:taskId endpoint.
+   */
+  resolveUserAnswer(taskId: string, answer: string): boolean {
+    const resolve = this.pendingUserAnswers.get(taskId);
+    if (resolve) {
+      this.pendingUserAnswers.delete(taskId);
+      resolve(answer);
       return true;
     }
     return false;

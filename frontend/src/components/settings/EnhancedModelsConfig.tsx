@@ -1,6 +1,6 @@
 // =============================================================================
 // DeepAnalyze - EnhancedModelsConfig
-// Enhanced/specialized model management (增强模型)
+// Generative model management (生成模型)
 // =============================================================================
 
 import { useState, useEffect, useCallback } from "react";
@@ -8,19 +8,15 @@ import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
 import type { ProviderConfig, EnhancedModelEntry, EnhancedModelType } from "../../types/index";
 import {
-  Image, Sparkles, Video, Music, Headphones, Box, Settings2,
+  Sparkles, Video, Music, Headphones, ToggleLeft,
   Plus, Trash2, Edit2, Check, X,
 } from "lucide-react";
 
 const MODEL_TYPE_OPTIONS: { value: EnhancedModelType; label: string; icon: React.ReactNode }[] = [
-  { value: "multimodal", label: "多模态", icon: <Image size={14} /> },
   { value: "image_gen", label: "图像生成", icon: <Sparkles size={14} /> },
   { value: "video_gen", label: "视频生成", icon: <Video size={14} /> },
   { value: "music_gen", label: "音乐生成", icon: <Music size={14} /> },
-  { value: "audio_gen", label: "音频生成", icon: <Headphones size={14} /> },
-  { value: "audio_transcribe", label: "音频转写", icon: <Headphones size={14} /> },
-  { value: "three_d_gen", label: "3D 生成", icon: <Box size={14} /> },
-  { value: "custom", label: "自定义", icon: <Settings2 size={14} /> },
+  { value: "tts", label: "语音合成", icon: <Headphones size={14} /> },
 ];
 
 const inputStyle: React.CSSProperties = {
@@ -51,7 +47,7 @@ export function EnhancedModelsConfig({ providers }: EnhancedModelsConfigProps) {
   const { success, error: showError } = useToast();
 
   const [models, setModels] = useState<EnhancedModelEntry[]>([]);
-  const [activeType, setActiveType] = useState<EnhancedModelType>("multimodal");
+  const [activeType, setActiveType] = useState<EnhancedModelType>("image_gen");
   const [loading, setLoading] = useState(true);
   const [editingModel, setEditingModel] = useState<EnhancedModelEntry | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -76,7 +72,7 @@ export function EnhancedModelsConfig({ providers }: EnhancedModelsConfigProps) {
     try {
       await api.saveEnhancedModels(updatedModels);
       setModels(updatedModels);
-      success("增强模型已保存");
+      success("生成模型已保存");
     } catch {
       showError("保存失败");
     }
@@ -130,7 +126,7 @@ export function EnhancedModelsConfig({ providers }: EnhancedModelsConfigProps) {
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
       {/* Description */}
       <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", margin: 0 }}>
-        管理增强模型：多模态理解、图像/视频/音频生成等专用模型。
+        管理生成模型：图像、视频、音乐、语音合成等专用模型。
       </p>
 
       {/* Type filter tabs */}
@@ -243,7 +239,7 @@ export function EnhancedModelsConfig({ providers }: EnhancedModelsConfigProps) {
       {/* Model list */}
       {filteredModels.length === 0 ? (
         <div style={{ textAlign: "center", padding: "var(--space-6)", color: "var(--text-tertiary)", fontSize: "var(--text-sm)" }}>
-          暂无该类型的增强模型，点击「添加模型」创建
+          暂无该类型的生成模型，点击「添加模型」创建
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
@@ -278,7 +274,7 @@ export function EnhancedModelsConfig({ providers }: EnhancedModelsConfigProps) {
                   padding: 4, border: "none", background: "transparent", color: m.enabled ? "var(--success)" : "var(--text-tertiary)",
                   cursor: "pointer", borderRadius: "var(--radius-sm)",
                 }}>
-                  <Box size={14} />
+                  <ToggleLeft size={14} />
                 </button>
                 <button onClick={() => handleDelete(m.id)} title="删除" style={{
                   padding: 4, border: "none", background: "transparent", color: "var(--text-tertiary)",

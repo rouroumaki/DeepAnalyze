@@ -12,6 +12,7 @@ import type { DocumentProcessor, ParsedContent } from "./types.js";
 import type { ImageRawData } from "./modality-types.js";
 import { DocTagsFormatters } from "./modality-types.js";
 import { ModelRouter } from "../../models/router.js";
+import { CapabilityDispatcher } from "../../models/capability-dispatcher.js";
 
 export class ImageProcessor implements DocumentProcessor {
   private static readonly HANDLED_TYPES = new Set([
@@ -109,34 +110,21 @@ export class ImageProcessor implements DocumentProcessor {
 
     // ---- VLM description ----
     let description = "";
+    const imageDataUrl = `data:${mimeType};base64,${base64}`;
 
     try {
       const router = new ModelRouter();
       await router.initialize();
 
       // Use strict lookup: only use a model if VLM role is explicitly configured.
-      // getDefaultModel("vlm") falls back to main model which may not support vision,
-      // causing hangs or errors.
       const vlmModel = router.getDefaultModelStrict("vlm");
 
       if (vlmModel) {
-        const result = await router.chat(
-          [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "详细描述这张图片的内容，包括：场景、人物、文字、数据、关键元素。",
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: `data:${mimeType};base64,${base64}` },
-                },
-              ],
-            },
-          ],
-          { model: vlmModel, signal: AbortSignal.timeout(60_000) },
+        const dispatcher = new CapabilityDispatcher();
+        const result = await dispatcher.analyzeImage(
+          imageDataUrl,
+          "详细描述这张图片的内容，包括：场景、人物、文字、数据、关键元素。",
+          { signal: AbortSignal.timeout(120_000) },
         );
         description = result.content;
       } else {

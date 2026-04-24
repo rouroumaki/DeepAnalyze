@@ -360,25 +360,27 @@ export class WikiCompiler {
     const wikiDir = this.pageManager.getWikiDir();
 
     // Create dual-format structure pages for each section (L1_md + L1_dt)
+    const repos = await getRepos();
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i];
       const sectionTitle = section.title || `Section ${section.sectionPath || "0"}`;
 
-      // L1_dt: DocTags format page
-      const dtContent = section.doctagsContent || section.content;
-      await this.createWikiPageViaRepo(
-        kbId,
-        docId,
-        "structure_dt",
-        sectionTitle,
-        dtContent,
-        wikiDir,
-      );
+      // L1_dt: DocTags format page — only create when genuine doctags content exists
+      if (section.doctagsContent) {
+        await this.createWikiPageViaRepo(
+          kbId,
+          docId,
+          "structure_dt",
+          sectionTitle,
+          section.doctagsContent,
+          wikiDir,
+        );
+      }
 
       // L1_md: Markdown format page — prefer native Markdown from Docling
       const mdSection = mdSections[i];
       const markdownContent = mdSection?.markdownContent || section.markdownContent || section.content;
-      await this.createWikiPageViaRepo(
+      const mdPage = await this.createWikiPageViaRepo(
         kbId,
         docId,
         "structure_md",
@@ -386,6 +388,11 @@ export class WikiCompiler {
         markdownContent,
         wikiDir,
       );
+
+      // Link anchors to this structure page (same pattern as modality compilers)
+      if (section.anchorIds && section.anchorIds.length > 0) {
+        await repos.anchor.updateStructurePageId(section.anchorIds, mdPage.id);
+      }
     }
 
     console.log(
@@ -684,7 +691,7 @@ ${truncated}`;
     let l1Page = await repos.wikiPage.getByDocAndType(docId, "overview");
     if (!l1Page) {
       // New three-layer flow: use first structure page or abstract
-      const structurePages = await repos.wikiPage.getManyByDocAndType(docId, "structure");
+      const structurePages = await repos.wikiPage.getManyByDocAndTypePrefix(docId, "structure");
       if (structurePages.length > 0) {
         // Use the first structure page as the link source
         l1Page = structurePages[0];

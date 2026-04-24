@@ -80,7 +80,16 @@ export function createReportRoutes(): Hono {
     const offset = parseInt(c.req.query("offset") || "0", 10);
 
     const repos = await getRepos();
-    const reports = await repos.report.list(limit, offset);
+    const pages = await repos.wikiPage.getAllByType("report", limit, offset);
+
+    const reports = pages.map((page) => ({
+      id: page.id,
+      kbId: page.kb_id,
+      title: page.title,
+      tokenCount: page.token_count,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
+    }));
 
     return c.json({
       reports,
@@ -125,12 +134,20 @@ export function createReportRoutes(): Hono {
     const id = c.req.param("id");
 
     const repos = await getRepos();
-    const report = await repos.report.get(id);
-    if (!report) {
+    const page = await repos.wikiPage.getById(id);
+    if (!page || page.page_type !== "report") {
       return c.json({ error: "Report not found" }, 404);
     }
 
-    return c.json(report);
+    return c.json({
+      id: page.id,
+      kbId: page.kb_id,
+      title: page.title,
+      content: page.content,
+      tokenCount: page.token_count,
+      createdAt: page.created_at,
+      updatedAt: page.updated_at,
+    });
   });
 
   // =====================================================================
@@ -141,11 +158,12 @@ export function createReportRoutes(): Hono {
     const id = c.req.param("id");
 
     const repos = await getRepos();
-    const deleted = await repos.report.delete(id);
-    if (!deleted) {
+    const page = await repos.wikiPage.getById(id);
+    if (!page || page.page_type !== "report") {
       return c.json({ error: "Report not found" }, 404);
     }
 
+    await repos.wikiPage.deleteById(id);
     return c.json({ success: true, id });
   });
 
@@ -157,38 +175,15 @@ export function createReportRoutes(): Hono {
     const id = c.req.param("id");
 
     const repos = await getRepos();
-    const report = await repos.report.get(id);
-    if (!report) {
+    const page = await repos.wikiPage.getById(id);
+    if (!page || page.page_type !== "report") {
       return c.json({ error: "Report not found" }, 404);
     }
 
-    // Build a Markdown document with references appended
-    let md = `# ${report.title}\n\n`;
-    md += report.cleanContent;
+    // Build a Markdown document from the wiki page content
+    let md = `# ${page.title}\n\n`;
+    md += page.content;
     md += "\n";
-
-    // Append references section if any
-    if (report.references && report.references.length > 0) {
-      md += "\n---\n\n## References\n\n";
-      for (const ref of report.references) {
-        md += `[${ref.refIndex}] ${ref.title}`;
-        if (ref.docId) md += ` (doc: ${ref.docId})`;
-        if (ref.pageId) md += ` (page: ${ref.pageId})`;
-        md += "\n";
-        if (ref.snippet) {
-          md += `> ${ref.snippet}\n\n`;
-        }
-      }
-    }
-
-    // Append entities section if any
-    if (report.entities && report.entities.length > 0) {
-      md += "\n---\n\n## Entities\n\n";
-      for (const entity of report.entities) {
-        md += `- ${entity}\n`;
-      }
-      md += "\n";
-    }
 
     c.header("Content-Type", "text/markdown; charset=utf-8");
     c.header(
@@ -206,7 +201,32 @@ export function createReportRoutes(): Hono {
     const sessionId = c.req.param("sessionId");
 
     const repos = await getRepos();
-    const reports = await repos.report.listBySession(sessionId);
+    // Find report IDs from message metadata in this session
+    const messages = await repos.message.list(sessionId);
+    const reportIds: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === "assistant" && msg.metadata) {
+        try {
+          const meta = typeof msg.metadata === "string" ? JSON.parse(msg.metadata) : msg.metadata;
+          if (meta?.reportId) reportIds.push(meta.reportId);
+        } catch { /* ignore parse errors */ }
+      }
+    }
+
+    const reports = [];
+    for (const reportId of reportIds) {
+      const page = await repos.wikiPage.getById(reportId);
+      if (page && page.page_type === "report") {
+        reports.push({
+          id: page.id,
+          kbId: page.kb_id,
+          title: page.title,
+          tokenCount: page.token_count,
+          createdAt: page.created_at,
+          updatedAt: page.updated_at,
+        });
+      }
+    }
 
     return c.json({
       sessionId,
@@ -519,30 +539,17 @@ export function createReportRoutes(): Hono {
     const id = c.req.param("id");
 
     const repos = await getRepos();
-    const report = await repos.report.get(id);
-    if (!report) {
+    const page = await repos.wikiPage.getById(id);
+    if (!page || page.page_type !== "report") {
       return c.json({ error: "Report not found" }, 404);
     }
 
     // Extract anchor IDs from report content
-    const anchorIds = extractAnchorIds(report.cleanContent);
+    const anchorIds = extractAnchorIds(page.content);
 
     if (anchorIds.length === 0) {
-      // Fallback: extract source page IDs from references
-      const docIds = (report.references ?? [])
-        .map((r) => r.docId)
-        .filter((d): d is string => !!d);
-      const displayResolver = new DisplayResolver();
-      const displayMap = await displayResolver.resolveBatch(docIds);
-
-      return c.json({
-        sources: docIds.map((docId) => ({
-          docId,
-          originalName: displayMap[docId]?.originalName ?? docId,
-          kbName: displayMap[docId]?.kbName ?? "",
-          anchors: [],
-        })),
-      });
+      // No anchors found in wiki-based report
+      return c.json({ sources: [] });
     }
 
     // Query anchor details

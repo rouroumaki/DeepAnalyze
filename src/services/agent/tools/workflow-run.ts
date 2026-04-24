@@ -80,9 +80,13 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
     name: "workflow_run",
 
     description:
-      "运行多 Agent 工作流。提供 teamName 使用已保存的团队，" +
-      "或提供内联 Agent 数组。工作流以指定模式运行" +
-      "（pipeline | graph | council | parallel）并返回汇总结果。",
+      "启动多 Agent 并行工作流。适用于：\n" +
+      "- 需要同时搜索多个知识库或多个文档\n" +
+      "- 需要从不同角度并行分析同一批文档\n" +
+      "- 主任务可拆分为独立子任务并行执行\n" +
+      "提供 teamName 使用已保存团队模板（如'并行深度检索'、'全面深度分析'、'通用并行检索'），" +
+      "或直接提供内联 Agent 定义。工作流以指定模式运行" +
+      "（pipeline | graph | council | parallel）并返回所有子 Agent 的执行结果汇总。",
 
     inputSchema: {
       type: "object",

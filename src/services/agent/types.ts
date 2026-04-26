@@ -102,7 +102,9 @@ export interface AgentProgressEntry {
  */
 export type AgentEvent =
   | { type: "start"; taskId: string; agentType: string }
+  | { type: "text_delta"; taskId: string; turn: number; delta: string }
   | { type: "turn"; taskId: string; turn: number; content: string }
+  | { type: "turn_usage"; taskId: string; turn: number; usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } }
   | { type: "tool_call"; taskId: string; turn: number; toolName: string; input: Record<string, unknown> }
   | { type: "tool_result"; taskId: string; turn: number; toolName: string; result: unknown }
   | { type: "progress"; taskId: string; progress: AgentProgressEntry }
@@ -124,7 +126,7 @@ export interface AgentResult {
   output: string;
   toolCallsCount: number;
   turnsUsed: number;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: { inputTokens: number; outputTokens: number; cachedTokens?: number };
   compactionEvents?: Array<{ turn: number; method: string; tokensSaved: number }>;
 }
 
@@ -158,6 +160,8 @@ export interface AgentRunOptions {
   systemPromptOverride?: string;
   /** Optional tool override (used for skill execution). */
   toolsOverride?: string[];
+  /** Whether this run is a skill invocation (allows workflow_run and agent_todo access). */
+  isSkillInvocation?: boolean;
   /** Enable continuous running mode (default: true). When true, uses while(true) loop. */
   continuous?: boolean;
   /** Knowledge base ID for auto-compounding results after task completion. */

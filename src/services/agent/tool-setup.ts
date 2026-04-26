@@ -6,7 +6,7 @@
 // registered and wired to their backends.
 // =============================================================================
 
-import { ToolRegistry } from "./tool-registry.js";
+import { ToolRegistry, DEFERRED_TOOLS } from "./tool-registry.js";
 import { Retriever } from "../../wiki/retriever.js";
 import { Linker } from "../../wiki/linker.js";
 import { Expander } from "../../wiki/expander.js";
@@ -17,6 +17,22 @@ import { getRepos } from "../../store/repos/index.js";
 import { createReportTool } from "../../tools/ReportTool/index.js";
 import { createTimelineTool } from "../../tools/TimelineTool/index.js";
 import { createGraphTool } from "../../tools/GraphTool/index.js";
+
+// ---------------------------------------------------------------------------
+// Dependencies for tool registration
+// ---------------------------------------------------------------------------
+
+/** All external dependencies needed to set up the tool registry. */
+// ---------------------------------------------------------------------------
+// Tools blocked for sub-agents to prevent recursive spawning
+// ---------------------------------------------------------------------------
+
+export const SUB_AGENT_BLOCKED_TOOLS = new Set([
+  "workflow_run",
+  "skill_invoke",
+  "agent_todo",
+  "push_content",
+]);
 
 // ---------------------------------------------------------------------------
 // Dependencies for tool registration
@@ -64,7 +80,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     description:
       "使用语义和关键词匹配搜索知识库。返回带摘录的排序结果。" +
       "结合向量相似度、BM25 全文搜索和链接遍历，实现全面检索。" +
-      "默认排除已有报告（page_type=report），只返回原始文档内容，确保分析基于一手资料。",
+      "默认排除已有报告（page_type=report），只返回原始文档内容，确保分析基于一手资料。" +
+      "适用场景：按语义查找文档、发现相关主题、探索知识库内容。不适合：精确文本匹配（用 doc_grep）、阅读完整文档（用 expand）、列出所有文档（用 wiki_browse）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -155,7 +172,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "提供 listDocuments=true 列出所有文档及其摘要，" +
       "提供 pageId 查看特定页面，" +
       "提供 kbId 列出页面列表。" +
-      "建议先使用 listDocuments 了解知识库中有哪些文档，再针对性地展开阅读。",
+      "建议先使用 listDocuments 了解知识库中有哪些文档，再针对性地展开阅读。" +
+      "这是了解知识库全貌的首选工具——先用 listDocuments=true 查看完整目录，再针对性深入。",
     inputSchema: {
       type: "object",
       properties: {
@@ -328,7 +346,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "L0（摘要）-> L1（结构概述）-> L2（全文）。" +
       "用于获取文档或页面的更多细节。" +
       "支持批量展开：提供 docIds 数组可同时展开多个文档的 L1 结构概述。" +
-      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。",
+      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。" +
+      "这是阅读文档实际内容的主要工具。搜索只是定位，expand 才是阅读。分析任务中务必 expand 到足够层级（通常 L1 或 L2）以确保不遗漏细节。",
     inputSchema: {
       type: "object",
       properties: {
@@ -527,10 +546,12 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "push_content",
     description:
-      "推送结构化内容到用户界面。适用于推送大型分析报告、表格数据、代码片段等。" +
-      "type=markdown 的内容会以富文本格式直接展示在聊天界面中，适合推送最终分析结果。" +
-      "type=table 适合推送 CSV/TSV 表格数据。" +
-      "比通过模型逐字输出效率高得多。",
+      "将结构化内容卡片推送到用户界面。**仅用于以下场景**：" +
+      "① 大型表格数据（type=table，CSV/TSV 格式，适合展示对比矩阵、统计汇总）" +
+      "② 需要快速合并展示的多段内容（如把多个子 Agent 结果合并为一个卡片）" +
+      "③ 代码片段、文件引用等需要特殊格式化的内容。" +
+      "**不要用于普通分析文本**——你的分析结论、报告正文应直接以文字输出，用户会实时看到流式显示。" +
+      "type=markdown 可推送富文本卡片，type=table 推送表格数据。",
     inputSchema: {
       type: "object",
       properties: {
@@ -714,7 +735,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "正则搜索知识库中 wiki 页面的实际内容文本。" +
       "支持精确匹配人名、日期、编号、金额、特定短语等。" +
       "返回匹配的页面列表及匹配行上下文。" +
-      "与 kb_search（语义搜索）互补，适用于需要精确字符串匹配的场景。",
+      "与 kb_search（语义搜索）互补，适用于需要精确字符串匹配的场景。" +
+      "适用场景：精确匹配人名、日期、编号、金额等。kb_search 找不到时试试 doc_grep。",
     inputSchema: {
       type: "object",
       properties: {
@@ -890,9 +912,242 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   });
 
   // -----------------------------------------------------------------------
-  // graph_build tool — DISABLED per design decision
+  // write_file tool — create or overwrite files in the data directory
   // -----------------------------------------------------------------------
-  // registry.register(createGraphTool({ linker: deps.linker, retriever: deps.retriever, dataDir: deps.dataDir }));
+
+  registry.register({
+    name: "write_file",
+    description:
+      "创建或覆盖文件。将内容写入数据目录中的指定文件。" +
+      "自动创建所需的中间目录。" +
+      "可用于生成代码、配置文件、数据导出、临时文件等。" +
+      "对于大段输出内容，优先用 write_file 保存到文件再告知用户——这防止上下文窗口被填满，也方便其他Agent读取合并。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径（相对于数据目录）",
+        },
+        content: {
+          type: "string",
+          description: "要写入的文件内容",
+        },
+      },
+      required: ["path", "content"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { writeFileSync, mkdirSync } = await import("node:fs");
+      const { resolve, dirname } = await import("node:path");
+      const rawPath = input.path as string;
+      const content = input.content as string;
+
+      const safePath = resolve(deps.dataDir, rawPath.startsWith("/") ? rawPath.slice(1) : rawPath);
+      if (!safePath.startsWith(resolve(deps.dataDir))) {
+        return { error: "Access denied: path outside data directory" };
+      }
+
+      try {
+        mkdirSync(dirname(safePath), { recursive: true });
+        writeFileSync(safePath, content, "utf-8");
+        return {
+          success: true,
+          path: rawPath,
+          bytesWritten: Buffer.byteLength(content, "utf-8"),
+        };
+      } catch (err) {
+        return { error: `Failed to write file: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // edit_file tool — edit files with old_string/new_string replacement
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "edit_file",
+    description:
+      "编辑数据目录中的文件。通过精确匹配 old_string 并替换为 new_string 来修改文件内容。" +
+      "old_string 必须与文件中的内容完全匹配（包括缩进）。" +
+      "如果 old_string 在文件中出现多次，必须提供足够的上下文使其唯一。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径（相对于数据目录）",
+        },
+        old_string: {
+          type: "string",
+          description: "要替换的原始文本（必须精确匹配）",
+        },
+        new_string: {
+          type: "string",
+          description: "替换后的新文本",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "是否替换所有匹配项（默认：false，仅替换第一个）",
+        },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const { readFileSync, writeFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const rawPath = input.path as string;
+      const oldString = input.old_string as string;
+      const newString = input.new_string as string;
+      const replaceAll = (input.replace_all as boolean) || false;
+
+      const safePath = resolve(deps.dataDir, rawPath.startsWith("/") ? rawPath.slice(1) : rawPath);
+      if (!safePath.startsWith(resolve(deps.dataDir))) {
+        return { error: "Access denied: path outside data directory" };
+      }
+
+      try {
+        if (!readFileSync(safePath, "utf-8") && false) { /* existence check */ }
+        const content = readFileSync(safePath, "utf-8");
+
+        if (!content.includes(oldString)) {
+          return { error: `old_string not found in file. Make sure the text matches exactly (including whitespace and indentation).` };
+        }
+
+        let newContent: string;
+        let replacements: number;
+
+        if (replaceAll) {
+          const parts = content.split(oldString);
+          replacements = parts.length - 1;
+          newContent = parts.join(newString);
+        } else {
+          const idx = content.indexOf(oldString);
+          if (idx === -1) {
+            return { error: "old_string not found in file" };
+          }
+          // Check for uniqueness
+          const secondIdx = content.indexOf(oldString, idx + 1);
+          if (secondIdx !== -1) {
+            return {
+              error: "old_string matches multiple locations in the file. Provide more context to make it unique, or set replace_all=true.",
+              matchCount: content.split(oldString).length - 1,
+            };
+          }
+          newContent = content.substring(0, idx) + newString + content.substring(idx + oldString.length);
+          replacements = 1;
+        }
+
+        writeFileSync(safePath, newContent, "utf-8");
+        return {
+          success: true,
+          path: rawPath,
+          replacements,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("ENOENT")) {
+          return { error: `File not found: ${rawPath}` };
+        }
+        return { error: `Failed to edit file: ${msg}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // skill_invoke tool — invoke a user-defined skill
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "skill_invoke",
+    description:
+      "调用已注册的自定义技能（Skill）。技能是针对特定场景优化的预定义工作流。" +
+      "调用后会加载技能的提示词作为补充指令，在独立上下文中执行任务。" +
+      "先用 list_skills 查看可用技能列表。" +
+      "适用场景：全面分块分析（大量文档）、长篇写作、深度调研、对比分析等。当用户的请求匹配某个技能的描述时，优先使用技能而非手动逐步处理。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_name: {
+          type: "string",
+          description: "要调用的技能名称",
+        },
+        input: {
+          type: "string",
+          description: "传递给技能的任务描述",
+        },
+      },
+      required: ["skill_name", "input"],
+    },
+    async execute(inputParams: Record<string, unknown>) {
+      // Accept both "skill_name" (schema name) and "name" (what LLMs naturally use after seeing list_skills output)
+      const skillName = (inputParams.skill_name ?? inputParams.name) as string;
+      const taskInput = inputParams.input as string;
+
+      try {
+        const repos = await getRepos();
+        const skill = await repos.agentSkill.getByName(skillName);
+        if (!skill) {
+          return { error: `Skill "${skillName}" not found. Use list_skills to see available skills.` };
+        }
+        if (!skill.isActive) {
+          return { error: `Skill "${skillName}" is currently disabled.` };
+        }
+
+        // Return the skill definition + input for the agent runner to use
+        // The runner will detect this special result and launch a sub-agent
+        return {
+          __skill_invoke__: true,
+          skill: {
+            name: skill.name,
+            prompt: skill.prompt,
+            tools: skill.tools,
+            modelRole: skill.modelRole,
+          },
+          input: taskInput,
+        };
+      } catch (err) {
+        return { error: `Failed to load skill: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // list_skills tool — list available user-defined skills
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "list_skills",
+    description:
+      "列出所有可用的自定义技能。返回技能名称、描述和状态。" +
+      "使用 skill_invoke 工具调用特定技能。",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
+      try {
+        const repos = await getRepos();
+        const skills = await repos.agentSkill.listActive();
+        if (skills.length === 0) {
+          return {
+            skills: [],
+            message: "No skills have been defined yet. Skills can be created via the /api/agent-skills endpoint or the settings UI.",
+          };
+        }
+        return {
+          skills: skills.map((s) => ({
+            name: s.name,
+            description: s.description,
+            modelRole: s.modelRole,
+            tools: s.tools,
+          })),
+        };
+      } catch (err) {
+        return { error: `Failed to list skills: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
 
   // -----------------------------------------------------------------------
   // read_file tool — read files from the data directory
@@ -1138,7 +1393,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "执行 SQL 查询并返回结果。" +
       "用于直接查询文档元数据、wiki 页面内容、会话历史等数据库信息。" +
       "比 listDocuments 等高级工具更灵活精确，支持任意聚合、分组、过滤。" +
-      "仅允许 SELECT 查询（只读）。",
+      "仅允许 SELECT 查询（只读）。" +
+      "适用场景：需要精确的文档统计、元数据查询、聚合分析、跨表关联。比 wiki_browse 更灵活精确，适合数据探查阶段。",
     inputSchema: {
       type: "object",
       properties: {
@@ -1514,6 +1770,219 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         };
       } catch (err) {
         return { error: `Music generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // tool_discover tool — discover and activate deferred tools
+  // -----------------------------------------------------------------------
+  // Allows the agent to find tools that were not included in the initial
+  // tool definitions to save input tokens. The agent can search by keyword
+  // or directly select tools by name.
+
+  registry.register({
+    name: "tool_discover",
+    description:
+      "搜索和发现可用工具。当你需要某个能力但当前工具列表中没有时，使用此工具搜索。" +
+      "返回匹配工具的名称和简短描述。支持关键词搜索或直接选择（格式：select:tool_name）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "搜索关键词，或使用 'select:tool_name' 直接选择（支持逗号分隔多个）",
+        },
+      },
+      required: ["query"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const query = (input.query as string).trim();
+
+      // All tools with descriptions for discovery
+      const allTools: Record<string, string> = {
+        think: "逐步思考推理（核心工具）",
+        finish: "完成任务并返回结果（核心工具）",
+        kb_search: "语义+关键词搜索知识库文档",
+        wiki_browse: "浏览 Wiki 页面和文档列表",
+        expand: "逐层展开文档内容（L0→L1→L2）",
+        doc_grep: "正则搜索 Wiki 页面内容",
+        report_generate: "生成结构化分析报告",
+        timeline_build: "从文档内容构建时间线",
+        push_content: "推送结构化内容到前端界面",
+        agent_todo: "任务清单管理和进度跟踪",
+        ask_user: "向用户提问并等待回答",
+        read_file: "读取数据目录中的文件",
+        write_file: "创建或覆盖文件",
+        edit_file: "编辑文件（精确字符串替换）",
+        grep: "在文件中搜索文本模式",
+        glob: "按模式查找文件",
+        bash: "执行 Shell 命令",
+        run_sql: "执行 SQL 查询（只读）",
+        web_search: "搜索网络获取信息",
+        browser: "无头浏览器：导航、截图、提取文本",
+        tts_generate: "文本转语音",
+        image_generate: "文本生成图片",
+        video_generate: "文本生成视频",
+        music_generate: "文本生成音乐",
+        workflow_run: "启动多 Agent 并行工作流",
+        skill_invoke: "调用用户自定义技能",
+        list_skills: "列出可用的自定义技能",
+        tool_discover: "搜索和发现可用工具",
+        task_output: "获取后台任务的结果",
+        send_message: "向其他 Agent 发送消息",
+      };
+
+      // Direct select mode
+      if (query.startsWith("select:")) {
+        const names = query.slice(7).split(",").map(n => n.trim()).filter(Boolean);
+        const found: Array<{ name: string; description: string }> = [];
+        const activateTools: string[] = [];
+        for (const name of names) {
+          if (allTools[name]) {
+            found.push({ name, description: allTools[name] });
+            // If this is a deferred tool, signal the runner to activate it
+            if (DEFERRED_TOOLS.has(name)) {
+              activateTools.push(name);
+            }
+          }
+        }
+        return {
+          mode: "select",
+          requested: names,
+          found,
+          message: found.length > 0
+            ? `Found ${found.length} tool(s). You can now call these tools directly by name.`
+            : "No matching tools found. Check spelling and try again.",
+          ...(activateTools.length > 0 ? { __activate_tools__: activateTools } : {}),
+        };
+      }
+
+      // Keyword search mode
+      const lowerQuery = query.toLowerCase();
+      const results = Object.entries(allTools)
+        .filter(([name, desc]) => {
+          const nameMatch = name.toLowerCase().includes(lowerQuery);
+          const descMatch = desc.toLowerCase().includes(lowerQuery);
+          return nameMatch || descMatch;
+        })
+        .map(([name, description]) => ({ name, description }))
+        .slice(0, 10);
+
+      return {
+        mode: "search",
+        query,
+        results,
+        totalAvailable: Object.keys(allTools).length,
+        hint: results.length === 0
+          ? "No matches found. Try broader keywords or use 'select:tool_name' for exact match."
+          : undefined,
+      };
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // task_output tool — get result from a background task
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "task_output",
+    description:
+      "获取后台任务的结果。当 workflow_run 使用后台模式启动的子Agent完成时，" +
+      "用此工具获取其输出结果。也可用于查询任何已知任务 ID 的状态。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description: "后台任务的 ID",
+        },
+      },
+      required: ["task_id"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const taskId = input.task_id as string;
+      try {
+        const repos = await getRepos();
+        const task = await repos.agentTask.get(taskId);
+        if (!task) {
+          return { error: `Task ${taskId} not found.` };
+        }
+        return {
+          taskId: task.id,
+          agentType: task.agentType,
+          status: task.status,
+          output: task.output ?? null,
+          error: task.error ?? null,
+          createdAt: task.createdAt,
+          completedAt: task.completedAt ?? null,
+        };
+      } catch (err) {
+        return { error: `Failed to get task: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // send_message tool — send messages between agents in a workflow
+  // -----------------------------------------------------------------------
+
+  registry.register({
+    name: "send_message",
+    description:
+      "在工作流中向其他 Agent 发送消息。支持定向发送（指定目标 Agent ID）和广播（target='all'）。" +
+      "接收方 Agent 可以在其消息队列中读取消息。" +
+      "仅在使用 workflow_run 的 graph 或 parallel 模式时可用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "目标 Agent ID，或 'all' 广播给所有其他 Agent",
+        },
+        message: {
+          type: "string",
+          description: "要发送的消息内容",
+        },
+      },
+      required: ["target", "message"],
+    },
+    async execute(input: Record<string, unknown>) {
+      const target = input.target as string;
+      const message = input.message as string;
+
+      // Store message via execution context mailbox
+      const ctx = registry.getExecutionContext();
+      const mailbox = ctx.mailbox as Map<string, Array<{ from: string; message: string; timestamp: string }>> | undefined;
+
+      if (!mailbox) {
+        return { error: "Mailbox not available. send_message only works within workflow_run graph/parallel mode." };
+      }
+
+      const myId = ctx.agentId as string ?? "unknown";
+      const envelope = {
+        from: myId,
+        message,
+        timestamp: new Date().toISOString(),
+      };
+
+      if (target === "all") {
+        // Broadcast to all agents except self
+        let count = 0;
+        for (const [agentId, queue] of mailbox.entries()) {
+          if (agentId !== myId) {
+            queue.push(envelope);
+            count++;
+          }
+        }
+        return { delivered: count, mode: "broadcast" };
+      } else {
+        // Direct message
+        if (!mailbox.has(target)) {
+          mailbox.set(target, []);
+        }
+        mailbox.get(target)!.push(envelope);
+        return { delivered: 1, mode: "direct", target };
       }
     },
   });

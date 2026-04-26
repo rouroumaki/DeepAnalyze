@@ -84,9 +84,13 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
       "- 需要同时搜索多个知识库或多个文档\n" +
       "- 需要从不同角度并行分析同一批文档\n" +
       "- 主任务可拆分为独立子任务并行执行\n" +
+      "- 单Agent上下文窗口不够用，需要分块处理\n" +
       "提供 teamName 使用已保存团队模板（如'并行深度检索'、'全面深度分析'、'通用并行检索'），" +
       "或直接提供内联 Agent 定义。工作流以指定模式运行" +
-      "（pipeline | graph | council | parallel）并返回所有子 Agent 的执行结果汇总。",
+      "（pipeline | graph | council | parallel | single）并返回所有子 Agent 的执行结果汇总。\n" +
+      "使用 single 模式可直接委托单个子 Agent 执行任务，跳过多 Agent 编排开销。\n" +
+      "在 graph 和 parallel 模式下，子Agent 间可通过 send_message 工具互相通信。\n" +
+      "每个子Agent拥有独立的完整上下文窗口，适合处理大型任务。简单查询不需要使用此工具。",
 
     inputSchema: {
       type: "object",
@@ -98,7 +102,7 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
         },
         mode: {
           type: "string",
-          enum: ["pipeline", "graph", "council", "parallel"],
+          enum: ["pipeline", "graph", "council", "parallel", "single"],
           description: "工作流调度模式。",
         },
         goal: {
@@ -213,6 +217,19 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
       // Build and execute the workflow
       // -------------------------------------------------------------------
       const workflowId = randomUUID();
+
+      // Initialize mailbox for inter-agent communication (graph/parallel modes)
+      const needsMailbox = effectiveMode === "graph" || effectiveMode === "parallel";
+      if (needsMailbox) {
+        const mailbox = new Map<string, Array<{ from: string; message: string; timestamp: string }>>();
+        for (const agent of workflowAgents) {
+          mailbox.set(agent.id, []);
+        }
+        ctx.toolRegistry.setExecutionContext({
+          ...ctx.toolRegistry.getExecutionContext(),
+          mailbox,
+        });
+      }
 
       const engine = new WorkflowEngine(
         {

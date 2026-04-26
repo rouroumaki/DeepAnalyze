@@ -11,6 +11,8 @@
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ModelRouter } from "../../models/router.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ContextManager } from "./context-manager.js";
@@ -29,12 +31,16 @@ import type {
   CompactBoundaryMeta,
 } from "./types.js";
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
+import { SUB_AGENT_BLOCKED_TOOLS } from "./tool-setup.js";
+import type { HookManager } from "./hooks.js";
 import type {
   ChatMessage,
   ChatResponse,
+  ChatOptions,
   ToolCall,
   ToolDefinition,
   ModelRole,
+  StreamChunk,
 } from "../../models/provider.js";
 
 // ---------------------------------------------------------------------------
@@ -77,11 +83,18 @@ export class AgentRunner {
   private toolRegistry: ToolRegistry;
   private agentDefinitions = new Map<string, AgentDefinition>();
   private displayResolver: DisplayResolver | null = null;
+  private hookManager: HookManager | null = null;
 
-  constructor(modelRouter: ModelRouter, toolRegistry: ToolRegistry) {
+  constructor(modelRouter: ModelRouter, toolRegistry: ToolRegistry, hookManager?: HookManager) {
     this.modelRouter = modelRouter;
     this.toolRegistry = toolRegistry;
+    if (hookManager) this.hookManager = hookManager;
     this.registerAgent(DEFAULT_AGENT_DEFINITION);
+  }
+
+  /** Set or replace the hook manager. */
+  setHookManager(hookManager: HookManager): void {
+    this.hookManager = hookManager;
   }
 
   // -----------------------------------------------------------------------
@@ -205,7 +218,19 @@ export class AgentRunner {
         }
       }
     }
-    const systemPromptWithScope = effectiveSystemPrompt + scopeInjection;
+    let systemPromptWithScope = effectiveSystemPrompt + scopeInjection;
+
+    // Load .deepanalyze.md project config and inject into system prompt
+    try {
+      const { DEEPANALYZE_CONFIG } = await import("../../core/config.js");
+      const mdPath = join(DEEPANALYZE_CONFIG.dataDir, ".deepanalyze.md");
+      const md = await readFile(mdPath, "utf-8");
+      if (md.trim()) {
+        systemPromptWithScope += "\n\n## 项目配置\n" + md.trim();
+      }
+    } catch {
+      // File does not exist — normal, skip
+    }
 
     console.log(`[AgentRunner] Starting agent run: taskId=${taskId}, agentType=${agentType}, modelRole=${modelRole}, modelId=${modelId}, providers=${this.modelRouter.listProviderNames().join(",")}`);
 
@@ -217,9 +242,15 @@ export class AgentRunner {
     );
 
     const effectiveTools = options.toolsOverride ?? definition.tools;
+    // Apply recursive guard: block management tools for sub-agents (skill/workflow spawned)
+    // Skill invocations are exempt — they need workflow_run to dispatch parallel analysis.
+    const needsRecursiveGuard = !options.isSkillInvocation && !!(options.systemPromptOverride || options.toolsOverride);
+    const filteredTools = needsRecursiveGuard
+      ? effectiveTools.filter(t => !SUB_AGENT_BLOCKED_TOOLS.has(t))
+      : effectiveTools;
     let toolDefs;
     try {
-      toolDefs = this.toolRegistry.buildToolDefinitions(effectiveTools);
+      toolDefs = this.toolRegistry.buildToolDefinitions(filteredTools);
     } catch (err) {
       console.error("[AgentRunner] Failed to build tool definitions:", err instanceof Error ? err.message : String(err));
       throw err;
@@ -299,15 +330,23 @@ export class AgentRunner {
         });
       }
 
-      // 4. Call the LLM (with automatic model fallback)
-      let response: ChatResponse;
+      // 4. Call the LLM via streaming (with automatic model fallback)
+      let assistantContent: string;
+      let toolCalls: ToolCall[] | undefined;
+      let finishReason: string | undefined;
+      let turnUsage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
       try {
-        response = await this.chatWithFallback(
+        const streamResult = await this.chatStreamWithFallback(
           messages, toolDefs, options,
           modelId, modelRole, fallbackRole,
           usingFallback,
           (newModelId: string) => { modelId = newModelId; usingFallback = true; },
+          taskId, turn,
         );
+        assistantContent = streamResult.content;
+        toolCalls = streamResult.toolCalls.length > 0 ? streamResult.toolCalls : undefined;
+        finishReason = streamResult.finishReason;
+        turnUsage = streamResult.usage;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
 
@@ -368,12 +407,13 @@ export class AgentRunner {
 
       // 5. Track token usage
       consecutiveLLMErrors = 0; // Reset on successful response
-      if (response.usage) {
-        totalInputTokens += response.usage.inputTokens;
-        totalOutputTokens += response.usage.outputTokens;
+      if (turnUsage) {
+        totalInputTokens += turnUsage.inputTokens;
+        totalOutputTokens += turnUsage.outputTokens;
+        // Emit turn_usage event for real-time status display
+        this.emitEvent(options.onEvent, { type: "turn_usage", taskId, turn, usage: turnUsage });
       }
 
-      const assistantContent = response.content ?? "";
       if (assistantContent) {
         lastAssistantContent = assistantContent;
       }
@@ -382,6 +422,7 @@ export class AgentRunner {
         this.recordProgress(options.onEvent, taskId, turn, "text", assistantContent);
       }
 
+      // Emit turn as boundary signal — content was already streamed via text_delta
       this.emitEvent(options.onEvent, { type: "turn", taskId, turn, content: assistantContent });
 
       // Build the assistant message
@@ -391,7 +432,6 @@ export class AgentRunner {
       };
 
       // Process tool calls
-      const toolCalls = response.toolCalls;
       let agentCalledFinish = false;
 
       if (toolCalls && toolCalls.length > 0) {
@@ -412,6 +452,32 @@ export class AgentRunner {
             agentSettings,
           );
           messages.push(toolResultMessage);
+
+          // Handle tool_discover: dynamically inject deferred tools into available definitions
+          if (toolCall.function.name === "tool_discover") {
+            try {
+              const rawContent = typeof toolResultMessage.content === "string"
+                ? toolResultMessage.content
+                : JSON.stringify(toolResultMessage.content);
+              const parsed = JSON.parse(rawContent);
+              if (parsed?.__activate_tools__ && Array.isArray(parsed.__activate_tools__)) {
+                const newDefs = this.toolRegistry.buildToolDefinitions(parsed.__activate_tools__, true);
+                if (newDefs.length > 0) {
+                  // Merge new tool definitions into the active set (avoid duplicates)
+                  const existingNames = new Set(toolDefs.map(d => d.name));
+                  for (const def of newDefs) {
+                    if (!existingNames.has(def.name)) {
+                      toolDefs.push(def);
+                      existingNames.add(def.name);
+                    }
+                  }
+                  console.log(`[AgentRunner] Dynamically activated ${newDefs.length} tool(s): ${newDefs.map(d => d.name).join(", ")}`);
+                }
+              }
+            } catch {
+              // Ignore parse errors - just skip dynamic activation
+            }
+          }
         }
       } else {
         messages.push(assistantMessage);
@@ -478,7 +544,7 @@ export class AgentRunner {
       }
 
       // 7. Completion check
-      if (this.isDone(assistantContent, toolCalls, response.finishReason, agentCalledFinish)) {
+      if (this.isDone(assistantContent, toolCalls, finishReason, agentCalledFinish)) {
         break;
       }
     }
@@ -589,6 +655,102 @@ export class AgentRunner {
   }
 
   // -----------------------------------------------------------------------
+  // Streaming: consume stream + stream with fallback
+  // -----------------------------------------------------------------------
+
+  /**
+   * Consume an AsyncGenerator<StreamChunk>, emitting text_delta events for
+   * each content chunk and accumulating the full result.
+   */
+  private async consumeStream(
+    stream: AsyncGenerator<StreamChunk>,
+    onEvent: ((event: AgentEvent) => void) | undefined,
+    taskId: string,
+    turn: number,
+  ): Promise<{ content: string; toolCalls: ToolCall[]; finishReason?: string; usage?: { inputTokens: number; outputTokens: number; cachedTokens?: number } }> {
+    let fullContent = "";
+    const toolCallMap = new Map<number, ToolCall>();
+    let finishReason: string | undefined;
+    let usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
+
+    for await (const chunk of stream) {
+      switch (chunk.type) {
+        case "text":
+          if (chunk.content) {
+            fullContent += chunk.content;
+            this.emitEvent(onEvent, { type: "text_delta", taskId, turn, delta: chunk.content });
+          }
+          break;
+        case "tool_call":
+          if (chunk.toolCall?.id) {
+            const idx = toolCallMap.size;
+            toolCallMap.set(idx, chunk.toolCall as ToolCall);
+          }
+          break;
+        case "tool_call_delta":
+          if (chunk.toolCall?.function?.arguments && toolCallMap.size > 0) {
+            const last = Array.from(toolCallMap.values()).pop()!;
+            last.function.arguments += chunk.toolCall.function.arguments;
+          }
+          break;
+        case "done":
+          finishReason = chunk.finishReason;
+          if (chunk.usage) {
+            usage = chunk.usage;
+          }
+          break;
+        case "error":
+          throw new Error(chunk.error ?? "Stream error");
+      }
+    }
+    return { content: fullContent, toolCalls: Array.from(toolCallMap.values()), finishReason, usage };
+  }
+
+  /**
+   * Streaming version of chatWithFallback: calls chatStream() with automatic
+   * model fallback, emitting text_delta events for each content chunk.
+   */
+  private async chatStreamWithFallback(
+    messages: ChatMessage[],
+    toolDefs: ToolDefinition[],
+    options: AgentRunOptions,
+    modelId: string,
+    modelRole: string,
+    fallbackRole: ModelRole,
+    usingFallback: boolean,
+    onFallback: (newModelId: string) => void,
+    taskId: string,
+    turn: number,
+  ): Promise<{ content: string; toolCalls: ToolCall[]; finishReason?: string; usage?: { inputTokens: number; outputTokens: number; cachedTokens?: number } }> {
+    const tools = toolDefs.length > 0 ? toolDefs : undefined;
+    const opts: ChatOptions = { model: modelId, tools, signal: options.signal };
+
+    try {
+      return await this.consumeStream(
+        this.modelRouter.chatStream(messages, opts),
+        options.onEvent, taskId, turn,
+      );
+    } catch (primaryError) {
+      if (!usingFallback) {
+        const fallbackModelId = this.modelRouter.getDefaultModel(fallbackRole);
+        if (fallbackModelId === modelId) throw primaryError;
+        const primaryMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+        console.warn(`[AgentRunner] Stream primary (${modelRole}: ${modelId}) failed (${primaryMsg.substring(0, 200)}), switching to fallback (${fallbackRole}: ${fallbackModelId})`);
+        onFallback(fallbackModelId);
+        try {
+          return await this.consumeStream(
+            this.modelRouter.chatStream(messages, { ...opts, model: fallbackModelId }),
+            options.onEvent, taskId, turn,
+          );
+        } catch {
+          throw primaryError;
+        }
+      }
+      throw primaryError;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Message building
   // -----------------------------------------------------------------------
 
@@ -605,9 +767,21 @@ export class AgentRunner {
       for (const msg of contextMessages) {
         messages.push({ role: msg.role, content: msg.content });
       }
+
+      // Context boundary: tell the model the above messages are completed
+      // interactions and it should focus only on the new request below.
+      // This prevents the model from re-doing completed work in multi-turn
+      // conversations where history is loaded from the DB.
+      const framedInput =
+        "上面的消息是本次会话中已完成的交互记录。\n" +
+        "请仅针对以下新请求进行响应，不要重新执行已完成的工作。\n\n" +
+        input;
+
+      messages.push({ role: "user", content: framedInput });
+    } else {
+      messages.push({ role: "user", content: input });
     }
 
-    messages.push({ role: "user", content: input });
     return messages;
   }
 
@@ -637,6 +811,17 @@ export class AgentRunner {
     this.emitEvent(onEvent, { type: "tool_call", taskId, turn, toolName, input: toolInput });
     this.recordProgress(onEvent, taskId, turn, "tool_call", `Calling tool: ${toolName}`, toolName, toolInput);
 
+    // PreToolUse hook — may block execution
+    if (this.hookManager) {
+      const preResult = await this.hookManager.fire("PreToolUse", { toolName, toolInput, taskId });
+      if (!preResult.allowed) {
+        const blockMsg = preResult.error ?? `Blocked by PreToolUse hook`;
+        const errorResult = { error: blockMsg };
+        this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result: errorResult });
+        return { role: "tool", content: JSON.stringify(errorResult), toolCallId: toolCall.id };
+      }
+    }
+
     const tool = this.toolRegistry.get(toolName);
     if (!tool) {
       const errorMsg = `Tool "${toolName}" not found in registry.`;
@@ -655,8 +840,44 @@ export class AgentRunner {
       this.recordProgress(onEvent, taskId, turn, "error", String(result), toolName);
     }
 
+    // PostToolUse hook — fire-and-forget (does not affect result)
+    if (this.hookManager) {
+      await this.hookManager.fire("PostToolUse", { toolName, toolInput, taskId }).catch(() => {});
+    }
+
     this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result });
     this.recordProgress(onEvent, taskId, turn, "tool_result", `Tool ${toolName} completed`, toolName, undefined, result);
+
+    // Handle skill_invoke: spawn a sub-agent with the skill's prompt
+    if (toolName === "skill_invoke" && result && typeof result === "object" && (result as Record<string, unknown>).__skill_invoke__) {
+      const skillData = result as {
+        skill: { name: string; prompt: string; tools: string[]; modelRole: string };
+        input: string;
+      };
+      try {
+        const skillResult = await this.run({
+          input: skillData.input,
+          systemPromptOverride: skillData.skill.prompt,
+          toolsOverride: skillData.skill.tools,
+          modelRole: skillData.skill.modelRole as "main" | "summarizer" | "embedding" | "vlm",
+          isSkillInvocation: true,
+          signal: undefined,
+          onEvent,
+          maxTurns: 20,
+        });
+        result = {
+          skillName: skillData.skill.name,
+          output: skillResult.output,
+          turnsUsed: skillResult.turnsUsed,
+          toolCallsCount: skillResult.toolCallsCount,
+        };
+      } catch (err) {
+        result = {
+          skillName: skillData.skill.name,
+          error: `Skill execution failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
 
     // Inject display names (originalName, kbName) into tool results FIRST
     // so that collectAccessedPages can pick up the injected names

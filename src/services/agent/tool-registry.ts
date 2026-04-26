@@ -9,6 +9,27 @@ import type { AgentTool } from "./types.js";
 import type { ToolDefinition } from "../../models/provider.js";
 
 // ---------------------------------------------------------------------------
+// Deferred tool configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Tools that are loaded lazily to save input tokens.
+ * These tools are registered but not included in the initial tool definitions
+ * sent to the model. The model can discover them via the tool_discover tool.
+ */
+export const DEFERRED_TOOLS = new Set([
+  "tts_generate",
+  "image_generate",
+  "video_generate",
+  "music_generate",
+  "browser",
+  "timeline_build",
+]);
+
+/** Tools that are always included in the initial tool definitions (core tools). */
+export const CORE_TOOLS: Set<string> | null = null; // null means "all non-deferred"
+
+// ---------------------------------------------------------------------------
 // Built-in tools
 // ---------------------------------------------------------------------------
 
@@ -43,8 +64,12 @@ const thinkTool: AgentTool = {
 const finishTool: AgentTool = {
   name: "finish",
   description:
-    "Signal that you have completed the task. Provide your final answer " +
-    "or summary. This tells the orchestrator that no further action is needed.",
+    "Signal that you have FULLY completed the task. Provide your final answer " +
+    "or summary. This tells the orchestrator that no further action is needed. " +
+    "IMPORTANT: Only call finish when you have thoroughly completed all aspects of the task. " +
+    "If you have only done partial analysis, found some but not all documents, or " +
+    "haven't yet synthesized a complete answer, continue working instead of calling finish. " +
+    "Premature finish is worse than taking more turns to do thorough work.",
   async execute(input: Record<string, unknown>) {
     return { completed: true, summary: input.summary };
   },
@@ -176,14 +201,26 @@ export class ToolRegistry {
 
   /**
    * Build tool definitions suitable for LLM function calling.
-   * If names is provided, only include those tools. Otherwise include all.
+   * If names is provided, only include those tools. Otherwise include all
+   * non-deferred tools (deferred tools can be discovered via tool_discover).
    * Returns ToolDefinition[] compatible with ChatOptions.tools.
    *
-   * @param names - Optional array of tool names to include.
+   * @param names - Optional array of tool names to include. Use ["*"] for all.
+   * @param includeDeferred - If true, include deferred tools. Default: false.
    * @returns Array of tool definitions for the model's tool use parameter.
    */
-  buildToolDefinitions(names?: string[]): ToolDefinition[] {
-    const tools = names ? this.filterByNames(names) : this.getAll();
+  buildToolDefinitions(names?: string[], includeDeferred = false): ToolDefinition[] {
+    let tools: AgentTool[];
+
+    if (names && names.includes("*")) {
+      // Wildcard: return all tools (respecting deferred flag)
+      tools = this.getAll().filter(t => includeDeferred || !DEFERRED_TOOLS.has(t.name));
+    } else if (names) {
+      tools = this.filterByNames(names);
+    } else {
+      // No names specified: return all non-deferred tools
+      tools = this.getAll().filter(t => includeDeferred || !DEFERRED_TOOLS.has(t.name));
+    }
 
     return tools.map((tool) => ({
       name: tool.name,

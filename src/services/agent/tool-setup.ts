@@ -265,7 +265,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           }
         }
 
-        return {
+        const result: Record<string, unknown> = {
           kbId,
           totalDocuments: docs.length,
           categories: Array.from(categories.values()).map((c) => ({
@@ -285,6 +285,13 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
             };
           }),
         };
+
+        // Scale hint: nudge toward parallel tools for large document sets
+        if (docs.length > 50) {
+          result._hint = `共 ${docs.length} 个文档，数量较多。建议使用 skill_invoke 调用"全面分块分析"技能进行分块并行分析，或使用 workflow_run 创建并行工作流。`;
+        }
+
+        return result;
       }
 
       // Mode 1: View a specific page by ID
@@ -1063,8 +1070,10 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     description:
       "调用已注册的自定义技能（Skill）。技能是针对特定场景优化的预定义工作流。" +
       "调用后会加载技能的提示词作为补充指令，在独立上下文中执行任务。" +
-      "先用 list_skills 查看可用技能列表。" +
-      "适用场景：全面分块分析（大量文档）、长篇写作、深度调研、对比分析等。当用户的请求匹配某个技能的描述时，优先使用技能而非手动逐步处理。",
+      "先用 list_skills 查看可用技能列表和描述，再根据任务匹配调用。" +
+      "典型使用时机：大量文档需要全面分析时调用「全面分块分析」技能；需要撰写长篇报告时调用「长篇写作」技能；" +
+      "当系统提示中建议使用 skill_invoke 时，应立即调用对应技能。" +
+      "技能会自动处理分块、并行、合成等复杂流程，比自己逐步处理更高效。",
     inputSchema: {
       type: "object",
       properties: {

@@ -212,6 +212,26 @@ export class AgentRunner {
             injection += `\n\n用户特别关注以下文档，请优先分析：\n${docDetails.join("\n")}`;
           }
 
+          // Count total documents for scale-aware guidance
+          let totalDocs = 0;
+          const docCountDetails: string[] = [];
+          for (const kbScope of knowledgeBases) {
+            try {
+              const docs = await repos.document.getByKbId(kbScope.kbId);
+              const kb = allKbs.find(k => k.id === kbScope.kbId);
+              const kbName = kb ? kb.name : kbScope.kbId;
+              totalDocs += docs.length;
+              if (docs.length > 0) {
+                docCountDetails.push(`${kbName}: ${docs.length}个文档`);
+              }
+            } catch { /* non-critical */ }
+          }
+
+          if (totalDocs > 30) {
+            injection += `\n\n## 知识库规模\n当前知识库共包含 ${totalDocs} 个文档（${docCountDetails.join("、")}）。` +
+              `\n文档数量较多，建议使用 skill_invoke 调用"全面分块分析"技能进行分块并行分析，或使用 workflow_run 创建并行工作流，确保覆盖全部文档。`;
+          }
+
           scopeInjection = injection;
         } catch {
           scopeInjection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。使用 kb_search 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n不要搜索此范围之外的知识库。`;

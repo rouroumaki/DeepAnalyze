@@ -152,6 +152,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         sessionId: body.sessionId,
         maxTurns: body.maxTurns,
         contextMessages,
+        scope: body.scope,
       });
 
       // Save assistant response to the chat session
@@ -272,13 +273,23 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
             sendEvent("start", { taskId: event.taskId, agentType: event.agentType });
             break;
 
+          case "text_delta":
+            // Stream individual text deltas to the frontend
+            sendEvent("content_delta", { delta: event.delta, taskId: event.taskId, turn: event.turn });
+            fullContent += event.delta;
+            break;
+
           case "turn":
             sendEvent("turn", { turn: event.turn, taskId: event.taskId });
-            // Forward any text content from the turn as a content event
+            // In streaming mode, content is already sent via content_delta,
+            // but still send content event for backward compatibility and history
             if (event.content) {
-              fullContent += (fullContent ? "\n\n" : "") + event.content;
               sendEvent("content", { content: event.content, accumulated: fullContent });
             }
+            break;
+
+          case "turn_usage":
+            sendEvent("turn_usage", { taskId: event.taskId, turn: event.turn, usage: event.usage });
             break;
 
           case "tool_call": {
@@ -295,7 +306,10 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
             // so it appears inline in the chat message between tool calls.
             if (event.toolName === "think" && event.input?.thought) {
               const thoughtText = String(event.input.thought);
+              // Send as content_delta for consistent streaming UX
+              sendEvent("content_delta", { delta: thoughtText, taskId: event.taskId, turn: event.turn });
               fullContent += (fullContent ? "\n\n" : "") + thoughtText;
+              // Also send backward-compat content event
               sendEvent("content", { content: thoughtText, accumulated: fullContent });
             }
             break;

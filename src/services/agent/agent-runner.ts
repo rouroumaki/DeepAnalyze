@@ -175,6 +175,7 @@ export class AgentRunner {
 
     // Inject scope constraints into system prompt if scope is provided
     let scopeInjection = "";
+    let userInputPrefix = ""; // Scale signal goes to user message for higher visibility
     if (options.scope) {
       // Frontend sends: { knowledgeBases: [{ kbId, mode, documentIds? }], webSearch }
       const knowledgeBases = options.scope.knowledgeBases as Array<{ kbId: string; mode: string; documentIds?: string[] }> | undefined;
@@ -227,9 +228,10 @@ export class AgentRunner {
             } catch { /* non-critical */ }
           }
 
+          // Inject scale signal as USER MESSAGE PREFIX (more prominent than system prompt)
           if (totalDocs > 30) {
-            injection += `\n\n## 知识库规模\n当前知识库共包含 ${totalDocs} 个文档（${docCountDetails.join("、")}）。` +
-              `\n文档数量较多，建议使用 skill_invoke 调用"全面分块分析"技能进行分块并行分析，或使用 workflow_run 创建并行工作流，确保覆盖全部文档。`;
+            userInputPrefix = `[系统提示：当前知识库共包含 ${totalDocs} 个文档（${docCountDetails.join("、")}）。文档数量较多，请使用 skill_invoke 调用「全面分块分析」技能进行分块并行处理，或使用 workflow_run 创建并行工作流。]\n\n`;
+            console.log(`[AgentRunner] KB scale signal injected: ${totalDocs} docs, prefix length=${userInputPrefix.length}`);
           }
 
           scopeInjection = injection;
@@ -257,7 +259,7 @@ export class AgentRunner {
     // Build initial messages
     const messages = this.buildMessages(
       systemPromptWithScope,
-      options.input,
+      userInputPrefix + options.input,
       options.contextMessages,
     );
 
@@ -819,6 +821,9 @@ export class AgentRunner {
   ): Promise<ChatMessage> {
     const toolName = toolCall.function.name;
     let toolInput: Record<string, unknown>;
+
+    // Log tool calls for observability
+    console.log(`[AgentRunner] Tool call: turn=${turn}, tool=${toolName}, task=${taskId}`);
 
     try {
       toolInput = JSON.parse(toolCall.function.arguments);

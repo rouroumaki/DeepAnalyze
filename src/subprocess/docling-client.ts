@@ -40,8 +40,10 @@ export async function startDocling(baseDir: string, mgr: SubprocessManager): Pro
   const separator = baseDir.endsWith("/") ? "" : "/";
   const servicePath = `${baseDir}${separator}docling-service`;
 
-  // Set HF_ENDPOINT for HuggingFace model downloads if not already set
-  if (!process.env.HF_ENDPOINT) {
+  // Set HF_ENDPOINT for HuggingFace model downloads if not already set.
+  // When HF_ENDPOINT is explicitly set to empty string (air-gapped mode),
+  // skip setting a default to prevent download attempts.
+  if (process.env.HF_ENDPOINT === undefined) {
     process.env.HF_ENDPOINT = "https://hf-mirror.com";
   }
 

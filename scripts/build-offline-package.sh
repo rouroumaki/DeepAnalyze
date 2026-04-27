@@ -44,17 +44,32 @@ echo "[3/8] 构建 Docker 镜像..."
 
 cd "$PROJECT_ROOT"
 
-# Backend
-echo "  构建 backend..."
-docker build -t deepanalyze-backend:offline -f Dockerfile .
+# Backend — patch existing image with latest source code
+echo "  构建 backend (patching existing image with latest code)..."
+cat > /tmp/Dockerfile.backend-patch << 'PATCH_EOF'
+FROM deepanalyze-backend:latest
+COPY src/ /app/src/
+COPY docling-service/ /app/docling-service/
+COPY paddleocr-vl-service/ /app/paddleocr-vl-service/
+COPY whisper-service/ /app/whisper-service/
+COPY package.json /app/package.json
+RUN bun install --production 2>/dev/null || bun install
+ENV HF_ENDPOINT=""
+PATCH_EOF
 
-# Frontend
-echo "  构建 frontend..."
-docker build -t deepanalyze-frontend:offline -f frontend/Dockerfile frontend/
+DOCKER_BUILDKIT=0 docker build -t deepanalyze-backend:offline -f /tmp/Dockerfile.backend-patch "$PROJECT_ROOT"
 
-# PostgreSQL + pgvector + zhparser
-echo "  构建 postgres..."
-docker build -t deepanalyze-pg:offline -f config/pg-zhparser.Dockerfile config/
+# Frontend — update nginx config in existing image
+echo "  构建 frontend (updating nginx config)..."
+docker rm -f temp-frontend-build 2>/dev/null || true
+docker create --name temp-frontend-build deepanalyze-frontend:latest sh
+docker cp "$PROJECT_ROOT/frontend/nginx.conf" temp-frontend-build:/etc/nginx/conf.d/default.conf
+docker commit temp-frontend-build deepanalyze-frontend:offline
+docker rm temp-frontend-build
+
+# PostgreSQL — just tag the existing image
+echo "  标记 postgres..."
+docker tag deepanalyze-pg:latest deepanalyze-pg:offline
 
 echo "  所有镜像构建完成"
 
@@ -122,12 +137,13 @@ chmod +x "$OUTPUT_DIR/load-images.sh" "$OUTPUT_DIR/start.sh" "$OUTPUT_DIR/stop.s
 echo "  复制源代码..."
 rsync -a --exclude='node_modules' \
     --exclude='.git' \
-    --exclude='data/models' \
+    --exclude='data/' \
     --exclude='pip-wheels' \
     --exclude='frontend/dist' \
     --exclude='frontend/node_modules' \
     --exclude='test-results' \
     --exclude='deploy' \
+    --exclude='.claude' \
     "$PROJECT_ROOT/" "$OUTPUT_DIR/source/"
 
 # 开发工具

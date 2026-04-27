@@ -12,6 +12,8 @@ Supports dynamic model selection via model_config:
   - table_mode:    "accurate" | "fast"
   - use_vlm:       boolean
   - vlm_model:     repo_id for VLM model
+  - vlm_mode:      "inline" (load into Docling process) | "api" (standalone service)
+  - vlm_api_url:   URL for the VLM API service (api mode only)
   - artifacts_path: local model root directory
 """
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any
 
@@ -51,7 +54,9 @@ def _get_converter(model_config: dict):
       - ocr_lang       (list[str]): e.g. ["chinese", "english"]
       - table_mode     (str): "accurate" | "fast"
       - use_vlm        (bool): Whether to use VLM pipeline
-      - vlm_model      (str): VLM repo_id e.g. "stepfun-ai/GOT-OCR-2.0-hf"
+      - vlm_model      (str): VLM repo_id e.g. "PaddlePaddle/PaddleOCR-VL-1.5"
+      - vlm_mode       (str): "inline" | "api"
+      - vlm_api_url    (str): API URL for VLM service (api mode only)
     """
     cache_key = _config_hash(model_config)
     with _cache_lock:
@@ -180,33 +185,45 @@ def _build_standard_converter(model_config: dict):
 
 
 def _build_vlm_converter(model_config: dict):
-    """Build a VLM-pipeline DocumentConverter from model_config."""
+    """Build a VLM-pipeline DocumentConverter from model_config.
+
+    Supports two modes:
+      - "inline": Load VLM directly into the Docling process via Transformers
+      - "api":     Call a standalone PaddleOCR-VL service via OpenAI-compatible API
+    """
+    import os
     from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.pipeline_options import VlmPipelineOptions, InlineVlmOptions
-    from docling.models.inference_engines.vlm.base import VlmEngineType
+    from docling.datamodel.pipeline_options import VlmPipelineOptions
     from docling.pipeline.vlm_pipeline import VlmPipeline
+    from docling.datamodel.settings import settings
 
-    vlm_model = model_config.get("vlm_model", "stepfun-ai/GOT-OCR-2.0-hf")
+    # Optimize GPU batch size for VLM inference.
+    # Benchmarked: batch_size=8 gives ~12% speedup over default 4 on RTX 5090.
+    # Larger batches (15+) are slower due to autoregressive decoding overhead.
+    settings.perf.page_batch_size = 8
 
-    # Try to find a built-in VLM spec
-    vlm_spec = None
-    try:
-        from docling.datamodel.vlm_model_specs import GOT2_TRANSFORMERS
-        vlm_spec_map = {
-            "stepfun-ai/GOT-OCR-2.0-hf": GOT2_TRANSFORMERS,
-        }
-        vlm_spec = vlm_spec_map.get(vlm_model)
-    except ImportError:
-        pass
+    vlm_model = model_config.get("vlm_model", "PaddlePaddle/PaddleOCR-VL-1.5")
+    vlm_mode = model_config.get("vlm_mode", "inline")
 
-    if vlm_spec is None:
-        _log.warning("VLM model %s not found in built-in specs, VLM may fail", vlm_model)
+    # --- Resolve artifacts_path for VLM models ---
+    artifacts_path = model_config.get("artifacts_path", "")
+    if artifacts_path:
+        vlm_artifacts = os.path.join(artifacts_path, "vlm")
+        if not os.path.isdir(vlm_artifacts):
+            vlm_artifacts = artifacts_path
+    else:
+        vlm_artifacts = None
+
+    if vlm_mode == "api":
+        vlm_options = _build_api_vlm_options(model_config)
+        _log.info("Using VLM API mode: url=%s", vlm_options.url if hasattr(vlm_options, 'url') else 'unknown')
+    else:
+        vlm_options = _build_inline_vlm_options(vlm_model, vlm_artifacts)
+        _log.info("Using VLM inline mode: model=%s", vlm_model)
 
     pipeline_options = VlmPipelineOptions(
-        vlm_options=InlineVlmOptions(
-            engine_type=VlmEngineType.TRANSFORMERS,
-            model_spec=vlm_spec,
-        ),
+        artifacts_path=vlm_artifacts,
+        vlm_options=vlm_options,
     )
 
     converter = DocumentConverter(
@@ -217,8 +234,181 @@ def _build_vlm_converter(model_config: dict):
             ),
         },
     )
-
     return converter
+
+
+def _build_inline_vlm_options(vlm_model: str, artifacts_path: str | None):
+    """Build InlineVlmOptions for loading VLM directly into the process."""
+    from docling.datamodel.pipeline_options_vlm_model import (
+        InlineVlmOptions,
+        InferenceFramework,
+        TransformersModelType,
+        TransformersPromptStyle,
+        ResponseFormat,
+    )
+
+    # PaddleOCR-VL-1.5 specific configuration
+    if vlm_model in ("PaddlePaddle/PaddleOCR-VL-1.5", "PaddleOCR-VL-1.5"):
+        return InlineVlmOptions(
+            repo_id="PaddlePaddle/PaddleOCR-VL-1.5",
+            prompt="请识别并提取图片中的所有文字内容，保持原始布局和格式。",
+            inference_framework=InferenceFramework.TRANSFORMERS,
+            response_format=ResponseFormat.MARKDOWN,
+            transformers_model_type=TransformersModelType.AUTOMODEL_CAUSALLM,
+            transformers_prompt_style=TransformersPromptStyle.CHAT,
+            trust_remote_code=True,
+            torch_dtype="bfloat16",
+            max_new_tokens=8192,
+            load_in_8bit=False,
+            scale=1.5,
+            extra_generation_config={
+                "skip_special_tokens": True,
+            },
+        )
+
+    # GLM-OCR configuration (Docling native support since v2.84.0)
+    # Uses official prompt "Text Recognition:" — the model is a dedicated OCR
+    # model, not a document structure analyzer. Headings are recovered via
+    # _restore_document_structure() post-processing.
+    if vlm_model in ("zai-org/GLM-OCR", "GLM-OCR", "glm-ocr"):
+        return InlineVlmOptions(
+            repo_id="zai-org/GLM-OCR",
+            prompt="Text Recognition:",
+            inference_framework=InferenceFramework.TRANSFORMERS,
+            response_format=ResponseFormat.MARKDOWN,
+            transformers_model_type=TransformersModelType.AUTOMODEL_IMAGETEXTTOTEXT,
+            transformers_prompt_style=TransformersPromptStyle.CHAT,
+            torch_dtype="bfloat16",
+            load_in_8bit=False,
+            scale=2.0,
+            max_new_tokens=4096,
+        )
+
+    # Generic VLM model configuration
+    return InlineVlmOptions(
+        repo_id=vlm_model,
+        prompt="Convert this page to docling.",
+        inference_framework=InferenceFramework.TRANSFORMERS,
+        response_format=ResponseFormat.MARKDOWN,
+        transformers_model_type=TransformersModelType.AUTOMODEL_IMAGETEXTTOTEXT,
+        transformers_prompt_style=TransformersPromptStyle.CHAT,
+        trust_remote_code=True,
+    )
+
+
+def _build_api_vlm_options(model_config: dict):
+    """Build ApiVlmOptions for calling a standalone VLM service."""
+    from docling.datamodel.pipeline_options_vlm_model import (
+        ApiVlmOptions,
+        ResponseFormat,
+    )
+
+    vlm_api_url = model_config.get(
+        "vlm_api_url",
+        "http://localhost:8600/v1/chat/completions",
+    )
+    vlm_model = model_config.get("vlm_model", "PaddlePaddle/PaddleOCR-VL-1.5")
+
+    return ApiVlmOptions(
+        url=vlm_api_url,
+        prompt="请识别并提取图片中的所有文字内容，保持原始布局和格式。",
+        response_format=ResponseFormat.MARKDOWN,
+        timeout=120.0,
+        concurrency=3,
+    )
+
+
+# Regex to strip PaddleOCR-VL location tokens: <|LOC_123|>
+# Both raw and HTML-encoded variants
+_LOC_TOKEN_RE = re.compile(r"(?:<\|LOC_\d+\|>|&lt;\|LOC_\d+\|&gt;)")
+
+# Regex to strip partial special tokens that leak from VLM models:
+# - GLM-OCR emits &lt;|user at page boundaries (HTML-encoded <|user)
+# - Also handle raw variant and any partial tokens like <|user|>, <|assistant| etc.
+_VLM_ARTIFACT_RE = re.compile(r"&lt;\|\w+(?:\|&gt;)?|<\|\w+\|>")
+
+
+def _clean_vlm_output(text: str) -> str:
+    """Remove VLM-specific special tokens from output text.
+
+    Handles:
+    - PaddleOCR-VL-1.5 <|LOC_xx|> location tokens
+    - GLM-OCR &lt;|user partial tokens at page boundaries
+    - Any other VLM special token artifacts
+    """
+    cleaned = _LOC_TOKEN_RE.sub("", text)
+    cleaned = _VLM_ARTIFACT_RE.sub("", cleaned)
+    # Collapse multiple consecutive blank lines to at most two
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+# Patterns for detecting section headings in OCR output where the VLM model
+# does not produce markdown heading markers (##) itself.
+#
+# Pattern 1: "1. Introduction" or "3.2. Retriever" (numbered sections)
+# Pattern 2: "References" or "Bibliography" (common section names at start of line)
+_HEADING_NUM_RE = re.compile(
+    r"^(\d+(?:\.\d+)*)\.?\s+(.{2,80})$",
+    re.MULTILINE,
+)
+_KNOWN_SECTIONS = {
+    "abstract", "introduction", "background", "related work",
+    "methodology", "methods", "materials and methods", "experiments",
+    "results", "discussion", "conclusion", "conclusions",
+    "references", "bibliography", "acknowledgments", "acknowledgements",
+    "appendix", "summary", "future work", "limitations",
+}
+
+
+def _restore_document_structure(text: str) -> str:
+    """Post-process VLM output to restore markdown heading markers.
+
+    GLM-OCR outputs section headings as plain text (e.g., "1. Introduction")
+    without markdown heading syntax (##). This function detects such patterns
+    and adds appropriate heading levels based on the section number depth.
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Check for numbered section pattern: "1. Introduction", "3.2. Retriever"
+        m = _HEADING_NUM_RE.match(stripped)
+        if m:
+            num_part = m.group(1)
+            title_part = m.group(2).strip()
+
+            # Count heading depth: "1" -> 2, "3.2" -> 3, "4.1.2" -> 4
+            depth = num_part.count(".") + 2
+            depth = min(depth, 4)  # cap at ####
+
+            # Only treat as heading if the title looks like a real heading
+            # (not just a numbered list item or sentence)
+            if (
+                title_part
+                and not title_part.startswith(("-", "*", "•", "·"))
+                and len(title_part) > 2
+                and len(title_part) < 80
+                and not title_part.endswith(".")
+                and (
+                    title_part[0].isupper()
+                    or title_part[0] in ("'", '"')
+                    or any(c.isalpha() for c in title_part[:3])
+                )
+            ):
+                result.append(f"{'#' * depth} {stripped}")
+                continue
+
+        # Check for known section names (unnumbered)
+        if stripped and stripped.lower() in _KNOWN_SECTIONS:
+            result.append(f"## {stripped}")
+            continue
+
+        result.append(line)
+
+    return "\n".join(result)
 
 
 # ---------------------------------------------------------------------------
@@ -266,12 +456,15 @@ def parse_document_sync(file_path: str, options: dict | None = None) -> dict[str
             "ocr_lang": ["chinese", "english"],
             "table_mode": "accurate",
             "use_vlm": False,
+            "vlm_model": "zai-org/GLM-OCR",
+            "vlm_mode": "inline",
         }
 
     use_vlm = model_config.get("use_vlm", False)
     if use_vlm:
-        _log.info("Using VLM pipeline (%s) for %s",
-                  model_config.get("vlm_model", "default"), file_path)
+        vlm_mode = model_config.get("vlm_mode", "inline")
+        _log.info("Using VLM pipeline (%s, mode=%s) for %s",
+                  model_config.get("vlm_model", "default"), vlm_mode, file_path)
     else:
         _log.info("Using standard pipeline (layout=%s, ocr=%s) for %s",
                   model_config.get("layout_model", "default"),
@@ -283,6 +476,13 @@ def parse_document_sync(file_path: str, options: dict | None = None) -> dict[str
 
     # Export to markdown
     markdown_content = result.document.export_to_markdown()
+
+    # Post-process: clean VLM-specific tokens from output
+    # PaddleOCR-VL emits <|LOC_xx|> location tokens that need stripping
+    if use_vlm:
+        markdown_content = _clean_vlm_output(markdown_content)
+        # Restore document structure (headings) lost during VLM OCR
+        markdown_content = _restore_document_structure(markdown_content)
 
     # Extract tables
     tables: list[dict[str, Any]] = []

@@ -136,13 +136,15 @@ export class NativeExcelProcessor implements DocumentProcessor {
     fileSize: number,
     totalRows: number,
   ): string {
+    // Strip "data/" prefix so the path is relative to the bash tool's CWD
+    const relativePath = filePath.startsWith("data/") ? filePath.slice(5) : filePath;
     const parts: string[] = [];
 
     parts.push("# 表格文件信息");
     parts.push("");
     parts.push(`| 属性 | 值 |`);
     parts.push(`|------|-----|`);
-    parts.push(`| 文件路径 | \`${filePath}\` |`);
+    parts.push(`| 文件路径 | \`${relativePath}\` |`);
     parts.push(`| 文件大小 | ${(fileSize / 1024 / 1024).toFixed(2)} MB |`);
     parts.push(`| 工作表数量 | ${sheets.length} |`);
     parts.push(`| 总行数 | ${totalRows.toLocaleString()} |`);
@@ -184,7 +186,7 @@ export class NativeExcelProcessor implements DocumentProcessor {
       parts.push(`> Agent 可通过 \`bash\` 工具使用 Python + pandas 读取源文件进行分析：`);
       parts.push(`> \`\`\`python`);
       parts.push(`> import pandas as pd`);
-      parts.push(`> df = pd.read_excel('${filePath}', sheet_name='${sheet.name}')`);
+      parts.push(`> df = pd.read_excel('${relativePath}', sheet_name='${sheet.name}')`);
       parts.push(`> print(df.head())`);
       parts.push(`> \`\`\``);
       parts.push("");

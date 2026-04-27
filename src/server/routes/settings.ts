@@ -20,7 +20,9 @@ const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
   ocr_backend: "torch",
   table_mode: "accurate",
   use_vlm: false,
-  vlm_model: "",
+  vlm_model: "zai-org/GLM-OCR",
+  vlm_mode: "inline",
+  parallelism: 5,
 };
 
 const EMPTY_PROVIDER_DEFAULTS: ProviderDefaults = {
@@ -579,6 +581,23 @@ export function createSettingsRoutes(): Hono {
       } catch { /* queue not yet initialized */ }
     }
 
+    // Auto-manage PaddleOCR-VL container based on VLM mode
+    if (body.use_vlm !== undefined || body.vlm_mode !== undefined) {
+      const useVlm = merged.use_vlm;
+      const vlmMode = (merged as Record<string, unknown>).vlm_mode as string | undefined;
+
+      if (useVlm && vlmMode === "api") {
+        // VLM API mode requested — start container in background
+        import("../../services/paddleocr-vl-manager.js").then(({ startVlmContainer }) => {
+          startVlmContainer().then((info) => {
+            console.log(`[Settings] PaddleOCR-VL container: ${info.status}`, info.error ?? "");
+          }).catch((err) => {
+            console.error("[Settings] Failed to start PaddleOCR-VL container:", err);
+          });
+        }).catch(() => { /* module not available */ });
+      }
+    }
+
     return c.json({ success: true, config: merged });
   });
 
@@ -613,6 +632,75 @@ export function createSettingsRoutes(): Hono {
     }
 
     return c.json(result);
+  });
+
+  /** Get PaddleOCR-VL container status */
+  router.get("/vlm-container-status", async (c) => {
+    try {
+      const { getVlmContainerStatus } = await import("../../services/paddleocr-vl-manager.js");
+      const status = await getVlmContainerStatus();
+      return c.json(status);
+    } catch {
+      return c.json({ status: "unavailable", port: 8600, healthUrl: "http://localhost:8600/health", error: "Manager not available" });
+    }
+  });
+
+  /** Start PaddleOCR-VL container */
+  router.post("/vlm-container-start", async (c) => {
+    try {
+      const { startVlmContainer } = await import("../../services/paddleocr-vl-manager.js");
+      const status = await startVlmContainer();
+      return c.json(status);
+    } catch (err) {
+      return c.json({ status: "error", port: 8600, healthUrl: "http://localhost:8600/health", error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /** Stop PaddleOCR-VL container */
+  router.post("/vlm-container-stop", async (c) => {
+    try {
+      const { stopVlmContainer } = await import("../../services/paddleocr-vl-manager.js");
+      const status = await stopVlmContainer();
+      return c.json(status);
+    } catch (err) {
+      return c.json({ status: "error", port: 8600, healthUrl: "http://localhost:8600/health", error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Hooks API — CRUD for agent hooks
+  // -----------------------------------------------------------------------
+
+  // GET /hooks — list all hooks
+  router.get("/hooks", async (c) => {
+    const repos = await getRepos();
+    const raw = await repos.settings.get("agent_hooks");
+    const hooks = raw ? JSON.parse(raw) : [];
+    return c.json({ hooks });
+  });
+
+  // PUT /hooks — save all hooks (replace)
+  router.put("/hooks", async (c) => {
+    const body = await c.req.json<{ hooks: unknown[] }>();
+    if (!Array.isArray(body.hooks)) {
+      return c.json({ error: "hooks must be an array" }, 400);
+    }
+    const repos = await getRepos();
+    await repos.settings.set("agent_hooks", JSON.stringify(body.hooks));
+
+    // Reload hook manager in the runner
+    try {
+      const { getRunner } = await import("../../services/agent/agent-system.js");
+      const runner = await getRunner();
+      const { HookManager } = await import("../../services/agent/hooks.js");
+      const hm = new HookManager();
+      await hm.loadFromSettings();
+      runner.setHookManager(hm);
+    } catch {
+      // Runner may not be initialized yet — hooks will load on first use
+    }
+
+    return c.json({ success: true, count: body.hooks.length });
   });
 
   return router;

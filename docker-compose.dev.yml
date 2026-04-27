@@ -41,6 +41,37 @@ services:
       - ollama-data-dev:/root/.ollama
     restart: unless-stopped
 
+  # PaddleOCR-VL-1.5 standalone inference service (optional, for API mode)
+  # Start with: docker compose -f docker-compose.dev.yml up paddleocr-vl -d
+  paddleocr-vl:
+    build:
+      context: ./paddleocr-vl-service
+      dockerfile: Dockerfile
+    ports:
+      - "8600:8600"
+    volumes:
+      - ./data/models:/app/models:ro
+    environment:
+      - MODEL_PATH=/app/models/docling/vlm/PaddlePaddle--PaddleOCR-VL-1.5
+      - TORCH_DTYPE=bfloat16
+      - MAX_TOKENS=8192
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - vlm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8600/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   pgdata-dev:
   ollama-data-dev:

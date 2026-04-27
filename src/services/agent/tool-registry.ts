@@ -64,12 +64,8 @@ const thinkTool: AgentTool = {
 const finishTool: AgentTool = {
   name: "finish",
   description:
-    "Signal that you have FULLY completed the task. Provide your final answer " +
-    "or summary. This tells the orchestrator that no further action is needed. " +
-    "IMPORTANT: Only call finish when you have thoroughly completed all aspects of the task. " +
-    "If you have only done partial analysis, found some but not all documents, or " +
-    "haven't yet synthesized a complete answer, continue working instead of calling finish. " +
-    "Premature finish is worse than taking more turns to do thorough work.",
+    "Signal that you have completed the task. Provide your final answer " +
+    "or summary. This tells the orchestrator that no further action is needed.",
   async execute(input: Record<string, unknown>) {
     return { completed: true, summary: input.summary };
   },

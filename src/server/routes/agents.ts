@@ -240,10 +240,27 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         s.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
+      // Track abort state for cancelling the orchestrator when client disconnects
+      let aborted = false;
+
       // Keepalive heartbeat to prevent proxy/server timeout on long-running agents.
       let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
-        s.write(": keepalive\n\n");
+        if (!aborted) {
+          s.write(": keepalive\n\n");
+        }
       }, 15_000);
+
+      // Detect client disconnect and cancel the running task
+      s.onAbort(() => {
+        aborted = true;
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+        if (pendingTaskId) {
+          orchestrator.cancel(pendingTaskId);
+        }
+      });
 
       // Store sendEvent in execution context so ask_user callback can emit SSE
       const ctx = toolRegistry.getExecutionContext();

@@ -415,6 +415,55 @@ export interface NewAgentTask {
 }
 
 // ---------------------------------------------------------------------------
+// Domain Types — Workflow Execution Logs
+// ---------------------------------------------------------------------------
+
+/** A single event logged during workflow sub-agent execution. */
+export interface WorkflowLog {
+  id: string;
+  workflowId: string;
+  agentId: string;
+  role: string | null;
+  turn: number | null;
+  eventType: string;
+  toolName: string | null;
+  content: Record<string, unknown> | null;
+  durationMs: number | null;
+  modelId: string | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  createdAt: string;
+}
+
+/** Data to insert a workflow log entry. */
+export interface NewWorkflowLog {
+  id?: string;
+  workflowId: string;
+  agentId: string;
+  role?: string;
+  turn?: number;
+  eventType: string;
+  toolName?: string;
+  content?: Record<string, unknown>;
+  durationMs?: number;
+  modelId?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+/** Repository for workflow execution logs. */
+export interface WorkflowLogRepo {
+  /** Insert a single log entry. */
+  insert(log: NewWorkflowLog): Promise<void>;
+  /** Batch insert multiple log entries. */
+  insertBatch(logs: NewWorkflowLog[]): Promise<void>;
+  /** Query logs for a workflow, optionally filtered by agent. */
+  listByWorkflow(workflowId: string, agentId?: string): Promise<WorkflowLog[]>;
+  /** Delete logs older than the given number of days. */
+  deleteOlderThan(days: number): Promise<number>;
+}
+
+// ---------------------------------------------------------------------------
 // Domain Types — Settings
 // ---------------------------------------------------------------------------
 
@@ -674,6 +723,7 @@ export interface DoclingConfig {
   table_mode: "accurate" | "fast";
   use_vlm: boolean;
   vlm_model: string;
+  vlm_mode: "inline" | "api";
   parallelism?: number;
 }
 
@@ -683,7 +733,8 @@ export const DEFAULT_DOCLING_CONFIG: DoclingConfig = {
   ocr_backend: "torch",
   table_mode: "accurate",
   use_vlm: false,
-  vlm_model: "",
+  vlm_model: "zai-org/GLM-OCR",
+  vlm_mode: "inline",
   parallelism: 5,
 };
 
@@ -730,7 +781,7 @@ export interface ProviderSettings {
 }
 
 // ---------------------------------------------------------------------------
-// RepoSet - Bundles all 17 repositories behind a single interface
+// RepoSet - Bundles all repositories behind a single interface
 // ---------------------------------------------------------------------------
 
 /** A complete set of repository instances for the application. */
@@ -753,4 +804,62 @@ export interface RepoSet {
   skill: SkillRepo;
   sessionMemory: SessionMemoryRepo;
   agentTask: AgentTaskRepo;
+  agentSkill: AgentSkillRepo;
+  workflowLog: WorkflowLogRepo;
+}
+
+// ---------------------------------------------------------------------------
+// Domain Types — Agent Skills (user-defined agent behaviors)
+// ---------------------------------------------------------------------------
+
+/** A user-defined skill that customizes agent behavior via a Markdown prompt. */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  /** Markdown prompt that overrides/extends the agent's system prompt */
+  prompt: string;
+  /** Tool names the skill allows. ["*"] = all tools */
+  tools: string[];
+  /** Model role to use: "main" | "summarizer" | "embedding" | "vlm" */
+  modelRole: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Data for creating a new agent skill. */
+export interface NewAgentSkill {
+  id?: string;
+  name: string;
+  description?: string;
+  prompt: string;
+  tools?: string[];
+  modelRole?: string;
+  isActive?: boolean;
+}
+
+/** Data for updating an existing agent skill. */
+export interface UpdateAgentSkill {
+  name?: string;
+  description?: string;
+  prompt?: string;
+  tools?: string[];
+  modelRole?: string;
+  isActive?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Repository Interfaces — Agent Skills
+// ---------------------------------------------------------------------------
+
+/** CRUD for user-defined agent skills. */
+export interface AgentSkillRepo {
+  create(data: NewAgentSkill): Promise<AgentSkill>;
+  get(id: string): Promise<AgentSkill | undefined>;
+  getByName(name: string): Promise<AgentSkill | undefined>;
+  list(): Promise<AgentSkill[]>;
+  listActive(): Promise<AgentSkill[]>;
+  update(id: string, data: UpdateAgentSkill): Promise<AgentSkill | undefined>;
+  delete(id: string): Promise<boolean>;
 }

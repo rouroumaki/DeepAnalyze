@@ -29,9 +29,6 @@ import { createGraphTool } from "../../tools/GraphTool/index.js";
 
 export const SUB_AGENT_BLOCKED_TOOLS = new Set([
   "workflow_run",
-  "skill_invoke",
-  "agent_todo",
-  "push_content",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -78,10 +75,11 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "kb_search",
     description:
-      "使用语义和关键词匹配搜索知识库。返回带摘录的排序结果。" +
-      "结合向量相似度、BM25 全文搜索和链接遍历，实现全面检索。" +
-      "默认排除已有报告（page_type=report），只返回原始文档内容，确保分析基于一手资料。" +
-      "适用场景：按语义查找文档、发现相关主题、探索知识库内容。不适合：精确文本匹配（用 doc_grep）、阅读完整文档（用 expand）、列出所有文档（用 wiki_browse）。",
+      "语义搜索知识库文档。返回按相关性排序的匹配页面列表（默认最多8-10条）。" +
+      "底层使用向量相似度 + BM25 全文搜索。默认排除报告类页面。" +
+      "注意：这是近似检索，不保证覆盖所有相关文档。如果需要完整文档列表，用 wiki_browse(listDocuments=true) 或 run_sql。" +
+      "适合：快速定位特定主题的文档、补充性语义查询。" +
+      "不适合：获取完整文档列表、精确文本匹配（用 doc_grep）、阅读完整内容（用 expand）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -169,11 +167,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     name: "wiki_browse",
     description:
       "浏览知识库中的文档和 Wiki 页面。" +
-      "提供 listDocuments=true 列出所有文档及其摘要，" +
-      "提供 pageId 查看特定页面，" +
-      "提供 kbId 列出页面列表。" +
-      "建议先使用 listDocuments 了解知识库中有哪些文档，再针对性地展开阅读。" +
-      "这是了解知识库全貌的首选工具——先用 listDocuments=true 查看完整目录，再针对性深入。",
+      "提供 listDocuments=true + kbId：返回该知识库所有文档的分类列表，每篇附带 docId、文件名和 L0 摘要。" +
+      "提供 pageId：返回特定页面的完整内容（id, docId, pageType, title, tokenCount, content）。" +
+      "提供 kbId（可选 pageType）：列出该知识库的所有页面（id, docId, pageType, title, tokenCount）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -265,7 +261,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           }
         }
 
-        const result: Record<string, unknown> = {
+        return {
           kbId,
           totalDocuments: docs.length,
           categories: Array.from(categories.values()).map((c) => ({
@@ -275,9 +271,18 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           })),
           documents: docs.map((d) => {
             const abstract = abstractMap.get(d.id);
+            // Strip dataDir prefix from filePath so it's relative to the bash CWD.
+            // DB stores "data/original/..." but bash runs with cwd="data/",
+            // so agents need "original/..." to avoid double-prefixing.
+            const rawPath = d.file_path || "";
+            const dataDirPrefix = deps.dataDir + "/";
+            const relativePath = rawPath.startsWith(dataDirPrefix)
+              ? rawPath.slice(dataDirPrefix.length)
+              : rawPath;
             return {
               docId: d.id,
               filename: d.filename,
+              filePath: relativePath || undefined,
               fileType: d.file_type,
               status: d.status,
               abstractPageId: abstract?.pageId,
@@ -285,13 +290,6 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
             };
           }),
         };
-
-        // Scale hint: nudge toward parallel tools for large document sets
-        if (docs.length > 50) {
-          result._hint = `共 ${docs.length} 个文档，数量较多。建议使用 skill_invoke 调用"全面分块分析"技能进行分块并行分析，或使用 workflow_run 创建并行工作流。`;
-        }
-
-        return result;
       }
 
       // Mode 1: View a specific page by ID
@@ -349,12 +347,18 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "expand",
     description:
-      "从摘要逐层深入到详细内容。逐层展开 " +
-      "L0（摘要）-> L1（结构概述）-> L2（全文）。" +
-      "用于获取文档或页面的更多细节。" +
-      "支持批量展开：提供 docIds 数组可同时展开多个文档的 L1 结构概述。" +
-      "每次调用返回 tokenCount 字段表示内容的 token 数量，可用于判断内容是否完整。" +
-      "这是阅读文档实际内容的主要工具。搜索只是定位，expand 才是阅读。分析任务中务必 expand 到足够层级（通常 L1 或 L2）以确保不遗漏细节。",
+      "逐层展开文档内容。知识库文档按三层结构组织：\n" +
+      "- L0（摘要层，~125 tokens）：文档主题、核心要点、标签。适合快速分类和路由\n" +
+      "- L1（主要内容层）：绝大部分可分析的数据都在这一层\n" +
+      "- L2（原始数据层）：各类型的原始格式化数据\n\n" +
+      "**各文件类型的数据分布：**\n" +
+      "- PDF/DOCX：L1 包含完整全文（Markdown），与 L2 内容相同，分析时只看 L1 即可\n" +
+      "- 图片（JPG/PNG）：L1 包含 VLM 视觉描述和 OCR 文本；如 VLM 未配置则 L1 为空，需看 L2 的原始描述数据\n" +
+      "- 音频（MP3）：L1 包含按说话者分组的转写文本；L2 基本相同\n" +
+      "- 视频（MP4）：L1 包含按场景分割的描述和对话转写；如 VLM 未配置则 L1 为空，需看 L2\n" +
+      "- Excel：小表格（≤1000行）L1/L2 有完整内容；**大表格（>1000行）L1 为空，L2 是海量原始 CSV**，必须使用 bash + pandas 读取原始文件分析（文件路径从 wiki_browse listDocuments 返回的 filePath 字段获取）\n\n" +
+      "批量模式：提供 docIds 数组 + kbId 一次获取多个文档的 L0 或 L1 内容（通过 targetLevel 指定）。" +
+      "单文档模式：提供 docId + targetLevel 展开到指定层级。",
     inputSchema: {
       type: "object",
       properties: {
@@ -369,7 +373,11 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         docIds: {
           type: "array",
           items: { type: "string" },
-          description: "批量展开多个文档 ID。返回每个文档的 L1 结构概述。适用于快速了解一批文档的内容。",
+          description: "批量展开多个文档 ID。返回每个文档的 L1 结构概述。提供 kbId 时使用高效批量查询（推荐）。",
+        },
+        kbId: {
+          type: "string",
+          description: "知识库 ID。批量展开(docIds)时提供此参数可使用高效批量查询，显著减少 DB 访问次数。从 wiki_browse 的返回中获取。",
         },
         targetLevel: {
           type: "string",
@@ -397,14 +405,38 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     },
     async execute(input: Record<string, unknown>) {
       try {
-        // Mode 0: Batch expand multiple documents to L1
+        // Mode 0: Batch expand multiple documents
         if (Array.isArray(input.docIds) && input.docIds.length > 0) {
           const docIds = input.docIds as string[];
           const format = (input.format as "md" | "dt" | undefined) || "md";
+          const kbId = input.kbId as string | undefined;
+          const targetLevel = (input.targetLevel as "L0" | "L1" | undefined) || "L1";
+
+          // Use optimized batch method when kbId is provided (2-4 DB queries vs N×4)
+          if (kbId) {
+            const batchResults = await deps.expander.batchExpand(kbId, docIds, format, targetLevel);
+            const foundIds = new Set(batchResults.map(r => r.docId));
+            const results: Array<{ docId: string; title: string; level: string; content: string; tokenCount: number } | { docId: string; error: string }> = batchResults.map(r => ({
+              docId: r.docId,
+              title: r.title,
+              level: targetLevel,
+              content: r.content,
+              tokenCount: r.tokenCount,
+            }));
+            // Add error entries for docs not found
+            for (const docId of docIds) {
+              if (!foundIds.has(docId)) {
+                results.push({ docId, error: `No ${targetLevel} page found` });
+              }
+            }
+            return { mode: "batch", totalDocs: docIds.length, results };
+          }
+
+          // Fallback: individual expand when no kbId (slower but works)
           const results = await Promise.all(
             docIds.map(async (docId) => {
               try {
-                const result = await deps.expander.expandToLevel(docId, "L1", format);
+                const result = await deps.expander.expandToLevel(docId, targetLevel === "L0" ? "L0" : "L1", format);
                 return {
                   docId: result.docId,
                   title: result.title,
@@ -558,7 +590,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "② 需要快速合并展示的多段内容（如把多个子 Agent 结果合并为一个卡片）" +
       "③ 代码片段、文件引用等需要特殊格式化的内容。" +
       "**不要用于普通分析文本**——你的分析结论、报告正文应直接以文字输出，用户会实时看到流式显示。" +
-      "type=markdown 可推送富文本卡片，type=table 推送表格数据。",
+      "type=markdown 可推送富文本卡片，type=table 推送表格数据。\n\n" +
+      "**快速推送文件**：提供 filePath 参数可直接读取并推送文件内容，无需先用 read_file 读入上下文。" +
+      "适用于推送子Agent生成的分析文件、报告文件等。data 和 filePath 二选一，同时提供时 filePath 优先。",
     inputSchema: {
       type: "object",
       properties: {
@@ -573,23 +607,45 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         },
         data: {
           type: "string",
-          description: "内容数据。table类型传入CSV或JSON字符串；code类型传入代码；text/markdown类型传入文本内容",
+          description: "内容数据。table类型传入CSV或JSON字符串；code类型传入代码；text/markdown类型传入文本内容。与 filePath 二选一。",
+        },
+        filePath: {
+          type: "string",
+          description: "要推送的文件路径。工具会直接读取文件内容并推送，无需先读入上下文。适用于推送子Agent生成的分析报告文件。支持 data 目录下的相对路径（如 tmp/paper_analysis.md）或绝对路径。与 data 二选一，同时提供时 filePath 优先。",
         },
         format: {
           type: "string",
           description: "格式提示（如 csv, json, python, sql, markdown 等）",
         },
       },
-      required: ["type", "title", "data"],
+      required: ["type", "title"],
     },
     async execute(input: Record<string, unknown>) {
       const contentType = input.type as string;
       const title = input.title as string;
-      const data = input.data as string;
       const format = input.format as string | undefined;
+      let data = input.data as string | undefined;
+      const filePath = input.filePath as string | undefined;
+
+      // If filePath is provided, read the file directly
+      if (filePath) {
+        try {
+          const { readFile } = await import("node:fs/promises");
+          const { resolve, isAbsolute } = await import("node:path");
+          const resolvedPath = isAbsolute(filePath)
+            ? filePath
+            : resolve(process.cwd(), "data", filePath);
+          const content = await readFile(resolvedPath, "utf-8");
+          data = content;
+        } catch (err) {
+          return {
+            error: `Failed to read file: ${filePath} — ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
 
       if (!data) {
-        return { error: "No data provided" };
+        return { error: "No data provided. Either 'data' or 'filePath' must be supplied." };
       }
 
       return {
@@ -1071,8 +1127,6 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "调用已注册的自定义技能（Skill）。技能是针对特定场景优化的预定义工作流。" +
       "调用后会加载技能的提示词作为补充指令，在独立上下文中执行任务。" +
       "先用 list_skills 查看可用技能列表和描述，再根据任务匹配调用。" +
-      "典型使用时机：大量文档需要全面分析时调用「全面分块分析」技能；需要撰写长篇报告时调用「长篇写作」技能；" +
-      "当系统提示中建议使用 skill_invoke 时，应立即调用对应技能。" +
       "技能会自动处理分块、并行、合成等复杂流程，比自己逐步处理更高效。",
     inputSchema: {
       type: "object",
@@ -1399,11 +1453,11 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
   registry.register({
     name: "run_sql",
     description:
-      "执行 SQL 查询并返回结果。" +
-      "用于直接查询文档元数据、wiki 页面内容、会话历史等数据库信息。" +
-      "比 listDocuments 等高级工具更灵活精确，支持任意聚合、分组、过滤。" +
-      "仅允许 SELECT 查询（只读）。" +
-      "适用场景：需要精确的文档统计、元数据查询、聚合分析、跨表关联。比 wiki_browse 更灵活精确，适合数据探查阶段。",
+      "执行 SQL 查询（只读 SELECT）并返回结果。" +
+      "直接查询 PostgreSQL 数据库，可访问 documents、wiki_pages 等表的完整数据。" +
+      "这是获取精确完整数据最可靠的方式——不受向量检索的召回率限制，不受分页限制。" +
+      "适合：文档统计聚合、按文件类型/目录/状态分类、精确的元数据查询、全量列表。" +
+      "示例：SELECT file_type, count(*) FROM documents WHERE kb_id='...' GROUP BY file_type",
     inputSchema: {
       type: "object",
       properties: {

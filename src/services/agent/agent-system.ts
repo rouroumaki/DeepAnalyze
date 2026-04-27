@@ -17,6 +17,8 @@ import type { Retriever } from "../../wiki/retriever.js";
 import type { AgentTeamManager } from "./agent-team-manager.js";
 import type { AgentRunner } from "./agent-runner.js";
 import type { ToolRegistry } from "./tool-registry.js";
+import type { MCPClientManager } from "./mcp-client.js";
+import { getRepos } from "../../store/repos/index.js";
 
 /** Singleton orchestrator instance. */
 let orchestratorInstance: Orchestrator | null = null;
@@ -38,6 +40,9 @@ let runnerInstance: AgentRunner | null = null;
 
 /** Singleton tool registry instance. */
 let toolRegistryInstance: ToolRegistry | null = null;
+
+/** Singleton MCP client manager instance. */
+let mcpManagerInstance: MCPClientManager | null = null;
 
 /** Initialization promise so concurrent callers don't duplicate work. */
 let initPromise: Promise<Orchestrator> | null = null;
@@ -97,6 +102,7 @@ export function resetOrchestrator(): void {
   teamManagerInstance = null;
   runnerInstance = null;
   toolRegistryInstance = null;
+  mcpManagerInstance = null;
   initPromise = null;
 }
 
@@ -193,6 +199,18 @@ export async function getToolRegistry(): Promise<ToolRegistry> {
 }
 
 // ---------------------------------------------------------------------------
+// MCP Client Manager
+// ---------------------------------------------------------------------------
+
+export async function getMCPManager(): Promise<MCPClientManager> {
+  if (!mcpManagerInstance) {
+    await getOrchestrator();
+  }
+  if (!mcpManagerInstance) throw new Error("MCPManager not initialized after orchestrator init");
+  return mcpManagerInstance;
+}
+
+// ---------------------------------------------------------------------------
 // Internal initialization
 // ---------------------------------------------------------------------------
 
@@ -242,8 +260,12 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
   toolRegistryInstance = toolRegistry;
   console.log("[AgentSystem] ToolRegistry configured");
 
-  // Step 5: Agent runner with built-in agents
-  const runner = new AgentRunner(modelRouter, toolRegistry);
+  // Step 5: Agent runner with built-in agents + hook manager
+  const { HookManager } = await import("./hooks.js");
+  const hookManager = new HookManager();
+  await hookManager.loadFromSettings();
+
+  const runner = new AgentRunner(modelRouter, toolRegistry, hookManager);
   runner.registerAgents(BUILT_IN_AGENTS);
   runnerInstance = runner;
   console.log("[AgentSystem] AgentRunner initialized with built-in agents");
@@ -302,6 +324,28 @@ async function initializeOrchestrator(): Promise<Orchestrator> {
     },
   });
   console.log("[AgentSystem] AgentTeamManager initialized, workflow_run tool registered");
+
+  // Step 11: MCP Client Manager
+  const { MCPClientManager } = await import("./mcp-client.js");
+  const mcpManager = new MCPClientManager();
+  mcpManager.setToolRegistry(toolRegistry);
+
+  // Load persisted MCP server configs and auto-connect enabled ones
+  try {
+    const repos = await getRepos();
+    const raw = await repos.settings.get("mcp_servers");
+    if (raw) {
+      const configs = JSON.parse(raw) as Array<import("./mcp-client.js").MCPServerConfig>;
+      for (const config of configs) {
+        mcpManager.addServer(config);
+      }
+      await mcpManager.connectAll();
+    }
+  } catch (err) {
+    console.warn("[AgentSystem] MCP initialization skipped:", err instanceof Error ? err.message : String(err));
+  }
+  mcpManagerInstance = mcpManager;
+  console.log("[AgentSystem] MCPClientManager initialized");
 
   return orchestrator;
 }

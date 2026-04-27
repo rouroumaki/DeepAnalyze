@@ -36,6 +36,7 @@ import type {
   AnalysisScope,
   DoclingConfig,
   DoclingModels,
+  VlmContainerInfo,
 } from "../types/index.js";
 
 const BASE_URL = "";
@@ -93,6 +94,7 @@ export const api = {
     callbacks?: {
       onStart?: (taskId: string, agentType: string) => void;
       onContent?: (content: string, accumulated: string) => void;
+      onContentDelta?: (delta: string, taskId: string, turn: number) => void;
       onToolCall?: (tc: { id: string; toolName: string; input: Record<string, unknown>; status: string }) => void;
       onToolResult?: (data: { id: string; toolName: string; output: string }) => void;
       onProgress?: (progress: { turn: number; type: string; content: string }) => void;
@@ -106,6 +108,7 @@ export const api = {
       onWorkflowComplete?: (data: { status: string; goal: string; totalAgents: number; results: unknown }) => void;
       onAskUser?: (data: { question: string; options: string[]; taskId: string }) => void;
       onAskUserAnswered?: (data: { taskId: string; answer: string }) => void;
+      onTurnUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }, taskId: string, turn: number) => void;
     },
     scope?: AnalysisScope,
   ) => {
@@ -156,6 +159,9 @@ export const api = {
                 case "start":
                   callbacks?.onStart?.(data.taskId, data.agentType);
                   break;
+                case "content_delta":
+                  callbacks?.onContentDelta?.(data.delta, data.taskId, data.turn);
+                  break;
                 case "content":
                   callbacks?.onContent?.(data.content, data.accumulated);
                   break;
@@ -182,6 +188,9 @@ export const api = {
                   break;
                 case "compaction":
                   callbacks?.onCompaction?.(data);
+                  break;
+                case "turn_usage":
+                  callbacks?.onTurnUsage?.(data.usage, data.taskId, data.turn);
                   break;
                 case "push_content":
                   callbacks?.onPushContent?.(data);
@@ -518,6 +527,14 @@ export const api = {
     }),
   getDoclingModels: () =>
     request<DoclingModels>("/api/settings/docling-models"),
+
+  // --- VLM Container Management ---
+  getVlmContainerStatus: () =>
+    request<VlmContainerInfo>("/api/settings/vlm-container-status"),
+  startVlmContainer: () =>
+    request<VlmContainerInfo>("/api/settings/vlm-container-start", { method: "POST" }),
+  stopVlmContainer: () =>
+    request<VlmContainerInfo>("/api/settings/vlm-container-stop", { method: "POST" }),
 
   // --- Cron Jobs ---
   listCronJobs: () =>

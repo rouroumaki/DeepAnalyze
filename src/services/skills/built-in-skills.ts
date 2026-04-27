@@ -331,7 +331,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 ## 工作流程
 
 ### 第一步：探查范围
-使用 wiki_browse(listDocuments=true) 获取知识库中所有文档的完整列表。
+使用 wiki_browse(listDocuments=true) 获取知识库中所有文档的完整列表（含 docId、文件名、L0摘要）。
 使用 run_sql 查询文档的分类信息（如目录、文件类型）。
 
 ### 第二步：制定分块计划
@@ -345,26 +345,38 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 ### 第三步：并行分派分析
 使用 workflow_run(mode="parallel") 分派子Agent。
 每个子Agent的 task 必须明确指定：
-- 要分析的文档列表（docId 或文件名）
+- 要分析的文档列表（docId 和文件名）
+- 所属知识库的 kbId
 - 分析要求和输出格式
-- 指示子Agent使用 expand 工具逐一展开阅读每个文档的完整内容
-- 指示子Agent用 write_file 将分析结果保存到 /tmp/chunk_N.md
+- 指示子Agent使用 expand(docIds=[...], kbId=..., targetLevel="L1") 批量获取内容，不要逐个展开
+- 对于图片/视频类文档，指示子Agent使用 targetLevel="L2"（因为 L1 为空）
+- 子Agent工具设置为 ["*"]（全部工具，系统会自动排除 workflow_run 防止递归）
 
-子Agent工具列表：["kb_search", "wiki_browse", "expand", "write_file", "read_file", "doc_grep", "think", "finish"]
+**输出管理（每个子Agent task 中必须包含以下指令）**：
+- 用 write_file 将详细分析结果写入 /tmp/{role}_{id}.md，文件末尾附上段落索引（各章节标题和一行摘要）
+- 文本输出保持简洁，仅包含：完成状态、核心发现摘要（3-5条）、生成的文件路径
+- 这样主Agent可以按需 read_file 读取特定段落，或直接推送全文到前端
+
+**关于层级选择（重要，传给子Agent）**：
+- PDF/DOCX 文本：expand 到 L1 即可（L1 已包含完整全文，L2 与 L1 完全相同，展开到 L2 是浪费）
+- 图片：expand 到 L1 获取 VLM 视觉描述和 OCR 文本；如 L1 为空则用 L2
+- 音频：expand 到 L1 获取按说话者分组的转写文本
+- 视频：expand 到 L1 获取按场景分割的描述和对话转写；如 L1 为空则用 L2
+- Excel 小表格（≤1000行）：expand 到 L1 获取表格内容
+- Excel 大表格（>1000行）：L0/L1 几乎无内容，L2 是海量原始 CSV 无法放入上下文，**必须使用 bash + pandas 直接读取原始 xlsx 文件分析**
 
 ### 第四步：合成最终报告（必须按顺序完成以下三步）
 
-**4a. 读取并合成**
-所有子Agent完成后，用 read_file 读取每个分块的分析结果，将所有分块合并为一份连贯的完整报告，添加跨分块的关联分析和整体结论。
+**4a. 直接推送到前端（必须执行）**
+你会收到每个子Agent的摘要（完成状态、核心发现、文件路径）。
+对每个子Agent生成的分析文件，使用 push_content(type="markdown", title="分块N分析", filePath="文件路径") 直接推送到前端。
+如果需要合并为一份完整报告，使用 bash 合并：cat file1.md file2.md ... > /tmp/full_report.md，然后 push_content(filePath="tmp/full_report.md")。
 
-**4b. 推送到前端显示（必须执行）**
-将合成后的完整报告使用 push_content(type="markdown", title="报告标题", data=完整报告内容) 推送到前端。
-如果报告很长，按主题分成多个 push_content 调用（每个 5-10 个章节一个卡片）。
-**注意：直接使用你在内存中合成的报告内容传入 data 参数，不要重新读取文件。**
+**4b. 写综合总结**
+基于各子Agent摘要，写一段跨分块的关联分析和整体结论（直接文字输出，不需要工具）。
 
 **4c. 保存到报告系统（必须执行）**
-使用 report_generate(title="报告标题", content=完整报告内容, kbId=当前知识库ID) 保存报告。
-这会在报告页面创建一条记录，用户可以在报告页面查看和下载。
+使用 report_generate 保存综合报告。
 
 ### 第五步：完成任务
 报告推送和保存完成后，立即调用 finish 工具结束。**不要重复分析或执行其他操作。**
@@ -408,20 +420,23 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - 每个子Agent的 task 包含：
   - 章节标题、内容要求、预估字数
   - 前置章节的摘要（用于保持连贯性）
-  - 指示子Agent使用 write_file 保存到 /tmp/chapter_N.md
   - 如需参考资料，指示子Agent用 kb_search/wiki_browse/expand 检索
+- **输出管理指令（每个子Agent task 中必须包含）**：
+  - 用 write_file 将写好的章节保存到 /tmp/chapter_N.md
+  - 文本输出仅包含：完成状态、章节摘要（3-5条）、文件路径
+  - 这样主Agent可以按需 read_file 读取各章节内容
 
 子Agent工具列表：["kb_search", "wiki_browse", "expand", "write_file", "read_file", "think", "finish"]
 
 ### 第四步：合并与润色
-1. 用 read_file 读取所有章节文件
-2. 按顺序合并，添加目录和交叉引用
-3. 用 write_file 保存完整文档
+1. 你会收到每个子Agent的摘要（完成状态、章节摘要、文件路径）
+2. 用 read_file 读取所有章节文件
+3. 按顺序合并，添加目录和交叉引用
+4. 用 write_file 保存完整文档
 
 ### 第五步：推送到前端
-将合并后的完整文档使用 push_content(type="markdown", title="文档标题", data=完整内容) 推送到前端。
-如果文档很长，按章节分成多个 push_content 调用（每 2-3 章一个卡片）。
-**注意：直接使用你在内存中合并的内容传入 data 参数，不要重新读取文件。**
+对每个子Agent的章节文件，使用 push_content(type="markdown", title="章节N标题", filePath="文件路径") 直接推送到前端。
+如果需要合并展示，使用 bash 合并文件后推送完整文档。
 
 ### 第六步：完成任务
 推送完成后，立即调用 finish 工具结束。**不要重复写作或执行其他操作。**
@@ -436,5 +451,68 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     variables: [],
     maxTurns: 60,
     config: { category: "writing" },
+  },
+  {
+    name: "全面知识库分析",
+    pluginId: null,
+    description: "对整个知识库进行全面分类、分析和整理。自动分类文档，按类型分派子Agent并行深度分析，最终合成完整报告。",
+    systemPrompt: `你是一个知识库全面分析协调器。你的任务是对知识库中的所有文档进行分类、分析和整理。
+
+## 工作流程
+
+### 第一步：知识库总览
+使用 wiki_browse(listDocuments=true, kbId=...) 获取知识库的完整文档列表。
+列表中包含每个文档的 docId、文件名、文件类型和 L0 摘要，足以完成分类。
+
+### 第二步：文档分类
+根据文件名、文件类型和 L0 摘要将文档分成若干类别。分类依据：
+- 文件类型（pdf/xlsx/jpg/mp3/mp4等）
+- 目录结构
+- 内容主题（从 L0 摘要判断）
+
+### 第三步：分派子Agent
+使用 workflow_run(mode="parallel") 分派子Agent，每个类别一个或多个子Agent。
+
+子Agent task 中必须包含：
+- 该类别的文档列表（docId 和文件名）
+- 所属知识库的 kbId
+- 分析要求和输出格式
+- 指示子Agent使用 expand(docIds=[...], kbId=..., targetLevel="L1") 批量获取内容
+- 子Agent工具设置为 ["*"]（全部工具，系统会自动排除 workflow_run）
+
+**输出管理（每个子Agent task 中必须包含以下指令）**：
+- 用 write_file 将详细分析结果写入 /tmp/{role}_{id}.md，文件末尾附上段落索引（各章节标题和一行摘要）
+- 文本输出保持简洁，仅包含：完成状态、核心发现摘要（3-5条）、生成的文件路径
+- 这样主Agent可以按需 read_file 读取特定段落，或直接推送全文到前端
+
+**关于层级选择**（重要，传给子Agent）：
+- PDF/DOCX 文本：expand 到 L1 即可（L1 已包含完整全文，L2 与 L1 完全相同）
+- 图片：expand 到 L1 获取 VLM 视觉描述和 OCR 文本；如 L1 为空则用 L2
+- 音频：expand 到 L1 获取按说话者分组的转写文本
+- 视频：expand 到 L1 获取按场景分割的描述和对话转写；如 L1 为空则用 L2
+- Excel 小表格（≤1000行）：expand 到 L1 获取表格内容
+- Excel 大表格（>1000行）：L0/L1 几乎无内容，L2 是海量原始 CSV 无法放入上下文，**必须使用 bash + pandas 直接读取原始 xlsx 文件分析**
+
+### 第四步：合成最终报告
+所有子Agent完成后：
+1. 你会收到每个子Agent的摘要（完成状态、核心发现、文件路径）
+2. **直接推送**：对每个子Agent生成的文件，使用 push_content(type="markdown", title="标题", filePath="文件路径") 直接推送到前端。不需要先 read_file，push_content 会自动读取文件内容
+3. 如果需要合并多个文件为一份完整报告，使用 bash 合并：cat file1.md file2.md > /tmp/full_report.md，然后 push_content(filePath="tmp/full_report.md")
+4. 基于各子Agent摘要写一段综合性总结（直接文字输出）
+5. 使用 report_generate 保存综合报告
+
+### 第五步：完成任务
+报告推送和保存完成后，立即调用 finish 工具结束。
+
+## 关键要求
+- 分派时必须把用户的具体分析要求传递给每个子Agent
+- 每个子Agent被告知"详尽分析，不要遗漏"
+- 最终合成时不重新分析，只做整合
+- 必须按顺序完成 push_content 和 report_generate
+- 完成后立即调用 finish`,
+    tools: ["kb_search", "wiki_browse", "expand", "workflow_run", "write_file", "read_file", "run_sql", "agent_todo", "report_generate", "push_content", "think", "finish"],
+    variables: [],
+    maxTurns: 50,
+    config: { category: "analysis" },
   },
 ];

@@ -90,7 +90,21 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
       "（pipeline | graph | council | parallel | single）并返回所有子 Agent 的执行结果汇总。\n" +
       "使用 single 模式可直接委托单个子 Agent 执行任务，跳过多 Agent 编排开销。\n" +
       "在 graph 和 parallel 模式下，子Agent 间可通过 send_message 工具互相通信。\n" +
-      "每个子Agent拥有独立的完整上下文窗口，适合处理大型任务。简单查询不需要使用此工具。",
+      "每个子Agent拥有独立的完整上下文窗口，适合处理大型任务。简单查询不需要使用此工具。\n\n" +
+      "**输出管理（重要）**：当子Agent任务可能产生大量详细内容时，在每个子Agent的 task 中指示：\n" +
+      "1. 用 write_file 将详细分析结果写入文件（建议路径：tmp/{role}_{id}.md，相对于 data 目录）\n" +
+      "2. 文件末尾附上段落索引（各章节标题和内容摘要），方便后续按需读取\n" +
+      "3. 文本输出保持简洁，仅包含：完成状态、核心发现摘要（3-5条）、生成的文件路径列表\n\n" +
+      "**工作流完成后的合成步骤（重要）**：\n" +
+      "工作流返回后，返回结果中包含每个子Agent的完成状态和摘要。你的职责是合成和展示，不是重新分析。\n" +
+      "按以下步骤执行：\n" +
+      "1. 查看返回结果中每个子Agent的状态和文件路径\n" +
+      "2. 对每个子Agent生成的文件，用 push_content(filePath=路径) 直接推送到前端展示\n" +
+      "3. 基于各子Agent的摘要，写一段综合性总结文字（直接输出，不需要工具）\n" +
+      "4. 用 report_generate 保存综合报告\n" +
+      "5. 调用 finish 结束\n" +
+      "**不要重新 expand 或搜索子Agent已经分析过的数据。信任子Agent的分析结果。**\n" +
+      "只有当某个子Agent失败或未完成时，你才需要补充分析该部分。",
 
     inputSchema: {
       type: "object",

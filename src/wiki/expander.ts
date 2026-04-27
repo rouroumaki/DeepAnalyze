@@ -61,6 +61,70 @@ export class Expander {
     this.dataDir = dataDir;
   }
 
+  /**
+   * Batch-expand multiple documents to a target level in a single bulk DB query.
+   * Uses getByKbAndType to fetch ALL pages of the target type for a KB at once,
+   * then filters to the requested docIds.
+   *
+   * This replaces N × 4 individual queries with 2-4 total queries,
+   * reducing DB load by ~50x for large batches.
+   *
+   * @param targetLevel - "L0" for abstracts (~125 tokens/doc), "L1" for structure (default)
+   */
+  async batchExpand(
+    kbId: string,
+    docIds?: string[],
+    format: "md" | "dt" = "md",
+    targetLevel: "L0" | "L1" = "L1",
+  ): Promise<Array<{ docId: string; title: string; content: string; tokenCount: number }>> {
+    const repos = await getRepos();
+    const results = new Map<string, { docId: string; title: string; content: string; tokenCount: number }>();
+
+    // Page types in priority order based on target level
+    const pageTypes = targetLevel === "L0"
+      ? ["abstract"]
+      : format === "md"
+        ? ["structure_md", "structure", "structure_dt", "overview"]
+        : ["structure_dt", "structure", "structure_md", "overview"];
+
+    // Track which docs still need resolution
+    const remaining = new Set(docIds);
+
+    for (const pageType of pageTypes) {
+      if (remaining.size === 0) break;
+
+      // Bulk fetch ALL pages of this type for the KB (1 query)
+      const pages = await repos.wikiPage.getByKbAndType(kbId, pageType);
+
+      for (const page of pages) {
+        if (!page.doc_id || !page.content) continue;
+        if (docIds && !remaining.has(page.doc_id)) continue;
+        if (results.has(page.doc_id)) continue; // already have a better type
+
+        results.set(page.doc_id, {
+          docId: page.doc_id,
+          title: page.title,
+          content: page.content,
+          tokenCount: page.token_count,
+        });
+        remaining.delete(page.doc_id);
+      }
+    }
+
+    return Array.from(results.values());
+  }
+
+  /**
+   * @deprecated Use batchExpand with targetLevel parameter instead.
+   */
+  async batchExpandToL1(
+    kbId: string,
+    docIds?: string[],
+    format: "md" | "dt" = "md",
+  ): Promise<Array<{ docId: string; title: string; content: string; tokenCount: number }>> {
+    return this.batchExpand(kbId, docIds, format, "L1");
+  }
+
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------

@@ -206,6 +206,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
         ? {
             inputTokens: data.usage.prompt_tokens,
             outputTokens: data.usage.completion_tokens,
+            cachedTokens: (data.usage as Record<string, unknown>).prompt_tokens_details
+              ? ((data.usage as Record<string, unknown>).prompt_tokens_details as Record<string, unknown>)?.cached_tokens as number | undefined
+              : undefined,
           }
         : undefined,
       finishReason: choice.finish_reason ?? undefined,
@@ -269,6 +272,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
       { id: string; name: string; arguments: string }
     >();
 
+    // Track usage from the final streaming chunk
+    let streamUsage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -292,15 +298,26 @@ export class OpenAICompatibleProvider implements ModelProvider {
           if (trimmed.startsWith("data: ")) {
             const data = trimmed.slice(6);
             if (data === "[DONE]") {
-              // Emit final done chunk
+              // Emit final done chunk with accumulated usage
               const finishReason = this.lastFinishReason;
-              yield { type: "done", finishReason };
+              yield { type: "done", finishReason, usage: streamUsage };
               return;
             }
 
             try {
               const parsed = JSON.parse(data);
               this.processStreamChunk(parsed, toolCallAccumulator);
+
+              // Capture usage from the final chunk (OpenAI sends usage in last chunk)
+              if (parsed.usage) {
+                const details = (parsed.usage as Record<string, unknown>).prompt_tokens_details as Record<string, unknown> | undefined;
+                const cached = details?.cached_tokens;
+                streamUsage = {
+                  inputTokens: parsed.usage.prompt_tokens,
+                  outputTokens: parsed.usage.completion_tokens,
+                  cachedTokens: typeof cached === "number" ? cached : undefined,
+                };
+              }
             } catch {
               // Skip malformed JSON lines silently
               continue;
@@ -399,11 +416,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return oai;
     });
 
+    // Prompt cache: mark system message with cache_control for Anthropic API
+    // (harmless for non-Anthropic providers — they ignore unknown fields)
+    if (openaiMessages.length > 0 && openaiMessages[0].role === "system") {
+      (openaiMessages[0] as unknown as Record<string, unknown>).cache_control = { type: "ephemeral" };
+    }
+
     const body: Record<string, unknown> = {
       model: options.model ?? this.defaultModel,
       messages: openaiMessages,
       stream,
     };
+
+    // Request usage stats in streaming mode (OpenAI-compatible API)
+    if (stream) {
+      body.stream_options = { include_usage: true };
+    }
 
     // Only send max_tokens when explicitly configured.
     // When omitted, the API provider uses its own model-specific default,
@@ -425,7 +453,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     if (options.tools && options.tools.length > 0) {
-      body.tools = this.formatTools(options.tools);
+      const formatted = this.formatTools(options.tools);
+      // Prompt cache: mark last tool with cache_control for Anthropic API
+      if (formatted.length > 0) {
+        (formatted[formatted.length - 1] as unknown as Record<string, unknown>).cache_control = { type: "ephemeral" };
+      }
+      body.tools = formatted;
     }
 
     // Thinking/reasoning parameter injection

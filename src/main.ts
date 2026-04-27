@@ -47,8 +47,10 @@ async function initDatabase(): Promise<void> {
   const m008 = await import("./store/pg-migrations/008_fts_content_truncate.ts");
   const m009 = await import("./store/pg-migrations/009_dual_format_page_types.ts");
   const m010 = await import("./store/pg-migrations/010_fix_minimax_model_name.ts");
+  const m012 = await import("./store/pg-migrations/012_agent_skills.ts");
+  const m013 = await import("./store/pg-migrations/013_workflow_logs.ts");
   await getPool();
-  await migratePG([m001.migration, m002.migration, m003.migration, m004.migration, m005.migration, m006.migration, m007.migration, m008.migration, m009.migration, m010.migration]);
+  await migratePG([m001.migration, m002.migration, m003.migration, m004.migration, m005.migration, m006.migration, m007.migration, m008.migration, m009.migration, m010.migration, m012.migration, m013.migration]);
   console.log("[PG] PostgreSQL ready with pgvector + zhparser");
 }
 

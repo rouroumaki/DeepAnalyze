@@ -19,7 +19,7 @@
 | C-02 | Agent 多轮深度分析：TAOR 循环（Think-Act-Observe-Reflect），父子 Agent 调度，自动上下文自动管理和压缩，支持无限长度session和无限长度任务执行 |
 | C-03 | 知识预编译：文档摄入时完成分层编译 |
 | C-04 | 无损可溯源：所有基于知识库的分析结论可逐层追溯到原始文档精确位置（锚点级 docId:type:index） |
-| C-05 | 通用可扩展：Plugin/Skill 机制，核心系统与领域逻辑解耦 |
+| C-05 | 通用可扩展：Plugin/Skill/MCP 机制，核心系统与领域逻辑解耦。Skill 系统支持用户通过 Markdown 定义自定义 Agent 行为；MCP 协议支持动态加载外部工具服务器 |
 | C-06 | 单机一体化部署：单进程启动（Bun），支持离线运行，Docker-compose 部署 |
 
 ### 2. 三层数据模型
@@ -56,11 +56,11 @@
 
 | ID | 需求 |
 |----|------|
-| C-22 | TAOR 循环 Agent 引擎，保留 Claude Code harness 的核心能力，参考代码在refcode的claude code中 |
+| C-22 | TAOR 循环 Agent 引擎，保留 Claude Code harness 的核心能力，参考代码在refcode的claude code中。支持异步子Agent、团队信箱通信、递归派生防护、工具延迟加载 |
 | C-23 | 主/辅模型分离：主 Agent 用主模型，子 Agent 用辅助模型，故障自动切换（仅限 chat 能力的 provider，通过角色分配 + 关键词启发式过滤 embedding/tts/image 等非 chat provider） |
-| C-24 | 由Agent teams人工触发可支持四种调度模式：顺序 / 并行 / 委员会（多视角投票）/ 图谱（DAG 依赖） |
+| C-24 | 由Agent teams人工触发可支持五种调度模式：顺序 / 并行 / 委员会（多视角投票）/ 图谱（DAG 依赖）/ 单Agent委托（single，跳过编排开销直接执行） |
 | C-25 | WorkflowEngine 支持取消、结果持久化、Council Round2 并行执行 |
-| C-26 | 工具：kb_search / kb_browse / kb_expand / report_generate / web_search / browser（基于 Playwright，支持网页导航、截图、文本提取、元素交互）等根据需要增加 |
+| C-26 | 工具体系：双层架构 — 高级工具(kb_search/wiki_browse/expand/doc_grep/report_generate/timeline_build) + 底层工具(bash/read_file/write_file/edit_file/run_sql/grep/glob) + 生成工具(tts/image/video/music_generate) + 交互工具(ask_user/push_content/agent_todo) + 协作工具(workflow_run/task_output/send_message) + 扩展工具(skill_invoke/tool_discover/MCP动态工具)，browser 基于 Playwright |
 | C-27 | 上下文管理：复刻Claude code实现无限上下文和全自动管理包括不限于自动压缩、微压缩、会话记忆持久化等 |
 | C-27a | 语言跟随：Agent 自动使用与用户提问相同的语言进行思考和回复（包括 think 工具推理），所有系统提示词和工具描述默认使用中文 |
 | C-27b | Agent 自主阅读原则：系统只提供客观的能力信号（tokenCount、截断提示、层级信息），不通过提示词限制或约定工具使用方式；LLM 自主决定阅读深度、次数和策略；系统侧移除技术约束（如 expand 结果的 token 限制适当放大），而非通过提示词约束 LLM 行为 |
@@ -92,7 +92,7 @@
 | C-38 | L0/L1/L2 按钮交互：灰色未就绪 / 绿色可预览，点击展开/折叠，编译完成逐层变绿。大内容（>5000行）自动启用虚拟滚动，仅渲染可视区域 |
 | C-39 | 多媒体播放器：图片查看器、音频播放器（同步转写+发言人标签）、视频播放器（场景同步+关键帧时间线） |
 | C-40 | 统一搜索栏：语义/向量/混合模式 + 召回数 + 层级选择 |
-| C-41 | Agent 流式响应（SSE）+ 子任务可视化 + 工具调用展示。工具调用信息可选持久化到消息 metadata，前端开关控制是否在历史消息中显示 |
+| C-41 | Agent 逐 token 流式响应（SSE content_delta）+ 子任务可视化 + 工具调用展示 + 实时 token 用量（turn_usage）。前端 appendStreamContent 逐字累积显示，onContent 回调设长度守卫防止覆盖更新的 delta 内容。工具调用信息可选持久化到消息 metadata，前端开关控制是否在历史消息中显示 |
 | C-42 | 报告嵌入聊天，引用标记可悬停预览来源 |
 
 ### 9. 系统健壮性
@@ -103,11 +103,11 @@
 | C-44 | 熔断机制：连续 3 次失败切换到辅助模型，超时后半开恢复；回退时通过角色分配+关键词启发式排除非 chat provider（embedding/tts/image/video/music/audio） |
 | C-45 | 降级链：增强模型 → 询问用户 → Skill → 明确告知不可用 |
 | C-46 | 事件驱动架构：文档处理、Agent 任务、知识复合、报告生成通过事件总线联动 |
-| C-47 | Agent 具备 `push_content` 工具，可直接推送表格/文件/代码等结构化数据到前端用户界面，无需模型逐字输出。支持类型：table/text/code/file/image |
+| C-47 | Agent 具备 `push_content` 工具，可推送结构化数据卡片到前端界面。**仅限特殊场景**：大型表格数据（type=table）、多段内容快速合并（type=markdown）、代码片段等。普通分析文本应直接流式输出（用户实时看到逐字显示），不得用 push_content 替代流式输出。支持类型：table/markdown/text/code/file/image |
 | C-48 | 前端聊天窗口支持渲染 Agent 推送的结构化内容（可折叠表格、代码块、文件预览），推送数据持久化到消息 metadata，刷新后仍可见 |
 | C-49 | DocTags 乱码自动检测：当 Docling 输出含异常 Unicode 字符（自定义字体编码导致），系统自动检测（非标准字符占比>15%阈值）并清空 doctags，降级到 Markdown 输出，确保 Structure 层内容可读 |
 | C-50 | Agent 多轮上下文聚焦：评估当前问题与历史上下文的相关性，聚焦于当前问题的核心意图；相关追问时深入细化，主题切换时重新聚焦，不重复之前的全面分析流程 |
-| C-51 | Agent 长内容生成策略：当需要生成大量内容时，通过分章节撰写、push_content 推送大型数据、bash 追加写入临时文件后合并等方式，突破单次输出长度限制，实现多轮迭代完成完整内容 |
+| C-51 | Agent 长内容生成策略：流式输出已支持逐 token 显示，优先直接流式输出分析正文。当内容超长时，通过分章节流式输出、bash 追加写入临时文件后合并、push_content 推送大型表格数据等方式，突破单次输出长度限制，实现多轮迭代完成完整内容 |
 | C-52 | 报告生成按需触发：Agent 默认直接在对话中输出分析结果，仅在用户明确要求生成报告、按特定格式输出或保存分析结果时才调用 report_generate。报告生成前先将完整内容输出到对话中 |
 | C-53 | 聊天消息显示顺序：助手消息按"工具调用(顶部) → 推理过程/推送内容(中部) → 最终结果/报告(底部)"排列，流式输出时工具调用和推理模块同步增长 |
 | C-54 | Agent 深度分析原则：禁止基于搜索摘要做分析，必须通过 expand 工具逐层深入阅读完整文档内容后再分析；禁止幻觉，所有结论必须基于文档原文；不能遗漏细节，必须逐一展开阅读每个相关文档 |
@@ -244,3 +244,28 @@
 | 精确搜索 | 只有语义搜索无正则 | **C-67: 新增 doc_grep 工具，正则搜索 wiki 页面内容，支持精确匹配人名/日期/编号/金额** (04-25) |
 | 交互确认 | Agent 遇不确定只能猜 | **C-68: 新增 ask_user 工具，Agent 分析过程中可向用户提问确认，SSE 推送问题+POST 回复** (04-25) |
 | 文档覆盖 | 大量文档被遗漏 | **C-69: Agent 全面分析时需先用 listDocuments 了解全貌，按类别批量 expand，确保系统性覆盖** (04-25) |
+| Agent 工具架构 | 仅语义搜索+Wiki抽象层 | **C-70: 双层工具架构 — 高级工具(kb_search/expand/wiki_browse/doc_grep)+底层工具(bash/read_file/run_sql/grep/glob)，高层不够用立即切底层** (04-24) |
+| Agent 通用能力 | 只能读不能写 | **C-71: write_file/edit_file 工具 — Agent 可在数据目录内创建/编辑文件，完成读写执行闭环** (04-24) |
+| Agent 可扩展性 | 行为硬编码在 agent-definitions.ts | **C-72: Skill 技能系统 — 用户通过 Markdown 定义自定义 Agent 行为，Agent 通过 skill_invoke 调用，支持提示词覆盖+工具限制+systemPrompt 自定义** (04-24) |
+| 子Agent调度 | 仅同步等待 | **C-73: 异步子Agent — workflow_run 支持 run_in_background 模式，Agent 可继续工作后用 task_output 获取结果，SSE 实时推送进度** (04-24) |
+| 递归防护 | 无 | **C-74: 子Agent 递归防护 — 子Agent 禁止调用 workflow_run/agent_todo 等管理类工具，防止无限派生** (04-24) |
+| Token 效率 | 23个工具全部随API发送 | **C-75: 工具延迟加载 — 低频工具标记为 deferred，仅发送核心工具定义，Agent 通过 tool_discover 按需发现激活，节省 input token** (04-24) |
+| 工具扩展 | 仅内置工具 | **C-76: MCP 协议支持 — 动态加载外部 MCP 工具服务器，工具以 mcp__serverName__toolName 命名，支持配置管理+认证** (04-24) |
+| 团队协作 | 子Agent完全隔离 | **C-77: 团队信箱通信 — workflow_run 子Agent 间可通过 send_message/post_message 互相通信，支持定向发送和广播** (04-24) |
+| push_content 持久化 | 仅 SSE 流，刷新丢失 | **C-48 补充：markdown 类型 push_content 保存为消息主体内容，pushedContents 数组存入 metadata，历史消息可完整重建** (04-24) |
+| Agent 流式输出 | 整轮输出完成才显示 | **C-78: Agent 逐 token 流式输出 — agent-runner 从 chat() 切换到 chatStream()，SSE 新增 content_delta 事件逐 token 推送前端，前端 appendStreamContent 实时累积显示** (04-25) |
+| 项目配置注入 | 无持久化项目级配置 | **C-79: .deepanalyze.md 配置文件 — 从 dataDir 加载 .deepanalyze.md 文件内容注入到 Agent 系统提示词，支持项目级自定义指令** (04-25) |
+| 单 Agent 委托 | workflow_run 仅多 Agent 模式 | **C-80: workflow_run single 模式 — WorkflowMode 新增 "single"，直接委托单个子 Agent 执行任务，跳过多 Agent 编排开销** (04-25) |
+| Prompt 缓存 | 无缓存标记 | **C-81: Prompt 缓存共享 — openai-compatible 对系统消息和工具定义添加 cache_control: { type: "ephemeral" }，ChatResponse.usage 新增 cachedTokens 追踪** (04-25) |
+| 实时状态 | 无 token 使用量反馈 | **C-82: 实时状态显示 — SSE 新增 turn_usage 事件，每轮结束时推送 inputTokens/outputTokens/cachedTokens，前端 onTurnUsage 回调** (04-25) |
+| Hook 系统 | 无工具执行前后钩子 | **C-83: Hook 系统 — HookManager 支持 PreToolUse/PostToolUse 事件，command 和 http 两种类型，glob 匹配器过滤工具名，settings API 管理 hooks 配置** (04-25) |
+| MCP 传输 | 仅 HTTP POST | **C-84: MCP 传输增强 — MCPServerConfig.type 新增 "websocket"，实现真实 SSE 传输和 WebSocket 传输，支持 JSON-RPC over WebSocket** (04-25) |
+| 流式输出 vs push_content | Agent 过度使用 push_content 推送分析文本 | **C-41/C-47 补充：流式输出优先策略 — push_content 工具描述限定仅用于大型表格和多段合并，Agent 系统提示词新增"输出方式"章节明确流式文本优先、push_content 仅限特殊场景** (04-25) |
+| think 工具流式 | think 内容以批量 content 事件发送 | **C-78 补充：think 工具内容改为 content_delta 事件流式发送（此前为批量 content 事件），保持流式 UX 一致性** (04-25) |
+| VLM OCR 集成 | 无 VLM 管线支持 | **G-07 补充：Docling VLM 管线双模式集成 — inline 模式（VLM 模型加载到 Docling 进程）+ API 模式（独立容器服务）。默认模型 GLM-OCR (0.9B, zai-org/GLM-OCR)，备选 PaddleOCR-VL-1.5。前端 DoclingConfig 支持模式切换和容器生命周期管理。VLM 模式速度约为标准模式 7-10x 慢，但 OCR 质量更高** (04-25) |
+| OCR 结构恢复 | VLM 输出无标题标记 | **G-07 补充：`_restore_document_structure()` 后处理 — GLM-OCR 作为纯文字识别模型不输出 markdown 标题标记，通过启发式正则恢复章节结构（`1. Introduction` → `## 1. Introduction`）。同时 `_clean_vlm_output()` 清理 `<|user` 等模型特殊 token 残留** (04-25) |
+| VLM GPU 批处理优化 | 默认 batch_size=4 | **G-07 补充：Docling `page_batch_size` 从默认 4 优化为 8，在 RTX 5090 上提速约 12%。GPU 批处理瓶颈在于自回归解码，更大 batch_size (15+) 反而更慢** (04-25) |
+| transformers 版本 | 4.57.6 | **升级到 5.4.0 — GLM-OCR 要求 transformers ≥5.4.0（模型类型 `glm_ocr` 不被 4.x 识别）。Docling VLM 依赖允许 5.4+，vllm 要求 <5（可接受，vllm 容器为独立部署）** (04-25) |
+| PaddleOCR-VL 局限性 | 计划作为主要 VLM | **决策：不作为默认 VLM — PaddleOCR-VL-1.5 输出 `<|LOC_xx|>` 定位标记设计给 PP-DocLayoutV3 配合使用，独立使用时输出包含 1000+ 定位 token，需后处理清理。输出质量（重复、结构混乱）不如 GLM-OCR。保留 API 模式支持作为备选** (04-25) |
+| VLM vs 标准管线性能 | 无对比数据 | **基准测试（4 篇学术论文）：标准管线平均 9.3s (4-6 页/秒)，GLM-OCR 平均 58.3s (0.19 页/秒)。内容完整度：GLM-OCR 输出字符数为标准管线的 70-90%，主要缺失为图片标记（VLM 不检测图片区域）和部分格式标记。标准管线有内容重复问题（PDF 双层文本），GLM-OCR 无此问题** (04-25) |
+| VLM OCR 准确率评估 | 无第三方评估 | **qwen3.6-plus VLM 评估（3 篇学术论文）：GLM-OCR 平均 43.3/50 vs 标准 23.0/50，GLM-OCR 全面胜出。最大优势维度：格式完整 (+5.3) 和可读性 (+5.0)。文字准确率 GLM-OCR 9.0/10 vs 标准 4.7/10。antigravity-rag 文档标准管线出现灾难性字符编码错误 (10/50)** (04-25) |

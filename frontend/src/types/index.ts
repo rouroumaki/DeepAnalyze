@@ -568,6 +568,7 @@ export interface DoclingConfig {
   table_mode: "accurate" | "fast";
   use_vlm: boolean;
   vlm_model: string;
+  vlm_mode: "inline" | "api";
   parallelism?: number;
 }
 
@@ -582,6 +583,16 @@ export interface DoclingModels {
   table: DoclingModelEntry[];
   vlm: DoclingModelEntry[];
   ocr: DoclingModelEntry[];
+}
+
+export type VlmContainerStatus = "running" | "stopped" | "starting" | "unavailable" | "error";
+
+export interface VlmContainerInfo {
+  status: VlmContainerStatus;
+  containerId?: string;
+  port: number;
+  healthUrl: string;
+  error?: string;
 }
 
 // --- UI State ---

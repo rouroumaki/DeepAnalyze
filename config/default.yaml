@@ -10,9 +10,9 @@
 models:
   main:
     provider: openai-compatible
-    endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen3.5-plus
-    maxTokens: 8192
+    endpoint: https://coding.dashscope.aliyuncs.com/v1
+    model: qwen3.6-plus
+    maxTokens: 32768
     supportsToolUse: true
 
   embedding:

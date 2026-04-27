@@ -74,6 +74,7 @@ export interface ChatResponse {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    cachedTokens?: number;
   };
   finishReason?: string;
 }
@@ -88,6 +89,7 @@ export interface StreamChunk {
   toolCall?: Partial<ToolCall>;
   finishReason?: string;
   error?: string;
+  usage?: { inputTokens: number; outputTokens: number; cachedTokens?: number };
 }
 
 // ---------------------------------------------------------------------------

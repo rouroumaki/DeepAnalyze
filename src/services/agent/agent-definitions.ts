@@ -22,10 +22,6 @@ export const GENERAL_AGENT: AgentDefinition = {
 - 所有陈述必须基于你实际读取的内容，不编造细节。不确定的标注"需验证"
 - 复杂任务先制定计划再执行，用 agent_todo 跟踪进度
 
-## 协作工具
-- skill_invoke：调用预定义技能（先用 list_skills 查看列表）。当用户请求匹配某个技能描述时优先使用
-- workflow_run：启动多 Agent 并行工作流。大型任务用此工具分块并行处理
-
 ## 输出方式
 你的文字输出会实时流式显示给用户：
 - 分析结论、报告正文、解释说明 → 直接以文字输出
@@ -69,7 +65,7 @@ export const EXPLORE_AGENT: AgentDefinition = {
 - 使用多个查询角度（至少3个不同关键词/表述）全面覆盖
 - 搜索完成后使用 expand 验证关键发现
 - 注意搜索不同模态的文件（文档、Excel、图片描述、音频转写、视频场景）`,
-  tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
   modelRole: "main",
   maxTurns: 15,
   readOnly: true,
@@ -101,7 +97,7 @@ export const COMPILE_AGENT: AgentDefinition = {
 
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
-  tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "edit_file", "bash", "grep", "glob", "run_sql", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
   modelRole: "summarizer",
   maxTurns: 10,
 };
@@ -134,7 +130,7 @@ export const VERIFY_AGENT: AgentDefinition = {
 
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
-  tools: ["kb_search", "wiki_browse", "expand", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
   maxTurns: 15,
   readOnly: true,
 };
@@ -180,7 +176,7 @@ export const REPORT_AGENT: AgentDefinition = {
 
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
-  tools: ["kb_search", "wiki_browse", "expand", "report_generate", "timeline_build", "graph_build", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "edit_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "report_generate", "timeline_build", "graph_build", "think", "finish"],
   maxTurns: 20,
 };
 

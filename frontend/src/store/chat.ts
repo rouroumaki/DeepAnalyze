@@ -254,16 +254,25 @@ export const useChatStore = create<ChatState>((set, get) => {
             // Agent started
             receivedAnyEvent = true;
           },
+          onContentDelta: (delta) => {
+            receivedContent = true;
+            // Append individual text deltas for character-by-character display
+            get().appendStreamContent(delta);
+          },
           onContent: (content, accumulated) => {
             receivedContent = true;
             // Update the streaming message content
             set((s) => {
-              // Use accumulated if provided, otherwise append the delta manually
-              const newContent = accumulated ?? ((s.streamingContent || "") + content);
+              // In streaming mode, content events may lag behind content_delta events.
+              // Only update if the accumulated text is longer than what we already have.
+              const candidate = accumulated ?? ((s.streamingContent || "") + content);
+              if (candidate.length <= (s.streamingContent || "").length) {
+                return {}; // Skip — deltas already provided newer content
+              }
               return {
-                streamingContent: newContent,
+                streamingContent: candidate,
                 messages: s.messages.map((m) =>
-                  m.id === s.streamingMessageId ? { ...m, content: newContent } : m,
+                  m.id === s.streamingMessageId ? { ...m, content: candidate } : m,
                 ),
               };
             });
@@ -685,13 +694,19 @@ export const useChatStore = create<ChatState>((set, get) => {
         input,
         agentType,
         {
+          onContentDelta: (delta) => {
+            get().appendStreamContent(delta);
+          },
           onContent: (content, accumulated) => {
             set((s) => {
-              const newContent = accumulated ?? ((s.streamingContent || "") + content);
+              const candidate = accumulated ?? ((s.streamingContent || "") + content);
+              if (candidate.length <= (s.streamingContent || "").length) {
+                return {};
+              }
               return {
-                streamingContent: newContent,
+                streamingContent: candidate,
                 messages: s.messages.map((m) =>
-                  m.id === s.streamingMessageId ? { ...m, content: newContent } : m,
+                  m.id === s.streamingMessageId ? { ...m, content: candidate } : m,
                 ),
               };
             });

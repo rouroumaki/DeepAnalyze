@@ -18,6 +18,8 @@ import { createSearchRoutes } from "./routes/search.js";
 import { createAgentTeamRoutes } from "./routes/agent-teams.js";
 import { createPreviewRoutes } from "./routes/preview.js";
 import { createSearchTestRoutes } from "./routes/search-test.js";
+import { agentSkillRoutes } from "./routes/agent-skills.js";
+import { mcpRoutes } from "./routes/mcp.js";
 
 // Frontend static files directory (built by `npm run build` in frontend/)
 const FRONTEND_DIST = resolve(import.meta.dirname ?? __dirname, "../../frontend/dist");
@@ -43,6 +45,8 @@ export function createApp(): Hono {
   app.route("/api/reports", createReportRoutes());
   app.route("/api/knowledge", knowledgeRoutes);
   app.route("/api/settings", createSettingsRoutes());
+  app.route("/api/agent-skills", agentSkillRoutes);
+  app.route("/api/mcp", mcpRoutes);
 
   // -----------------------------------------------------------------------
   // Preview & Anchor routes — lazily initialized via middleware

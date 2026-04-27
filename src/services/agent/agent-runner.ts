@@ -175,68 +175,64 @@ export class AgentRunner {
 
     // Inject scope constraints into system prompt if scope is provided
     let scopeInjection = "";
-    let userInputPrefix = ""; // Scale signal goes to user message for higher visibility
     if (options.scope) {
-      // Frontend sends: { knowledgeBases: [{ kbId, mode, documentIds? }], webSearch }
+      // Support two scope formats:
+      // 1. Frontend: { knowledgeBases: [{ kbId, mode, documentIds? }], webSearch }
+      // 2. API: { kbIds: ["id1", "id2"] }
+      let scopeKbIds: string[] = [];
+      let docDetails: string[] = [];
+
       const knowledgeBases = options.scope.knowledgeBases as Array<{ kbId: string; mode: string; documentIds?: string[] }> | undefined;
+      const simpleKbIds = options.scope.kbIds as string[] | undefined;
+
       if (knowledgeBases && knowledgeBases.length > 0) {
-        const scopeKbIds = knowledgeBases.map(kb => kb.kbId);
+        scopeKbIds = knowledgeBases.map(kb => kb.kbId);
+      } else if (simpleKbIds && simpleKbIds.length > 0) {
+        scopeKbIds = simpleKbIds;
+      }
+
+      if (scopeKbIds.length > 0) {
         try {
           const repos = await getRepos();
           const allKbs = await repos.knowledgeBase.list();
           const kbDetails: string[] = [];
-          const docDetails: string[] = [];
 
-          for (const kbScope of knowledgeBases) {
-            const kb = allKbs.find(k => k.id === kbScope.kbId);
-            const kbLabel = kb ? `"${kb.name}"` : kbScope.kbId;
-            kbDetails.push(`${kbLabel} (${kbScope.kbId})`);
+          if (knowledgeBases) {
+            for (const kbScope of knowledgeBases) {
+              const kb = allKbs.find(k => k.id === kbScope.kbId);
+              const kbLabel = kb ? `"${kb.name}"` : kbScope.kbId;
+              kbDetails.push(`${kbLabel} (${kbScope.kbId})`);
 
-            // If specific documents are selected, resolve their names
-            if (kbScope.mode === "selected" && kbScope.documentIds && kbScope.documentIds.length > 0) {
-              try {
-                const docs = await repos.document.getByKbId(kbScope.kbId);
-                const selectedDocs = docs.filter(d => kbScope.documentIds!.includes(d.id));
-                for (const doc of selectedDocs) {
-                  docDetails.push(`- ${doc.filename || doc.id} (${doc.id}) in ${kbLabel}`);
+              if (kbScope.mode === "selected" && kbScope.documentIds && kbScope.documentIds.length > 0) {
+                try {
+                  const docs = await repos.document.getByKbId(kbScope.kbId);
+                  const selectedDocs = docs.filter(d => kbScope.documentIds!.includes(d.id));
+                  for (const doc of selectedDocs) {
+                    docDetails.push(`- ${doc.filename || doc.id} (${doc.id}) in ${kbLabel}`);
+                  }
+                } catch {
+                  // Non-critical
                 }
-              } catch {
-                // Non-critical
               }
+            }
+          } else {
+            // Simple kbIds format - resolve names
+            for (const kbId of scopeKbIds) {
+              const kb = allKbs.find(k => k.id === kbId);
+              kbDetails.push(kb ? `"${kb.name}" (${kbId})` : kbId);
             }
           }
 
           const kbNames = kbDetails.join(", ");
-          let injection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。你只能在以下知识库中搜索：${kbNames}。\n使用 kb_search 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n不要搜索此范围之外的知识库。`;
+          let injection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。你只能在以下知识库中搜索：${kbNames}。\n使用 kb_search 和 doc_grep 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n使用 wiki_browse 工具时，只使用上述知识库的 kbId。\n使用 run_sql 查询时，务必在 WHERE 条件中限定 kb_id IN (${scopeKbIds.map(id => `'${id}'`).join(", ")})。\n不要搜索此范围之外的知识库。`;
 
           if (docDetails.length > 0) {
             injection += `\n\n用户特别关注以下文档，请优先分析：\n${docDetails.join("\n")}`;
           }
 
-          // Count total documents for scale-aware guidance
-          let totalDocs = 0;
-          const docCountDetails: string[] = [];
-          for (const kbScope of knowledgeBases) {
-            try {
-              const docs = await repos.document.getByKbId(kbScope.kbId);
-              const kb = allKbs.find(k => k.id === kbScope.kbId);
-              const kbName = kb ? kb.name : kbScope.kbId;
-              totalDocs += docs.length;
-              if (docs.length > 0) {
-                docCountDetails.push(`${kbName}: ${docs.length}个文档`);
-              }
-            } catch { /* non-critical */ }
-          }
-
-          // Inject scale signal as USER MESSAGE PREFIX (more prominent than system prompt)
-          if (totalDocs > 30) {
-            userInputPrefix = `[系统提示：当前知识库共包含 ${totalDocs} 个文档（${docCountDetails.join("、")}）。文档数量较多，请使用 skill_invoke 调用「全面分块分析」技能进行分块并行处理，或使用 workflow_run 创建并行工作流。]\n\n`;
-            console.log(`[AgentRunner] KB scale signal injected: ${totalDocs} docs, prefix length=${userInputPrefix.length}`);
-          }
-
           scopeInjection = injection;
         } catch {
-          scopeInjection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。使用 kb_search 工具时，务必将 kbIds 参数设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]。\n不要搜索此范围之外的知识库。`;
+          scopeInjection = `\n\n## 搜索范围限制\n当前对话限定了搜索范围。使用 kb_search 和 doc_grep 时将 kbIds 设为 [${scopeKbIds.map(id => `"${id}"`).join(", ")}]，使用 run_sql 时限定 kb_id IN (${scopeKbIds.map(id => `'${id}'`).join(", ")})。\n不要搜索此范围之外的知识库。`;
         }
       }
     }
@@ -259,7 +255,7 @@ export class AgentRunner {
     // Build initial messages
     const messages = this.buildMessages(
       systemPromptWithScope,
-      userInputPrefix + options.input,
+      options.input,
       options.contextMessages,
     );
 
@@ -278,6 +274,12 @@ export class AgentRunner {
       throw err;
     }
     console.log(`[AgentRunner] Built ${toolDefs.length} tool definitions, starting LLM loop...`);
+
+    // Log if this is a workflow sub-agent run (for tracing)
+    const isWorkflowSubAgent = !!(options.systemPromptOverride || options.toolsOverride);
+    if (isWorkflowSubAgent) {
+      console.log(`[AgentRunner] Sub-agent detected: taskId=${taskId}, tools=${toolDefs.length} (${filteredTools.length} names), maxTurns=${options.maxTurns ?? "default"}, isSkill=${!!options.isSkillInvocation}`);
+    }
 
     // Track execution state
     let totalToolCalls = 0;
@@ -565,7 +567,9 @@ export class AgentRunner {
         }
       }
 
-      // 7. Completion check
+      // 7. Completion check — only explicit finish tool call terminates the loop.
+      // The hard turn limit (hardLimit) prevents infinite loops. The model
+      // re-evaluates context on each turn and will eventually call finish.
       if (this.isDone(assistantContent, toolCalls, finishReason, agentCalledFinish)) {
         break;
       }
@@ -573,6 +577,13 @@ export class AgentRunner {
 
     // Build final result
     const result = this.buildResult(taskId, lastAssistantContent, messages, totalToolCalls, turn, totalInputTokens, totalOutputTokens, compactionEvents, undefined, options.onEvent);
+
+    // Execution summary log
+    const subAgentLabel = isWorkflowSubAgent ? " [sub-agent]" : "";
+    console.log(
+      `[AgentRunner]${subAgentLabel} Run complete: taskId=${taskId}, turns=${turn}, toolCalls=${totalToolCalls}, ` +
+      `tokens=${totalInputTokens}+${totalOutputTokens}, model=${modelId}, fallback=${usingFallback}`
+    );
 
     // Auto-compound on task completion — emit event and write back to wiki
     const finalOutput = result.output;
@@ -1098,14 +1109,13 @@ export class AgentRunner {
     finishReason?: string,
     agentCalledFinish?: boolean,
   ): boolean {
+    // Only explicit finish tool call terminates the loop.
+    // Models may output text without tool calls as intermediate thinking/progress
+    // updates — this does NOT mean the task is complete. The model must explicitly
+    // call the finish tool to signal completion. This mirrors Claude Code's design
+    // where termination only happens when the model stops calling tools, but is
+    // stricter to prevent premature termination with models that output text mid-task.
     if (agentCalledFinish) return true;
-    // Only consider finishReason when there are no pending tool calls.
-    // Some LLM providers return finishReason="stop" even with tool calls,
-    // which would prematurely end the agent loop.
-    if ((!toolCalls || toolCalls.length === 0) && finishReason && STOP_FINISH_REASONS.has(finishReason)) return true;
-    // NOTE: We no longer stop on text-only responses (no tool calls + non-empty content).
-    // The agent should explicitly call 'finish' or the model should return a stop finish_reason.
-    // This prevents premature termination after compaction or intermediate text responses.
     return false;
   }
 

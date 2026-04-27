@@ -1,12 +1,13 @@
 // =============================================================================
 // DeepAnalyze - DoclingConfig Component
 // Document processing model configuration panel
+// Supports dual VLM mode: inline (default) and API (standalone container)
 // =============================================================================
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../../api/client";
 import { useToast } from "../../hooks/useToast";
-import type { DoclingConfig, DoclingModels } from "../../types/index";
+import type { DoclingConfig, DoclingModels, VlmContainerInfo } from "../../types/index";
 import {
   Save,
   LayoutGrid,
@@ -15,6 +16,11 @@ import {
   Eye,
   RefreshCw,
   Layers,
+  Server,
+  Cpu,
+  Play,
+  Square,
+  CircleDot,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +56,41 @@ const cardStyle: React.CSSProperties = {
 };
 
 // ---------------------------------------------------------------------------
+// VLM Container Status Badge
+// ---------------------------------------------------------------------------
+
+function ContainerStatusBadge({ status }: { status: VlmContainerInfo | null }) {
+  if (!status) return null;
+
+  const colors: Record<string, { bg: string; color: string; label: string }> = {
+    running: { bg: "var(--success-light)", color: "var(--success)", label: "运行中" },
+    starting: { bg: "var(--warning-light)", color: "var(--warning)", label: "启动中" },
+    stopped: { bg: "var(--bg-hover)", color: "var(--text-tertiary)", label: "已停止" },
+    unavailable: { bg: "var(--bg-hover)", color: "var(--text-tertiary)", label: "不可用" },
+    error: { bg: "var(--danger-light)", color: "var(--danger)", label: "错误" },
+  };
+
+  const s = colors[status.status] ?? colors.unavailable;
+
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "var(--space-1)",
+      padding: "2px var(--space-2)",
+      borderRadius: "var(--radius-full)",
+      background: s.bg,
+      color: s.color,
+      fontSize: "var(--text-xs)",
+      fontWeight: 500,
+    }}>
+      <CircleDot size={10} />
+      {s.label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // DoclingConfig
 // ---------------------------------------------------------------------------
 
@@ -57,17 +98,21 @@ export function DoclingConfig() {
   const { success, error: showError } = useToast();
   const [config, setConfig] = useState<DoclingConfig | null>(null);
   const [models, setModels] = useState<DoclingModels | null>(null);
+  const [containerStatus, setContainerStatus] = useState<VlmContainerInfo | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [containerAction, setContainerAction] = useState<"start" | "stop" | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const [cfg, mdl] = await Promise.all([
+      const [cfg, mdl, container] = await Promise.all([
         api.getDoclingConfig(),
         api.getDoclingModels(),
+        api.getVlmContainerStatus().catch(() => null),
       ]);
       setConfig(cfg);
       setModels(mdl);
+      setContainerStatus(container);
     } catch (err) {
       console.error("Failed to load docling config:", err);
     } finally {
@@ -76,6 +121,24 @@ export function DoclingConfig() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Poll container status when in API mode
+  useEffect(() => {
+    if (!config?.use_vlm || config.vlm_mode !== "api") return;
+    if (containerStatus?.status === "running") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const status = await api.getVlmContainerStatus();
+        setContainerStatus(status);
+        if (status.status === "running" || status.status === "error" || status.status === "unavailable") {
+          clearInterval(interval);
+        }
+      } catch { /* ignore */ }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [config?.use_vlm, config?.vlm_mode, containerStatus?.status]);
 
   const handleSave = async () => {
     if (!config) return;
@@ -92,6 +155,34 @@ export function DoclingConfig() {
 
   const updateConfig = (patch: Partial<DoclingConfig>) => {
     setConfig((prev) => prev ? { ...prev, ...patch } : prev);
+  };
+
+  const handleContainerStart = async () => {
+    setContainerAction("start");
+    try {
+      const status = await api.startVlmContainer();
+      setContainerStatus(status);
+      if (status.status === "running") {
+        success("PaddleOCR-VL 容器已启动");
+      }
+    } catch {
+      showError("启动容器失败");
+    } finally {
+      setContainerAction(null);
+    }
+  };
+
+  const handleContainerStop = async () => {
+    setContainerAction("stop");
+    try {
+      const status = await api.stopVlmContainer();
+      setContainerStatus(status);
+      success("PaddleOCR-VL 容器已停止");
+    } catch {
+      showError("停止容器失败");
+    } finally {
+      setContainerAction(null);
+    }
   };
 
   if (loading || !config) {
@@ -210,7 +301,7 @@ export function DoclingConfig() {
         </div>
       </div>
 
-      {/* VLM Toggle + Model */}
+      {/* VLM Toggle + Mode + Model */}
       <div style={cardStyle}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-3)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
@@ -231,23 +322,151 @@ export function DoclingConfig() {
         </div>
         <p style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginTop: 0, marginBottom: "var(--space-3)" }}>
           使用视觉语言模型进行高精度 OCR，适用于手写体、复杂排版等场景
+          {config.use_vlm && (
+            <span style={{ display: "block", marginTop: "var(--space-1)", color: "var(--warning)" }}>
+              注意：VLM 模式速度约为标准模式的 20-30 倍慢（每页约 30 秒 vs 1 秒），请按需启用。
+            </span>
+          )}
         </p>
 
         {config.use_vlm && (
-          <select
-            value={config.vlm_model}
-            onChange={(e) => updateConfig({ vlm_model: e.target.value })}
-            style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}
-          >
-            <option value="">-- 选择 VLM 模型 --</option>
-            {vlmModels.length > 0 ? (
-              vlmModels.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))
-            ) : (
-              <option value="stepfun-ai/GOT-OCR-2.0-hf">GOT-OCR-2.0</option>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {/* VLM Mode Selector */}
+            <div>
+              <label style={labelStyle}>运行模式</label>
+              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+                {([
+                  {
+                    value: "inline" as const,
+                    icon: <Cpu size={14} />,
+                    label: "内嵌模式",
+                    desc: "模型加载到 Docling 进程，需 GPU 显存 >4GB",
+                  },
+                  {
+                    value: "api" as const,
+                    icon: <Server size={14} />,
+                    label: "API 服务模式",
+                    desc: "独立容器部署，适合高并发批量处理",
+                  },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateConfig({ vlm_mode: opt.value })}
+                    style={{
+                      flex: 1,
+                      padding: "var(--space-2) var(--space-3)",
+                      border: "1px solid",
+                      borderColor: config.vlm_mode === opt.value ? "var(--interactive)" : "var(--border-primary)",
+                      borderRadius: "var(--radius-lg)",
+                      background: config.vlm_mode === opt.value ? "var(--interactive-light)" : "var(--bg-primary)",
+                      color: config.vlm_mode === opt.value ? "var(--interactive)" : "var(--text-secondary)",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "all var(--transition-fast)",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)", fontSize: "var(--text-sm)", fontWeight: 500 }}>
+                      {opt.icon}
+                      {opt.label}
+                    </div>
+                    <div style={{ fontSize: "var(--text-xs)", marginTop: 2, opacity: 0.7 }}>{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* VLM Model Selector */}
+            <div>
+              <label style={labelStyle}>VLM 模型</label>
+              <select
+                value={config.vlm_model}
+                onChange={(e) => updateConfig({ vlm_model: e.target.value })}
+                style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}
+              >
+                <option value="zai-org/GLM-OCR">GLM-OCR (推荐)</option>
+                <option value="PaddlePaddle/PaddleOCR-VL-1.5">PaddleOCR-VL-1.5</option>
+                {vlmModels.length > 0 && vlmModels
+                  .filter((m) => m.id !== "zai-org/GLM-OCR" && m.id !== "PaddlePaddle/PaddleOCR-VL-1.5")
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))
+                }
+                {vlmModels.length === 0 && (
+                  <option value="stepfun-ai/GOT-OCR-2.0-hf">GOT-OCR-2.0</option>
+                )}
+              </select>
+            </div>
+
+            {/* API Mode: Container Management */}
+            {config.vlm_mode === "api" && (
+              <div style={{
+                padding: "var(--space-3)",
+                background: "var(--bg-primary)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-lg)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
+                  <span style={{ fontSize: "var(--text-xs)", fontWeight: "var(--font-medium)", color: "var(--text-secondary)" }}>
+                    容器状态
+                  </span>
+                  <ContainerStatusBadge status={containerStatus} />
+                </div>
+
+                {containerStatus?.status === "error" && containerStatus.error && (
+                  <p style={{ fontSize: "var(--text-xs)", color: "var(--danger)", margin: "0 0 var(--space-2) 0" }}>
+                    {containerStatus.error}
+                  </p>
+                )}
+
+                <div style={{ display: "flex", gap: "var(--space-2)", marginTop: "var(--space-2)" }}>
+                  <button
+                    onClick={handleContainerStart}
+                    disabled={containerAction !== null || containerStatus?.status === "running" || containerStatus?.status === "starting"}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-1) var(--space-2)",
+                      fontSize: "var(--text-xs)",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid var(--border-primary)",
+                      background: "var(--bg-secondary)",
+                      color: "var(--text-primary)",
+                      cursor: containerAction !== null || containerStatus?.status === "running" ? "not-allowed" : "pointer",
+                      opacity: containerAction !== null || containerStatus?.status === "running" ? 0.5 : 1,
+                    }}
+                  >
+                    <Play size={12} />
+                    {containerAction === "start" ? "启动中..." : "启动容器"}
+                  </button>
+                  <button
+                    onClick={handleContainerStop}
+                    disabled={containerAction !== null || containerStatus?.status !== "running"}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      padding: "var(--space-1) var(--space-2)",
+                      fontSize: "var(--text-xs)",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid var(--border-primary)",
+                      background: "var(--bg-secondary)",
+                      color: "var(--text-primary)",
+                      cursor: containerAction !== null || containerStatus?.status !== "running" ? "not-allowed" : "pointer",
+                      opacity: containerAction !== null || containerStatus?.status !== "running" ? 0.5 : 1,
+                    }}
+                  >
+                    <Square size={12} />
+                    {containerAction === "stop" ? "停止中..." : "停止容器"}
+                  </button>
+                </div>
+
+                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-tertiary)", margin: "var(--space-2) 0 0 0" }}>
+                  API 服务地址: http://localhost:{containerStatus?.port ?? 8600}
+                </p>
+              </div>
             )}
-          </select>
+          </div>
         )}
       </div>
 

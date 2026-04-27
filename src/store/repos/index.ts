@@ -24,6 +24,8 @@ import { PgPluginRepo } from './plugin';
 import { PgSkillRepo } from './skill';
 import { PgSessionMemoryRepo } from './session-memory';
 import { PgAgentTaskRepo } from './agent-task';
+import { PgAgentSkillRepo } from './agent-skill';
+import { PgWorkflowLogRepo } from './workflow-log';
 
 let cachedRepos: RepoSet | null = null;
 let initPromise: Promise<RepoSet> | null = null;
@@ -55,6 +57,8 @@ export async function getRepos(): Promise<RepoSet> {
         skill: new PgSkillRepo(pool),
         sessionMemory: new PgSessionMemoryRepo(pool),
         agentTask: new PgAgentTaskRepo(pool),
+        agentSkill: new PgAgentSkillRepo(pool),
+        workflowLog: new PgWorkflowLogRepo(pool),
       };
       return cachedRepos;
     })();
@@ -122,6 +126,13 @@ export type {
   SessionMemory,
   AgentTask,
   NewAgentTask,
+  AgentSkill,
+  NewAgentSkill,
+  UpdateAgentSkill,
+  AgentSkillRepo,
+  WorkflowLogRepo,
+  WorkflowLog,
+  NewWorkflowLog,
   ProviderConfig,
   ProviderDefaults,
   ProviderSettings,

@@ -157,6 +157,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         minScore: input.minScore as number | undefined,
       });
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -338,6 +340,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           'Provide "kbId" to list pages, "pageId" to view a page, or "kbId" + "listDocuments=true" to list all documents.',
       };
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -564,19 +568,32 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
   // report_generate tool
   // -----------------------------------------------------------------------
 
-  registry.register(createReportTool({ dataDir: deps.dataDir }));
+  const reportTool = createReportTool({ dataDir: deps.dataDir });
+  registry.register({
+    ...reportTool,
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+  });
 
   // -----------------------------------------------------------------------
   // timeline_build tool
   // -----------------------------------------------------------------------
 
-  registry.register(createTimelineTool({ retriever: deps.retriever, dataDir: deps.dataDir }));
+  const timelineTool = createTimelineTool({ retriever: deps.retriever, dataDir: deps.dataDir });
+  registry.register({
+    ...timelineTool,
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+    shouldDefer: true,
+  });
 
   // -----------------------------------------------------------------------
   // push_content tool — push structured data directly to user frontend
@@ -657,6 +674,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         timestamp: new Date().toISOString(),
       };
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -786,6 +805,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
 
       return { error: `Unknown action: ${action}` };
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -910,6 +931,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         matches: allMatches,
       };
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -972,6 +995,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -1022,6 +1047,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Failed to write file: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -1115,6 +1142,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Failed to edit file: ${msg}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -1173,6 +1202,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Failed to load skill: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -1210,6 +1241,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Failed to list skills: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -1272,6 +1305,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -1346,6 +1381,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Search failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -1396,6 +1433,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Glob failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
   });
 
   // -----------------------------------------------------------------------
@@ -1407,7 +1446,12 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     description:
       "执行 Shell 命令并返回输出。请谨慎使用。" +
       "工作目录为项目数据目录。" +
-      "命令超时时间为 30 秒。",
+      "命令超时时间为 30 秒。\n\n" +
+      "使用建议：\n" +
+      "- 执行代码前先在 think 工具中验证逻辑\n" +
+      "- 对计算结果做常识性检查（数量级、单位、边界值）\n" +
+      "- 代码出错时先分析错误信息，不要盲目修改重试\n" +
+      "- 复杂计算优先使用 Python 脚本而非单行命令，便于调试",
     inputSchema: {
       type: "object",
       properties: {
@@ -1443,6 +1487,16 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           error: (execErr.stderr as string || "").trim() || (err instanceof Error ? err.message : String(err)),
         };
       }
+    },
+    isReadOnly: (input) => {
+      const cmd = (input.command as string) ?? "";
+      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch"];
+      return readOnlyPrefixes.some(c => cmd.trimStart().startsWith(c));
+    },
+    isConcurrencySafe: (input) => {
+      const cmd = (input.command as string) ?? "";
+      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch"];
+      return readOnlyPrefixes.some(c => cmd.trimStart().startsWith(c));
     },
   });
 
@@ -1510,7 +1564,13 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     name: "web_search",
     description:
       "搜索网络获取信息。返回包含标题、URL 和摘要的搜索结果。" +
-      "适用于查找知识库中没有的最新信息。",
+      "适用于查找知识库中没有的最新信息。\n\n" +
+      "使用建议：\n" +
+      "- 每次搜索前先用 think 工具构思最优查询词\n" +
+      "- 如果连续 2-3 次搜索无有用结果，切换到其他方法\n" +
+      "- 对于学术文献，尝试搜索论文标题或作者名，而非宽泛关键词\n" +
+      "- 如果返回了相关 URL 但摘要信息不足，使用 web_fetch 工具访问该 URL 获取完整页面内容\n" +
+      "- 搜索到有用链接后，应立即用 web_fetch 获取详细内容再做分析",
     inputSchema: {
       type: "object",
       properties: {
@@ -1534,7 +1594,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         if (backend === "serper") {
           const apiKey = process.env.SERPER_API_KEY;
           if (!apiKey) {
-            return "Web search (Serper) is not configured. Set SERPER_API_KEY environment variable.";
+            return { error: true, message: "Web search (Serper) is not configured. Set SERPER_API_KEY environment variable.", suggestion: "Try using browser tool to visit a URL directly instead." };
           }
 
           const resp = await fetch("https://google.serper.dev/search", {
@@ -1551,7 +1611,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           });
 
           if (!resp.ok) {
-            return `Search request failed: HTTP ${resp.status}`;
+            return { error: true, message: `Search request failed: HTTP ${resp.status}`, suggestion: "Search service unavailable. Try browser tool to visit a URL directly, or proceed with available information." };
           }
 
           const data = await resp.json() as {
@@ -1574,7 +1634,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           );
 
           if (!minimaxProvider?.apiKey) {
-            return "Web search (MiniMax) is not configured. Add a MiniMax provider with an API key in settings.";
+            return { error: true, message: "Web search (MiniMax) is not configured. Add a MiniMax provider with an API key in settings.", suggestion: "Try browser tool to visit a URL directly instead." };
           }
 
           const resp = await fetch("https://api.minimaxi.com/v1/web_search", {
@@ -1588,7 +1648,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           });
 
           if (!resp.ok) {
-            return `Search request failed: HTTP ${resp.status}`;
+            return { error: true, message: `Search request failed: HTTP ${resp.status}`, suggestion: "Search service unavailable. Try browser tool to visit a URL directly, or proceed with available information." };
           }
 
           const data = await resp.json() as {
@@ -1640,20 +1700,92 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         }
       } catch (err) {
         if (err instanceof Error && err.name === "TimeoutError") {
-          return `Search request timed out for "${args.query}".`;
+          return { error: true, message: `Search request timed out for "${args.query}".`, suggestion: "Search service is slow. Try a simpler query or use browser tool instead." };
         }
-        return `Search failed: ${err instanceof Error ? err.message : String(err)}`;
+        return { error: true, message: `Search failed: ${err instanceof Error ? err.message : String(err)}`, suggestion: "Web search unavailable. Try browser tool or proceed with available information." };
       }
     },
   });
 
   // -----------------------------------------------------------------------
-  // Browser tool (Playwright-based)
+  // Web Fetch tool (multi-strategy URL fetcher)
+  // -----------------------------------------------------------------------
+
+  try {
+    const { createWebFetchTool, setMiniMaxCredentials } = await import("./tools/web-fetch-tool.js");
+
+    // Load MiniMax credentials from MCP server config for search fallback
+    try {
+      const repos = await getRepos();
+      const mcpServersRaw = await repos.settings.get("mcp_servers");
+      if (mcpServersRaw) {
+        const servers = JSON.parse(mcpServersRaw) as Record<string, unknown>[];
+        const minimaxServer = servers.find(
+          (s) =>
+            String(s.name ?? "").toLowerCase().includes("minimax") ||
+            String(s.id ?? "").toLowerCase().includes("minimax"),
+        );
+        const env = minimaxServer?.env as Record<string, string> | undefined;
+        if (env?.MINIMAX_API_KEY && env?.MINIMAX_API_HOST) {
+          setMiniMaxCredentials(env.MINIMAX_API_KEY, env.MINIMAX_API_HOST);
+          console.log("[ToolSetup] WebFetch: MiniMax search fallback configured");
+        }
+      }
+    } catch {
+      // Credentials not available — search fallback will be skipped
+    }
+
+    const webFetchTool = createWebFetchTool();
+    registry.register({
+      ...webFetchTool,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+  } catch (err) {
+    console.error("[ToolSetup] Failed to load web_fetch tool:", err instanceof Error ? err.message : String(err));
+  }
+
+  // -----------------------------------------------------------------------
+  // Wikipedia API tool
+  // -----------------------------------------------------------------------
+
+  try {
+    const { createWikipediaTool } = await import("./tools/wikipedia-tool.js");
+    const wikipediaTool = createWikipediaTool();
+    registry.register({
+      ...wikipediaTool,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+  } catch (err) {
+    console.error("[ToolSetup] Failed to load wikipedia tool:", err instanceof Error ? err.message : String(err));
+  }
+
+  try {
+    const { createYouTubeTool } = await import("./tools/youtube-tool.js");
+    const youtubeTool = createYouTubeTool();
+    registry.register({
+      ...youtubeTool,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+  } catch (err) {
+    console.error("[ToolSetup] Failed to load youtube tool:", err instanceof Error ? err.message : String(err));
+  }
+
+  // -----------------------------------------------------------------------
+  // Browser tool (Playwright-based, heavy — lazy loaded)
   // -----------------------------------------------------------------------
 
   try {
     const { createBrowserTool } = await import("./tools/browser-tool.js");
-    registry.register(createBrowserTool());
+    const browserTool = createBrowserTool();
+    registry.register({
+      ...browserTool,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      shouldDefer: true,
+    });
   } catch {
     // Playwright not available
   }
@@ -1712,6 +1844,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `TTS generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+    shouldDefer: true,
   });
 
   registry.register({
@@ -1761,6 +1896,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+    shouldDefer: true,
   });
 
   registry.register({
@@ -1791,6 +1929,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Video generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+    shouldDefer: true,
   });
 
   registry.register({
@@ -1835,6 +1976,9 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         return { error: `Music generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+    shouldDefer: true,
   });
 
   // -----------------------------------------------------------------------
@@ -1883,6 +2027,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
         bash: "执行 Shell 命令",
         run_sql: "执行 SQL 查询（只读）",
         web_search: "搜索网络获取信息",
+        web_fetch: "获取指定 URL 的网页内容（轻量级 HTTP 请求）",
         browser: "无头浏览器：导航、截图、提取文本",
         tts_generate: "文本转语音",
         image_generate: "文本生成图片",
@@ -1942,6 +2087,8 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           : undefined,
       };
     },
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
   });
 
   // -----------------------------------------------------------------------
@@ -2073,9 +2220,14 @@ export interface WorkflowRunDeps {
  */
 export async function registerWorkflowRunTool(registry: ToolRegistry, deps: WorkflowRunDeps): Promise<void> {
   const { createWorkflowRunTool } = await import("./tools/workflow-run.js");
-  registry.register(createWorkflowRunTool({
+  const workflowTool = createWorkflowRunTool({
     runner: deps.runner,
     toolRegistry: deps.toolRegistry,
     onEvent: deps.emitWs,
-  }));
+  });
+  registry.register({
+    ...workflowTool,
+    isReadOnly: () => false,
+    isConcurrencySafe: () => false,
+  });
 }

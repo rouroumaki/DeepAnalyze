@@ -42,6 +42,38 @@ export interface AgentTool {
   execute(input: Record<string, unknown>): Promise<unknown>;
   /** Optional JSON schema for input validation */
   inputSchema?: Record<string, unknown>;
+
+  /**
+   * Whether this tool is read-only for the given input. Read-only tools
+   * don't modify state and can safely run in parallel.
+   * Default: false
+   */
+  isReadOnly?(input: Record<string, unknown>): boolean;
+
+  /**
+   * Whether this tool can run concurrently with other tools for the given input.
+   * Default: same as isReadOnly
+   */
+  isConcurrencySafe?(input: Record<string, unknown>): boolean;
+
+  /**
+   * Whether this tool performs destructive operations (delete, overwrite, send).
+   * Default: false
+   */
+  isDestructive?(input: Record<string, unknown>): boolean;
+
+  /**
+   * Max chars before tool result gets persisted to disk.
+   * Infinity = never persist. Default: 50_000
+   */
+  maxResultSizeChars?: number;
+
+  /**
+   * Whether this tool should be deferred (not sent in initial tool definitions).
+   * Discovered via tool_discover at runtime.
+   * Default: false
+   */
+  shouldDefer?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +290,12 @@ export interface AgentSettings {
   smCompactMinTokens: number;
   /** SM-compact maximum tokens of recent context to keep. Default: 40000 */
   smCompactMaxTokens: number;
+  /** Same-tool call count before stuck detection triggers. Default: 5 */
+  stuckDetectionThreshold: number;
+  /** Consecutive tool errors before error intervention triggers. Default: 3 */
+  consecutiveErrorThreshold: number;
+  /** Maximum turns for sub-agents (workflow_run / skill_invoke). Default: 200 */
+  subAgentMaxTurns: number;
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -274,4 +312,7 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   toolResultKeepRecent: 10,
   smCompactMinTokens: 10_000,
   smCompactMaxTokens: 40_000,
+  stuckDetectionThreshold: 5,
+  consecutiveErrorThreshold: 3,
+  subAgentMaxTurns: 200,
 };

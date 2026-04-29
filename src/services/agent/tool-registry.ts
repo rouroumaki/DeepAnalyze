@@ -16,6 +16,10 @@ import type { ToolDefinition } from "../../models/provider.js";
  * Tools that are loaded lazily to save input tokens.
  * These tools are registered but not included in the initial tool definitions
  * sent to the model. The model can discover them via the tool_discover tool.
+ *
+ * @deprecated Use `shouldDefer` property on individual tools instead. This Set
+ * is kept for backward compatibility but the primary mechanism is now the
+ * `shouldDefer` attribute on AgentTool.
  */
 export const DEFERRED_TOOLS = new Set([
   "tts_generate",
@@ -55,6 +59,8 @@ const thinkTool: AgentTool = {
     },
     required: ["thought"],
   },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
 };
 
 /**
@@ -79,6 +85,8 @@ const finishTool: AgentTool = {
     },
     required: ["summary"],
   },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
 };
 
 // ---------------------------------------------------------------------------
@@ -208,15 +216,20 @@ export class ToolRegistry {
   buildToolDefinitions(names?: string[], includeDeferred = false): ToolDefinition[] {
     let tools: AgentTool[];
 
+    const isDeferred = (t: AgentTool) => t.shouldDefer || DEFERRED_TOOLS.has(t.name);
+
     if (names && names.includes("*")) {
       // Wildcard: return all tools (respecting deferred flag)
-      tools = this.getAll().filter(t => includeDeferred || !DEFERRED_TOOLS.has(t.name));
+      tools = this.getAll().filter(t => includeDeferred || !isDeferred(t));
     } else if (names) {
       tools = this.filterByNames(names);
     } else {
       // No names specified: return all non-deferred tools
-      tools = this.getAll().filter(t => includeDeferred || !DEFERRED_TOOLS.has(t.name));
+      tools = this.getAll().filter(t => includeDeferred || !isDeferred(t));
     }
+
+    // Sort alphabetically by name for prompt cache stability
+    tools.sort((a, b) => a.name.localeCompare(b.name));
 
     return tools.map((tool) => ({
       name: tool.name,

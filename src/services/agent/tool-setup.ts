@@ -1084,7 +1084,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       required: ["path", "old_string", "new_string"],
     },
     async execute(input: Record<string, unknown>) {
-      const { readFileSync, writeFileSync } = await import("node:fs");
+      const { readFile, writeFile } = await import("fs/promises");
       const { resolve } = await import("node:path");
       const rawPath = input.path as string;
       const oldString = input.old_string as string;
@@ -1097,42 +1097,32 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       }
 
       try {
-        if (!readFileSync(safePath, "utf-8") && false) { /* existence check */ }
-        const content = readFileSync(safePath, "utf-8");
+        const content = await readFile(safePath, "utf-8");
 
-        if (!content.includes(oldString)) {
-          return { error: `old_string not found in file. Make sure the text matches exactly (including whitespace and indentation).` };
+        // Count occurrences of old_string
+        const occurrences = content.split(oldString).length - 1;
+
+        if (occurrences === 0) {
+          return {
+            error: `old_string not found in file "${rawPath}". The string to replace was not found in the file content.`,
+          };
         }
 
-        let newContent: string;
-        let replacements: number;
-
-        if (replaceAll) {
-          const parts = content.split(oldString);
-          replacements = parts.length - 1;
-          newContent = parts.join(newString);
-        } else {
-          const idx = content.indexOf(oldString);
-          if (idx === -1) {
-            return { error: "old_string not found in file" };
-          }
-          // Check for uniqueness
-          const secondIdx = content.indexOf(oldString, idx + 1);
-          if (secondIdx !== -1) {
-            return {
-              error: "old_string matches multiple locations in the file. Provide more context to make it unique, or set replace_all=true.",
-              matchCount: content.split(oldString).length - 1,
-            };
-          }
-          newContent = content.substring(0, idx) + newString + content.substring(idx + oldString.length);
-          replacements = 1;
+        if (occurrences > 1 && !replaceAll) {
+          return {
+            error: `old_string appears ${occurrences} times in file "${rawPath}". Provide more context to make the match unique, or set replace_all to true to replace all occurrences.`,
+          };
         }
 
-        writeFileSync(safePath, newContent, "utf-8");
+        const newContent = replaceAll
+          ? content.replaceAll(oldString, newString)
+          : content.replace(oldString, newString);
+
+        await writeFile(safePath, newContent, "utf-8");
         return {
           success: true,
           path: rawPath,
-          replacements,
+          replacements: replaceAll ? occurrences : 1,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

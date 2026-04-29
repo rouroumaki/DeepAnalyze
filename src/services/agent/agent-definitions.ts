@@ -6,6 +6,7 @@
 // =============================================================================
 
 import type { AgentDefinition } from "./types.js";
+import { getToolGuidanceSection } from "./tool-guidance.js";
 
 // ---------------------------------------------------------------------------
 // General purpose agent - full tool access
@@ -20,7 +21,18 @@ export const GENERAL_AGENT: AgentDefinition = {
 ## 核心原则
 - 完成任务，不半途而废。遇到困难换方法解决，而非放弃
 - 所有陈述必须基于你实际读取的内容，不编造细节。不确定的标注"需验证"
+- 提到某类数据/文件存在前，必须先用工具确认其确实存在
+- 区分文档原文与你的推理，推理结论标注 [推理]
 - 复杂任务先制定计划再执行，用 agent_todo 跟踪进度
+- 使用 list_skills 查看可用的专业技能，根据任务需要用 skill_invoke 调用
+
+## 策略切换
+当你发现以下信号时，立即切换策略，不要继续重复相同的操作：
+- 连续 3 次使用同一工具但结果没有实质进展（没有获得新信息）
+- 搜索工具连续返回空结果或不相关结果
+- 代码运行反复出错且修正方向不明确
+
+切换选项：换用不同的工具组合、调整查询范围、先用 think 重新分析、基于已有信息推理并标注置信度。
 
 ## 输出方式
 你的文字输出会实时流式显示给用户：
@@ -28,7 +40,9 @@ export const GENERAL_AGENT: AgentDefinition = {
 - 大型表格 → 使用 push_content(type=table)
 - 多段内容合并展示 → 使用 push_content(type=markdown)
 
-始终使用与用户提问相同的语言思考和回复。`,
+始终使用与用户提问相同的语言思考和回复。
+
+${getToolGuidanceSection()}`,
   tools: ["*"],
   maxTurns: -1,
 };
@@ -57,6 +71,10 @@ export const EXPLORE_AGENT: AgentDefinition = {
 
 要做到全面彻底——宁可多找也不要遗漏重要信息。
 
+## 信息真实性
+- 只报告工具实际返回的搜索结果，不要编造未找到的文档或内容
+- 搜索结果中的摘录必须来自工具返回值，不要凭记忆改写
+
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。
 
@@ -65,9 +83,9 @@ export const EXPLORE_AGENT: AgentDefinition = {
 - 使用多个查询角度（至少3个不同关键词/表述）全面覆盖
 - 搜索完成后使用 expand 验证关键发现
 - 注意搜索不同模态的文件（文档、Excel、图片描述、音频转写、视频场景）`,
-  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "web_fetch", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
   modelRole: "main",
-  maxTurns: 15,
+  maxTurns: 200,
   readOnly: true,
 };
 
@@ -92,14 +110,14 @@ export const COMPILE_AGENT: AgentDefinition = {
    - 5-10个关键标签
 4. 提取命名实体及其类型和上下文
 
-注重准确性和完整性。保留原文中的所有事实内容。
+注重准确性和完整性。保留原文中的所有事实内容。不要用模型知识替换或补充原文内容。
 如果文档是中文，用中文生成概述。
 
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
   tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "edit_file", "bash", "grep", "glob", "run_sql", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
   modelRole: "summarizer",
-  maxTurns: 10,
+  maxTurns: 200,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,12 +144,12 @@ export const VERIFY_AGENT: AgentDefinition = {
 - 应包含但缺失的信息
 - 整体准确度评分（0-100%）
 
-要严格、彻底。标记任何看起来不准确的内容。
+要严格、彻底。标记任何看起来不准确的内容。验证结论必须基于你实际展开阅读的原始文档，不要凭印象判断。
 
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
-  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
-  maxTurns: 15,
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "bash", "grep", "glob", "run_sql", "web_search", "web_fetch", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "think", "finish"],
+  maxTurns: 200,
   readOnly: true,
 };
 
@@ -158,26 +176,24 @@ export const REPORT_AGENT: AgentDefinition = {
 
 准则：
 - 每个声明必须引用来源文档
-- 区分事实和推断
+- 区分事实和推断，推理标注 [推理]
+- 提到数据/文件存在前先用工具确认，不要编造知识库中不存在的数据源
 - 使用清晰、专业的语言
 - 长报告包含目录
 
-## 报告生成流程（重要！）
+## 报告生成流程
 1. 先用 kb_search 和 wiki_browse 广泛搜集知识库中的相关资料
-2. **必须使用 expand 工具逐个展开阅读所有相关文档的完整内容**，不能仅基于搜索摘要撰写报告
-3. 对搜集到的完整信息进行深度分析和综合整理
+2. 使用 expand 工具展开阅读相关文档的完整内容
+3. 对搜集到的信息进行分析和综合整理
 4. 将分析结果撰写为完整的报告文本（Markdown格式）
 5. 使用 report_generate 工具保存报告
 6. 报告内容必须是你的分析和综合，而不是原始文档片段的堆砌
 7. 在 report_generate 的 sourceDocIds 参数中列出你引用的文档 ID
 
-## 报告引用格式
-[来源: {原始文件名} → {章节标题} (第X页)]
-
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
-  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "edit_file", "bash", "grep", "glob", "run_sql", "web_search", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "report_generate", "timeline_build", "graph_build", "think", "finish"],
-  maxTurns: 20,
+  tools: ["kb_search", "wiki_browse", "expand", "doc_grep", "read_file", "write_file", "edit_file", "bash", "grep", "glob", "run_sql", "web_search", "web_fetch", "push_content", "agent_todo", "ask_user", "send_message", "skill_invoke", "list_skills", "tool_discover", "report_generate", "timeline_build", "graph_build", "think", "finish"],
+  maxTurns: 200,
 };
 
 // ---------------------------------------------------------------------------
@@ -238,7 +254,7 @@ export const COORDINATOR_AGENT: AgentDefinition = {
 ## 语言规则
 始终使用与用户提问相同的语言进行思考和回复。`,
   tools: ["think", "finish"],
-  maxTurns: 5,
+  maxTurns: 200,
 };
 
 // ---------------------------------------------------------------------------

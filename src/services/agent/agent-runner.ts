@@ -39,6 +39,7 @@ import { TokenEstimator } from "./token-estimator.js";
 import { needsContinuation, buildContinuationMessage, DEFAULT_CONTINUATION_CONFIG } from "./long-io.js";
 import { applyCacheEditing } from "./cache-editing.js";
 import type { HookManager } from "./hooks.js";
+import type { HookContext } from "./hook-types.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -463,6 +464,14 @@ export class AgentRunner {
       agentType,
     });
 
+    // Fire AgentStart hook (fire-and-forget)
+    if (this.hookManager) {
+      await this.hookManager.fire("AgentStart", {
+        hookType: "AgentStart",
+        taskId,
+      }).catch(() => {});
+    }
+
     // -------------------------------------------------------------------
     // Continuous TAOR Loop
     // -------------------------------------------------------------------
@@ -767,24 +776,51 @@ export class AgentRunner {
 
       // 6b. Auto-compaction
       if (contextManager.shouldCompact(messages)) {
-        try {
-          const result = await compactionEngine.compact(messages, sessionMemory, options.signal);
-          if (result.method !== "none") {
-            messages.length = 0;
-            messages.push(...result.messages);
-            compactionEvents.push({ turn, method: result.method, tokensSaved: result.tokensSaved });
-            this.emitEvent(options.onEvent, {
-              type: "compaction",
+        // PreCompact hook — can block compaction
+        let compactAllowed = true;
+        if (this.hookManager) {
+          try {
+            const preResult = await this.hookManager.fire("PreCompact", {
+              hookType: "PreCompact",
               taskId,
-              turn,
-              method: result.method,
-              tokensSaved: result.tokensSaved,
             });
-            // Persist compact boundary to DB so next request knows where to load from
-            this.persistCompactBoundary(options.sessionId, result.method, result.preCompactTokens, turn);
+            if (!preResult.allowed) {
+              compactAllowed = false;
+              console.log(`[AgentRunner] Compaction blocked by PreCompact hook: ${preResult.error ?? "no reason given"}`);
+            }
+          } catch {
+            // Hook error — allow compaction to proceed
           }
-        } catch (err) {
-          console.warn("[AgentRunner] Compaction failed:", err instanceof Error ? err.message : String(err));
+        }
+
+        if (compactAllowed) {
+          try {
+            const result = await compactionEngine.compact(messages, sessionMemory, options.signal);
+            if (result.method !== "none") {
+              messages.length = 0;
+              messages.push(...result.messages);
+              compactionEvents.push({ turn, method: result.method, tokensSaved: result.tokensSaved });
+              this.emitEvent(options.onEvent, {
+                type: "compaction",
+                taskId,
+                turn,
+                method: result.method,
+                tokensSaved: result.tokensSaved,
+              });
+              // Persist compact boundary to DB so next request knows where to load from
+              this.persistCompactBoundary(options.sessionId, result.method, result.preCompactTokens, turn);
+
+              // PostCompact hook — fire-and-forget
+              if (this.hookManager) {
+                await this.hookManager.fire("PostCompact", {
+                  hookType: "PostCompact",
+                  taskId,
+                }).catch(() => {});
+              }
+            }
+          } catch (err) {
+            console.warn("[AgentRunner] Compaction failed:", err instanceof Error ? err.message : String(err));
+          }
         }
       }
 
@@ -870,6 +906,14 @@ export class AgentRunner {
       } catch (err) {
         console.warn("[AgentRunner] Auto-compound failed:", err instanceof Error ? err.message : String(err));
       }
+    }
+
+    // Fire AgentComplete hook (fire-and-forget)
+    if (this.hookManager) {
+      await this.hookManager.fire("AgentComplete", {
+        hookType: "AgentComplete",
+        taskId,
+      }).catch(() => {});
     }
 
     return result;

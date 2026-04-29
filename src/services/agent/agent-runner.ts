@@ -35,6 +35,8 @@ import type {
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
 import { SUB_AGENT_BLOCKED_TOOLS } from "./tool-setup.js";
 import { orchestrateToolCalls } from "./tool-orchestration.js";
+import { TokenEstimator } from "./token-estimator.js";
+import { needsContinuation, buildContinuationMessage, DEFAULT_CONTINUATION_CONFIG } from "./long-io.js";
 import type { HookManager } from "./hooks.js";
 import type {
   ChatMessage,
@@ -217,6 +219,7 @@ export class AgentRunner {
   private agentDefinitions = new Map<string, AgentDefinition>();
   private displayResolver: DisplayResolver | null = null;
   private hookManager: HookManager | null = null;
+  private tokenEstimator = new TokenEstimator();
 
   constructor(modelRouter: ModelRouter, toolRegistry: ToolRegistry, hookManager?: HookManager) {
     this.modelRouter = modelRouter;
@@ -467,6 +470,7 @@ export class AgentRunner {
     const MAX_EMERGENCY_COMPACTIONS = 5;
     let consecutiveLLMErrors = 0;
     const MAX_CONSECUTIVE_LLM_ERRORS = 5;
+    let continuations = 0;
 
     while (true) {
       turn++;
@@ -587,6 +591,10 @@ export class AgentRunner {
         totalOutputTokens += turnUsage.outputTokens;
         // Emit turn_usage event for real-time status display
         this.emitEvent(options.onEvent, { type: "turn_usage", taskId, turn, usage: turnUsage });
+        // Record API-reported usage for token estimation
+        if (turnUsage.inputTokens) {
+          this.tokenEstimator.reportUsage(`turn-${turn}`, turnUsage.inputTokens);
+        }
       }
 
       if (assistantContent) {
@@ -599,6 +607,22 @@ export class AgentRunner {
 
       // Emit turn as boundary signal — content was already streamed via text_delta
       this.emitEvent(options.onEvent, { type: "turn", taskId, turn, content: assistantContent });
+
+      // Long output continuation: if output was truncated, inject continuation message
+      if (needsContinuation(finishReason) && (!toolCalls || toolCalls.length === 0)) {
+        continuations++;
+        if (continuations <= DEFAULT_CONTINUATION_CONFIG.maxContinuations) {
+          messages.push({ role: "assistant", content: assistantContent } as ChatMessage);
+          messages.push(buildContinuationMessage());
+          lastAssistantContent += assistantContent;
+          console.log(`[AgentRunner] Output truncated, continuation ${continuations}/${DEFAULT_CONTINUATION_CONFIG.maxContinuations}`);
+          continue;
+        }
+        console.warn(`[AgentRunner] Max continuations (${DEFAULT_CONTINUATION_CONFIG.maxContinuations}) reached`);
+      } else {
+        // Reset continuations counter when we get a non-truncated response
+        continuations = 0;
+      }
 
       // Build the assistant message
       const assistantMessage: ChatMessage = {

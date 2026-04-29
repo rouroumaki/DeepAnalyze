@@ -712,6 +712,14 @@ export class AgentRunner {
         }
       } else {
         messages.push(assistantMessage);
+
+        // Natural termination: model returned text without calling any tools.
+        // This means the model considers itself done. End the loop.
+        if (assistantContent.trim().length > 0) {
+          lastAssistantContent = assistantContent;
+          console.log(`[AgentRunner] Natural termination at turn ${turn} (no tool calls, ${assistantContent.length} chars)`);
+          break;
+        }
       }
 
       // 6. Context management
@@ -1051,6 +1059,18 @@ export class AgentRunner {
       return { role: "tool", content: JSON.stringify({ error: errorMsg }), toolCallId: toolCall.id };
     }
 
+    // Stage 2: Schema validation
+    const toolDef = this.toolRegistry.get(toolName);
+    if (toolDef?.inputSchema) {
+      const validation = this.toolRegistry.validateToolInput(toolName, toolInput, toolDef.inputSchema);
+      if (!validation.valid) {
+        const errorMsg = `<tool_use_error>InputValidationError for "${toolName}": ${validation.error}</tool_use_error>`;
+        this.recordProgress(onEvent, taskId, turn, "error", errorMsg);
+        this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result: { error: validation.error } });
+        return { role: "tool", content: errorMsg, toolCallId: toolCall.id };
+      }
+    }
+
     this.emitEvent(onEvent, { type: "tool_call", taskId, turn, toolName, input: toolInput });
     this.recordProgress(onEvent, taskId, turn, "tool_call", `Calling tool: ${toolName}`, toolName, toolInput);
 
@@ -1316,12 +1336,10 @@ export class AgentRunner {
     finishReason?: string,
     agentCalledFinish?: boolean,
   ): boolean {
-    // Only explicit finish tool call terminates the loop.
-    // Models may output text without tool calls as intermediate thinking/progress
-    // updates — this does NOT mean the task is complete. The model must explicitly
-    // call the finish tool to signal completion. This mirrors Claude Code's design
-    // where termination only happens when the model stops calling tools, but is
-    // stricter to prevent premature termination with models that output text mid-task.
+    // Explicit finish tool call terminates the loop.
+    // Note: Natural termination (model returns text without tool calls) is handled
+    // separately in the else branch of the tool call processing, before reaching here.
+    // This method handles the explicit finish tool call path.
     if (agentCalledFinish) return true;
     return false;
   }

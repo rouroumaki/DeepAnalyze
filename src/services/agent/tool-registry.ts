@@ -200,6 +200,63 @@ export class ToolRegistry {
   }
 
   // -----------------------------------------------------------------------
+  // Input validation
+  // -----------------------------------------------------------------------
+
+  /**
+   * Validate tool input against its JSON Schema.
+   * Checks required fields and basic type compatibility.
+   */
+  validateToolInput(
+    toolName: string,
+    input: Record<string, unknown>,
+    schema: Record<string, unknown>,
+  ): { valid: boolean; error?: string } {
+    if (!schema.properties) return { valid: true };
+
+    // Check required fields
+    const required = schema.required as string[] | undefined;
+    if (required) {
+      for (const field of required) {
+        if (input[field] === undefined || input[field] === null) {
+          return {
+            valid: false,
+            error: `Missing required parameter "${field}"`,
+          };
+        }
+      }
+    }
+
+    // Check field types
+    const props = schema.properties as Record<string, { type?: string; description?: string }>;
+    for (const [key, propSchema] of Object.entries(props)) {
+      const value = input[key];
+      if (value === undefined || value === null) continue;
+
+      if (propSchema.type) {
+        const actualType = Array.isArray(value) ? "array" : typeof value;
+        const expectedType = propSchema.type;
+
+        const typeCompatible =
+          (expectedType === "string" && actualType === "string") ||
+          (expectedType === "number" && actualType === "number") ||
+          (expectedType === "boolean" && actualType === "boolean") ||
+          (expectedType === "array" && actualType === "array") ||
+          (expectedType === "object" && actualType === "object" && !Array.isArray(value));
+
+        if (!typeCompatible) {
+          return {
+            valid: false,
+            error: `Parameter "${key}" expected type "${expectedType}" but got "${actualType}"`,
+          };
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  // -----------------------------------------------------------------------
   // Tool definition building for LLM function calling
   // -----------------------------------------------------------------------
 

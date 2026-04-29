@@ -29,9 +29,11 @@ import type {
   AgentProgressEntry,
   AgentSettings,
   CompactBoundaryMeta,
+  AgentTool,
 } from "./types.js";
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
 import { SUB_AGENT_BLOCKED_TOOLS } from "./tool-setup.js";
+import { orchestrateToolCalls } from "./tool-orchestration.js";
 import type { HookManager } from "./hooks.js";
 import type {
   ChatMessage,
@@ -73,6 +75,136 @@ const STOP_FINISH_REASONS = new Set([
   "EndTurn",
   "ended",
 ]);
+
+// ---------------------------------------------------------------------------
+// Stuck-loop detection
+// ---------------------------------------------------------------------------
+
+interface ToolCallRecord {
+  toolName: string;
+  turn: number;
+  inputHash: string;
+}
+
+/**
+ * Detects when the agent is stuck in a repetitive tool-call loop.
+ * Tracks recent tool calls and checks for patterns indicating no progress.
+ * Injects a guidance message when stuck behavior is detected.
+ */
+class StuckDetector {
+  private history: ToolCallRecord[] = [];
+  private readonly maxHistory = 20;
+  private interventionCount = 0;
+  private readonly maxInterventions = 2;
+  private readonly threshold: number;
+
+  constructor(threshold: number = 5) {
+    this.threshold = threshold;
+  }
+
+  /**
+   * Record a tool call and check if the agent appears stuck.
+   * Returns an intervention message if stuck is detected, null otherwise.
+   */
+  recordAndCheck(toolName: string, input: Record<string, unknown>, turn: number): string | null {
+    const primaryInput = this.extractPrimaryInput(toolName, input);
+    this.history.push({ toolName, turn, inputHash: `${toolName}:${primaryInput}` });
+
+    if (this.history.length > this.maxHistory) {
+      this.history = this.history.slice(-this.maxHistory);
+    }
+
+    return this.detectStuckPattern(turn);
+  }
+
+  private extractPrimaryInput(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case "web_search":
+      case "kb_search":
+        return String(input.query ?? "").toLowerCase().trim();
+      case "bash":
+        return String(input.command ?? "").toLowerCase().trim();
+      default:
+        return JSON.stringify(input).toLowerCase().substring(0, 100);
+    }
+  }
+
+  private detectStuckPattern(turn: number): string | null {
+    if (this.interventionCount >= this.maxInterventions) return null;
+    if (this.history.length < this.threshold) return null;
+
+    // Pattern 0: Hard limit on consecutive think-only calls (max 8)
+    const thinkOnlyLimit = 8;
+    if (this.history.length >= thinkOnlyLimit) {
+      const lastN = this.history.slice(-thinkOnlyLimit);
+      if (lastN.every(r => r.toolName === "think")) {
+        this.interventionCount++;
+        return this.buildIntervention("think", thinkOnlyLimit, turn);
+      }
+    }
+
+    // Pattern 1: Same tool called threshold+ times in the last threshold+3 calls
+    const recent = this.history.slice(-(this.threshold + 3));
+    const toolCounts = new Map<string, number>();
+    for (const r of recent) {
+      toolCounts.set(r.toolName, (toolCounts.get(r.toolName) ?? 0) + 1);
+    }
+    for (const [tool, count] of toolCounts) {
+      if (count >= this.threshold) {
+        this.interventionCount++;
+        return this.buildIntervention(tool, count, turn);
+      }
+    }
+
+    // Pattern 2: threshold+ consecutive calls to the same tool with no other calls
+    const lastN2 = this.history.slice(-this.threshold);
+    if (lastN2.length >= this.threshold && lastN2.every(r => r.toolName === lastN2[0]!.toolName)) {
+      this.interventionCount++;
+      return this.buildIntervention(lastN2[0]!.toolName, this.threshold, turn);
+    }
+
+    return null;
+  }
+
+  private buildIntervention(toolName: string, count: number, turn: number): string {
+    const alternatives = this.getAlternatives(toolName);
+    // Special handling for think-only loops
+    if (toolName === "think") {
+      return (
+        `[系统提示-强制] 你已连续 ${count} 次仅调用 think 工具，没有执行任何实际操作。` +
+        `这表明你陷入了纯思考循环，必须立即停止！\n\n` +
+        `你必须立即采取以下行动之一：\n` +
+        `1. 使用 web_search 或 wikipedia 工具搜索相关信息\n` +
+        `2. 使用 web_fetch 访问相关 URL\n` +
+        `3. 使用 bash 工具执行计算或数据处理\n` +
+        `4. 如果你已经有足够信息，立即调用 finish 工具给出最终答案\n\n` +
+        `不要再调用 think 工具！选择一个行动工具立即执行。`
+      );
+    }
+    return (
+      `[系统提示] 你已连续 ${count} 次调用 ${toolName}，但似乎没有取得明显进展。\n` +
+      `建议策略调整：\n` +
+      `1. 停止重复使用 ${toolName}，尝试其他方法\n` +
+      `2. ${alternatives}\n` +
+      `3. 基于已有信息进行推理，给出带置信度的答案\n` +
+      `4. 如果无法继续取得进展，调用 finish 给出最佳推断答案`
+    );
+  }
+
+  private getAlternatives(toolName: string): string {
+    switch (toolName) {
+      case "web_search":
+      case "mcp__minimax_websearch__web_search":
+        return "尝试 browser 工具直接访问已知 URL，或使用不同的关键词策略";
+      case "kb_search":
+        return "尝试 wiki_browse(listDocuments=true) 查看完整文档列表，或用 doc_grep 精确搜索";
+      case "bash":
+        return "检查代码逻辑，考虑手动计算或换一种实现方式";
+      default:
+        return "换一种完全不同的方法来解决这个问题";
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // AgentRunner
@@ -148,7 +280,7 @@ export class AgentRunner {
     // Resolve effective turn limit (API override > settings > definition > default)
     const advisoryLimit = options.maxTurns ?? definition.maxTurns ?? agentSettings.maxTurns;
     const isUnlimited = advisoryLimit === -1;
-    const hardLimit = isUnlimited ? Infinity : advisoryLimit * 3;
+    const hardLimit = isUnlimited ? Infinity : Math.max(advisoryLimit * 3, 100);
 
     // --- Main/Sub model split ---
     // Primary agents (general, report) use 'main' model
@@ -288,6 +420,10 @@ export class AgentRunner {
     let lastAssistantContent = "";
     const compactionEvents: Array<{ turn: number; method: string; tokensSaved: number }> = [];
 
+    // Stuck-loop and error detection
+    const stuckDetector = new StuckDetector(agentSettings.stuckDetectionThreshold);
+    let consecutiveToolErrors = 0;
+
     // Track accessed wiki pages for source tracing
     const accessedPages = new Map<string, {
       pageId: string;
@@ -342,11 +478,25 @@ export class AgentRunner {
 
       // 2. Hard limit check (absolute safety valve, only for non-unlimited)
       if (!isUnlimited && turn > hardLimit) {
-        break;
+        // Give the agent one final turn to call finish
+        if (turn > hardLimit + 1) {
+          break;
+        }
+        // Inject final wrap-up instruction
+        messages.push({
+          role: "user",
+          content: "[系统提示] 已达到硬性轮次上限。必须立即调用 finish 工具提交当前最佳答案。不要再调用任何其他工具。",
+        });
       }
 
-      // 3. Advisory limit check — emit warning but don't stop
+      // 3. Advisory limit check — inject wrap-up guidance into conversation
       if (!isUnlimited && turn === advisoryLimit + 1) {
+        const advisoryMessage =
+          `[系统提示] 已达到建议的最大轮次 (${advisoryLimit})。\n` +
+          `请基于当前已有的信息，使用 think 工具整理已有发现，然后调用 finish 工具提交最终答案。\n` +
+          `如果关键信息缺失，在答案中明确标注不确定性。`;
+        messages.push({ role: "user", content: advisoryMessage });
+
         this.emitEvent(options.onEvent, {
           type: "advisory_limit_reached",
           taskId,
@@ -462,46 +612,103 @@ export class AgentRunner {
         assistantMessage.toolCalls = toolCalls;
         messages.push(assistantMessage);
 
+        // Count tool calls and check for finish
         for (const toolCall of toolCalls) {
           totalToolCalls++;
           if (toolCall.function.name === "finish") {
             agentCalledFinish = true;
           }
-          const toolResultMessage = await this.executeToolCall(
-            toolCall,
-            taskId,
-            turn,
-            options.onEvent,
-            accessedPages,
-            agentSettings,
-          );
-          messages.push(toolResultMessage);
+        }
 
-          // Handle tool_discover: dynamically inject deferred tools into available definitions
+        // Build tool map for orchestration
+        const toolMap = new Map<string, AgentTool>();
+        for (const tool of this.toolRegistry.getAll()) {
+          toolMap.set(tool.name, tool);
+        }
+
+        // Execute tools with concurrent orchestration
+        // Read-only tools run in parallel, write tools run serially
+        const batchResult = await orchestrateToolCalls(
+          toolCalls,
+          toolMap,
+          (tc) => this.executeToolCall(tc, taskId, turn, options.onEvent, accessedPages, agentSettings),
+        );
+        messages.push(...batchResult.messages);
+
+        // Track consecutive tool errors across all results
+        for (const resultMsg of batchResult.messages) {
+          const rawResult = typeof resultMsg.content === "string"
+            ? resultMsg.content
+            : JSON.stringify(resultMsg.content);
+          try {
+            const parsedResult = JSON.parse(rawResult);
+            if (parsedResult?.error === true) {
+              consecutiveToolErrors++;
+            } else {
+              consecutiveToolErrors = 0;
+            }
+          } catch {
+            consecutiveToolErrors = 0;
+          }
+        }
+
+        // Handle tool_discover: dynamically inject deferred tools
+        for (const toolCall of toolCalls) {
           if (toolCall.function.name === "tool_discover") {
-            try {
-              const rawContent = typeof toolResultMessage.content === "string"
-                ? toolResultMessage.content
-                : JSON.stringify(toolResultMessage.content);
-              const parsed = JSON.parse(rawContent);
-              if (parsed?.__activate_tools__ && Array.isArray(parsed.__activate_tools__)) {
-                const newDefs = this.toolRegistry.buildToolDefinitions(parsed.__activate_tools__, true);
-                if (newDefs.length > 0) {
-                  // Merge new tool definitions into the active set (avoid duplicates)
-                  const existingNames = new Set(toolDefs.map(d => d.name));
-                  for (const def of newDefs) {
-                    if (!existingNames.has(def.name)) {
-                      toolDefs.push(def);
-                      existingNames.add(def.name);
+            // Find the corresponding result message
+            const resultMsg = batchResult.messages.find(
+              m => "toolCallId" in m && m.toolCallId === toolCall.id
+            );
+            if (resultMsg) {
+              try {
+                const rawContent = typeof resultMsg.content === "string"
+                  ? resultMsg.content
+                  : JSON.stringify(resultMsg.content);
+                const parsed = JSON.parse(rawContent);
+                if (parsed?.__activate_tools__ && Array.isArray(parsed.__activate_tools__)) {
+                  const newDefs = this.toolRegistry.buildToolDefinitions(parsed.__activate_tools__, true);
+                  if (newDefs.length > 0) {
+                    const existingNames = new Set(toolDefs.map(d => d.name));
+                    for (const def of newDefs) {
+                      if (!existingNames.has(def.name)) {
+                        toolDefs.push(def);
+                        existingNames.add(def.name);
+                      }
                     }
+                    console.log(`[AgentRunner] Dynamically activated ${newDefs.length} tool(s): ${newDefs.map(d => d.name).join(", ")}`);
                   }
-                  console.log(`[AgentRunner] Dynamically activated ${newDefs.length} tool(s): ${newDefs.map(d => d.name).join(", ")}`);
                 }
+              } catch {
+                // Ignore parse errors
               }
-            } catch {
-              // Ignore parse errors - just skip dynamic activation
             }
           }
+        }
+
+        // 5b. Stuck-loop detection and intervention
+        let interventionMessage: string | null = null;
+        for (const toolCall of toolCalls) {
+          let parsedInput: Record<string, unknown>;
+          try { parsedInput = JSON.parse(toolCall.function.arguments); } catch { continue; }
+          const msg = stuckDetector.recordAndCheck(toolCall.function.name, parsedInput, turn);
+          if (msg && !interventionMessage) { interventionMessage = msg; }
+        }
+        if (interventionMessage) {
+          messages.push({ role: "user", content: interventionMessage });
+          console.log(`[AgentRunner] Stuck intervention injected at turn ${turn}`);
+        }
+
+        // 5c. Consecutive tool error intervention
+        if (consecutiveToolErrors >= agentSettings.consecutiveErrorThreshold) {
+          const errorMsg =
+            `[系统提示] 最近 ${consecutiveToolErrors} 次工具调用都返回了错误。\n` +
+            `请停止重复相同的操作，尝试以下策略之一：\n` +
+            `1. 使用 think 工具分析错误原因，换一种完全不同的方法\n` +
+            `2. 如果是外部服务不可用，基于已有信息给出最佳推断\n` +
+            `3. 调用 finish 提交当前已有的最佳答案，标注不确定性`;
+          messages.push({ role: "user", content: errorMsg });
+          consecutiveToolErrors = 0; // Reset to avoid re-triggering
+          console.log(`[AgentRunner] Consecutive error intervention at turn ${turn}`);
         }
       } else {
         messages.push(assistantMessage);
@@ -899,7 +1106,7 @@ export class AgentRunner {
           isSkillInvocation: true,
           signal: undefined,
           onEvent,
-          maxTurns: 20,
+          maxTurns: agentSettings.subAgentMaxTurns,
         });
         result = {
           skillName: skillData.skill.name,

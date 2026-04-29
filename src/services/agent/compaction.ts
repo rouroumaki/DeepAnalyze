@@ -15,6 +15,7 @@ import { repairMessageSequence } from "./message-utils.js";
 import type { SessionMemoryNote, AgentSettings } from "./types.js";
 import { DEFAULT_AGENT_SETTINGS } from "./types.js";
 import { getCompactPrompt, formatCompactSummary, getCompactUserSummaryMessage } from "./compact-prompt.js";
+import { COMPRESSION_LEVELS } from "./hierarchical-compressor.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,7 +23,7 @@ import { getCompactPrompt, formatCompactSummary, getCompactUserSummaryMessage } 
 
 export interface CompactionResult {
   messages: ChatMessage[];
-  method: "sm-compact" | "legacy-compact" | "none";
+  method: "sm-compact" | "legacy-compact" | "hierarchical-compact" | "none";
   tokensSaved: number;
   /** Token count before compaction. Used for compact boundary metadata. */
   preCompactTokens: number;
@@ -112,7 +113,7 @@ export class CompactionEngine {
 
   /**
    * Compact messages using the best available strategy.
-   * Priority: SM-compact (if session memory exists) > Legacy compact.
+   * Priority: Hierarchical compact (no session memory) > SM-compact (session memory) > Legacy compact.
    * Circuit breaker protects against repeated compaction failures.
    */
   async compact(
@@ -128,7 +129,16 @@ export class CompactionEngine {
     const memory = await sessionMemory?.load() ?? null;
 
     try {
-      // Try SM-compact first (no API call needed)
+      // Try hierarchical compact first
+      if (!memory) {
+        const result = await this.hierarchicalCompact(messages, signal);
+        if (result.method !== "none") {
+          this.circuitBreaker.recordSuccess();
+          return result;
+        }
+      }
+
+      // Try SM-compact (no API call needed)
       if (memory) {
         const result = this.smCompact(messages, memory);
         if (result.method !== "none") {
@@ -286,6 +296,124 @@ export class CompactionEngine {
       tokensSaved: Math.max(0, tokensSaved),
       preCompactTokens: tokensBefore,
     };
+  }
+
+  // -----------------------------------------------------------------------
+  // Hierarchical Compact: D2/D1/Leaf layers with different granularity
+  // -----------------------------------------------------------------------
+
+  /**
+   * Hierarchical compression: split messages into D2/D1/Leaf layers
+   * with different compression granularity per layer.
+   */
+  async hierarchicalCompact(
+    messages: ChatMessage[],
+    signal?: AbortSignal,
+  ): Promise<CompactionResult> {
+    const tokensBefore = this.contextManager.estimateMessagesTokens(messages);
+
+    // Group messages (skip system prompt at index 0)
+    // Note: groupMessages returns indices relative to the sliced array,
+    // so we add +1 when indexing into the original messages array.
+    const sliced = messages.slice(1);
+    const groups = this.groupMessages(sliced);
+    if (groups.length < 3) {
+      return { messages, method: "none", tokensSaved: 0, preCompactTokens: tokensBefore };
+    }
+
+    // Split into thirds
+    const d2End = Math.floor(groups.length / 3);
+    const d1End = Math.floor(groups.length * 2 / 3);
+
+    // Generate summaries for D2 and D1 layers
+    const d2Groups = groups.slice(0, d2End);
+    const d1Groups = groups.slice(d2End, d1End);
+
+    let d2Summary = "";
+    let d1Summary = "";
+
+    try {
+      if (d2Groups.length > 0) {
+        const d2Msgs = this.flattenGroups(sliced, d2Groups);
+        d2Summary = await this.generateSummaryWithPrompt(d2Msgs, COMPRESSION_LEVELS[0].prompt, signal);
+      }
+    } catch {
+      d2Summary = this.truncationSummary(this.flattenGroups(sliced, d2Groups));
+    }
+
+    try {
+      if (d1Groups.length > 0) {
+        const d1Msgs = this.flattenGroups(sliced, d1Groups);
+        d1Summary = await this.generateSummaryWithPrompt(d1Msgs, COMPRESSION_LEVELS[1].prompt, signal);
+      }
+    } catch {
+      d1Summary = this.truncationSummary(this.flattenGroups(sliced, d1Groups));
+    }
+
+    // Assemble compacted messages — leaf starts at d1End boundary
+    // +1 to convert from sliced-index back to original messages index
+    const leafStart = (groups[d1End]?.assistantIndex ?? messages.length - 2) + 1;
+    const leafMessages = messages.slice(leafStart);
+
+    const summaryParts: string[] = [];
+    if (d2Summary) summaryParts.push(`## 早期对话摘要\n${d2Summary}`);
+    if (d1Summary) summaryParts.push(`## 近期对话摘要\n${d1Summary}`);
+
+    const compacted: ChatMessage[] = [
+      messages[0], // system prompt
+      {
+        role: "user",
+        content: `[分层压缩上下文]\n${summaryParts.join("\n\n")}\n\n以下是最新的对话内容：`,
+      },
+      ...leafMessages,
+    ];
+
+    const repaired = repairMessageSequence(compacted);
+    const tokensAfter = this.contextManager.estimateMessagesTokens(repaired);
+
+    return {
+      messages: repaired,
+      method: "hierarchical-compact",
+      tokensSaved: Math.max(0, tokensBefore - tokensAfter),
+      preCompactTokens: tokensBefore,
+    };
+  }
+
+  /**
+   * Flatten groups back to messages by looking up original indices.
+   */
+  private flattenGroups(messages: ChatMessage[], groups: MessageGroup[]): ChatMessage[] {
+    const result: ChatMessage[] = [];
+    for (const group of groups) {
+      result.push(messages[group.assistantIndex]);
+      for (const idx of group.toolResultIndices) {
+        result.push(messages[idx]);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Generate a summary using a specific compression-level prompt.
+   */
+  private async generateSummaryWithPrompt(
+    messages: ChatMessage[],
+    prompt: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const summarizerModel = this.modelRouter.getDefaultModel("summarizer");
+    const serialized = messages
+      .map(m => `[${m.role}]: ${(m.content ?? "").slice(0, 2000)}`)
+      .join("\n\n");
+
+    const response = await this.modelRouter.chat(
+      [
+        { role: "system", content: prompt },
+        { role: "user", content: serialized },
+      ],
+      { model: summarizerModel, maxTokens: 2000, signal },
+    );
+    return response.content || "";
   }
 
   // -----------------------------------------------------------------------

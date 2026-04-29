@@ -21,6 +21,7 @@ import { MicroCompactor } from "./micro-compact.js";
 import { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
 import { getRepos } from "../../store/repos/index.js";
 import { DisplayResolver } from "../display-resolver.js";
+import { maybePersistToolResult } from "./tool-result-storage.js";
 import type {
   AgentDefinition,
   AgentRunOptions,
@@ -1172,6 +1173,18 @@ export class AgentRunner {
       }
     } catch {
       resultContent = String(result);
+    }
+
+    // Persist large results to disk and return a preview
+    const persisted = await maybePersistToolResult(
+      toolName,
+      resultContent,
+      taskId,
+      toolCall.id,
+      50_000,
+    );
+    if (persisted.persisted) {
+      return { role: "tool", content: persisted.content, toolCallId: toolCall.id };
     }
 
     return { role: "tool", content: resultContent, toolCallId: toolCall.id };

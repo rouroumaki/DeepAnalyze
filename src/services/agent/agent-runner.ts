@@ -37,6 +37,7 @@ import { SUB_AGENT_BLOCKED_TOOLS } from "./tool-setup.js";
 import { orchestrateToolCalls } from "./tool-orchestration.js";
 import { TokenEstimator } from "./token-estimator.js";
 import { needsContinuation, buildContinuationMessage, DEFAULT_CONTINUATION_CONFIG } from "./long-io.js";
+import { applyCacheEditing } from "./cache-editing.js";
 import type { HookManager } from "./hooks.js";
 import type {
   ChatMessage,
@@ -510,13 +511,16 @@ export class AgentRunner {
       }
 
       // 4. Call the LLM via streaming (with automatic model fallback)
+      // Apply cache editing: truncate old tool results for context management
+      // without modifying the local messages array (preserves cache prefix).
+      const messagesForApi = applyCacheEditing(messages);
       let assistantContent: string;
       let toolCalls: ToolCall[] | undefined;
       let finishReason: string | undefined;
       let turnUsage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
       try {
         const streamResult = await this.chatStreamWithFallback(
-          messages, toolDefs, options,
+          messagesForApi, toolDefs, options,
           modelId, modelRole, fallbackRole,
           usingFallback,
           (newModelId: string) => { modelId = newModelId; usingFallback = true; },

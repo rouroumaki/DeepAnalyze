@@ -57,7 +57,7 @@ async function parallelLimit<T>(
 }
 
 import type { AgentRunner } from "./agent-runner.js";
-import type { AgentResult as RunnerAgentResult } from "./types.js";
+import { DEFAULT_AGENT_SETTINGS, type AgentResult as RunnerAgentResult, type AgentSettings } from "./types.js";
 import type { ToolRegistry } from "./tool-registry.js";
 import type { NewWorkflowLog } from "../../store/repos/index.js";
 
@@ -238,6 +238,8 @@ export class WorkflowEngine {
   private abortController = new AbortController();
   /** Accumulated log entries, flushed to DB on workflow completion. */
   private logBuffer: NewWorkflowLog[] = [];
+  /** Agent runtime settings, loaded once per execute() call. */
+  private agentSettings: AgentSettings = DEFAULT_AGENT_SETTINGS;
 
   constructor(
     input: WorkflowInput,
@@ -266,6 +268,16 @@ export class WorkflowEngine {
    */
   async execute(): Promise<WorkflowResult> {
     const startTime = Date.now();
+
+    // Load agent runtime settings once for all sub-agents
+    try {
+      const { getRepos } = await import("../../store/repos/index.js");
+      const repos = await getRepos();
+      const raw = await repos.settings.get("agent_settings");
+      this.agentSettings = { ...DEFAULT_AGENT_SETTINGS, ...(raw ? JSON.parse(raw) : {}) };
+    } catch {
+      // Use defaults if settings can't be loaded
+    }
 
     this.emit({
       type: "workflow_start",
@@ -797,7 +809,7 @@ export class WorkflowEngine {
             agentTotalTokensOut += event.usage.outputTokens;
           }
         },
-        maxTurns: 50,
+        maxTurns: this.agentSettings.subAgentMaxTurns,
       });
 
       const duration = Date.now() - startTime;

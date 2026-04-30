@@ -783,13 +783,16 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  // Don't re-process already ready documents unless force=true
   const force = c.req.query("force") === "true";
-  if (doc.status === "ready" && !force) {
+
+  // Without force, reject documents that are already ready or actively processing
+  if (!force && (doc.status === "ready" || ["parsing", "compiling", "indexing", "linking"].includes(doc.status))) {
     return c.json({
       documentId: docId,
-      status: "ready",
-      message: "Document is already processed",
+      status: doc.status,
+      message: doc.status === "ready"
+        ? "Document is already processed"
+        : `Document is currently ${doc.status}`,
     });
   }
 
@@ -805,6 +808,16 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     processor = c.req.query("processor") ?? undefined;
   }
 
+  // If force=true, cancel any active processing for this document first
+  if (force) {
+    const queue = getProcessingQueue();
+    try {
+      await queue.cancel(docId);
+    } catch {
+      // Job may not be active — that's fine
+    }
+  }
+
   // Enqueue for asynchronous processing
   const queue = getProcessingQueue();
   queue.enqueue({
@@ -814,6 +827,7 @@ knowledgeRoutes.post("/kbs/:kbId/process/:docId", async (c) => {
     filePath: doc.file_path,
     fileType: doc.file_type,
     processor,
+    force,
   });
 
   return c.json({
@@ -1026,6 +1040,7 @@ knowledgeRoutes.get("/kbs/:kbId/documents/:docId/status", async (c) => {
 
 knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
   const kbId = c.req.param("kbId");
+  const force = c.req.query("force") === "true";
 
   // Verify KB exists
   const repos = await getRepos();
@@ -1039,22 +1054,34 @@ knowledgeRoutes.post("/kbs/:kbId/process-all", async (c) => {
   let enqueued = 0;
 
   for (const doc of documents) {
-    // Only enqueue documents that are in "uploaded" or "error" state
-    if (doc.status !== "uploaded" && doc.status !== "error") {
-      continue;
+    if (force) {
+      // Force mode: enqueue all documents regardless of status
+      queue.enqueue({
+        kbId,
+        docId: doc.id,
+        filename: doc.filename,
+        filePath: doc.file_path,
+        fileType: doc.file_type,
+        force: true,
+      });
+      enqueued++;
+    } else {
+      // Normal mode: only enqueue documents in "uploaded" or "error" state
+      if (doc.status !== "uploaded" && doc.status !== "error") {
+        continue;
+      }
+      queue.enqueue({
+        kbId,
+        docId: doc.id,
+        filename: doc.filename,
+        filePath: doc.file_path,
+        fileType: doc.file_type,
+      });
+      enqueued++;
     }
-
-    queue.enqueue({
-      kbId,
-      docId: doc.id,
-      filename: doc.filename,
-      filePath: doc.file_path,
-      fileType: doc.file_type,
-    });
-    enqueued++;
   }
 
-  return c.json({ enqueued });
+  return c.json({ enqueued, force });
 });
 
 // =====================================================================

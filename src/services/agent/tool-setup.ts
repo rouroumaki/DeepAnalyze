@@ -17,6 +17,8 @@ import { getRepos } from "../../store/repos/index.js";
 import { createReportTool } from "../../tools/ReportTool/index.js";
 import { createTimelineTool } from "../../tools/TimelineTool/index.js";
 import { createGraphTool } from "../../tools/GraphTool/index.js";
+import { AgentPluginManager } from "./plugin-manager.js";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Dependencies for tool registration
@@ -2186,6 +2188,39 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       }
     },
   });
+
+  // Register universal tools
+  const { UNIVERSAL_TOOLS } = await import("./tools/universal-tools.js");
+  for (const tool of UNIVERSAL_TOOLS) {
+    registry.register(tool);
+  }
+
+  // Auto-load plugins from plugins/ directory
+  try {
+    const pluginManager = new AgentPluginManager();
+    const pluginsDir = join(process.cwd(), "plugins");
+    const { readdir } = await import("fs/promises");
+    const entries = await readdir(pluginsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const pluginPath = join(pluginsDir, entry.name);
+        try {
+          await pluginManager.loadPlugin(pluginPath);
+        } catch (err) {
+          console.warn(`[ToolSetup] Failed to load plugin ${entry.name}:`, err);
+        }
+      }
+    }
+    // Register plugin skills into the registry
+    // For now, just log loaded plugins - actual skill execution integration
+    // will be handled through skill_invoke tool
+    const skills = pluginManager.getAllSkills();
+    if (skills.length > 0) {
+      console.log(`[ToolSetup] Loaded ${skills.length} skills from plugins`);
+    }
+  } catch {
+    // plugins/ directory doesn't exist - that's fine
+  }
 
   return registry;
 }

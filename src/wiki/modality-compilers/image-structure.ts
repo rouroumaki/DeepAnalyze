@@ -21,6 +21,9 @@ export async function compileImageStructure(
 ): Promise<string[]> {
   const { kbId, docId, raw, doctags, wikiPageRepo, anchorRepo, ftsRepo, anchorGenerator } = params;
 
+  // Sanitize string values — remove NULL bytes that PostgreSQL rejects
+  const sanitize = (s: string): string => s.replace(/\0/g, '');
+
   // 1. Generate anchors
   const anchors = anchorGenerator.generateImageAnchors(docId, kbId, raw);
   await anchorRepo.batchInsert(anchors);
@@ -34,7 +37,7 @@ export async function compileImageStructure(
     doc_id: docId,
     page_type: 'structure_dt',
     title,
-    content: doctags,
+    content: sanitize(doctags),
     file_path: `${kbId}/documents/${docId}/structure_dt/image.dt.md`,
     metadata: {
       anchorIds: anchors.map(a => a.id),
@@ -46,7 +49,7 @@ export async function compileImageStructure(
   });
 
   // L1_md: Markdown format page (use VLM description or OCR text)
-  const mdContent = raw.description || raw.ocrText || doctags;
+  const mdContent = sanitize(raw.description || raw.ocrText || doctags);
   const mdPage = await wikiPageRepo.create({
     kb_id: kbId,
     doc_id: docId,
@@ -67,7 +70,7 @@ export async function compileImageStructure(
   await anchorRepo.updateStructurePageId(anchors.map(a => a.id), mdPage.id);
 
   // 4. Create FTS index entries for both pages
-  await ftsRepo.upsertFTSEntry(dtPage.id, title, doctags);
+  await ftsRepo.upsertFTSEntry(dtPage.id, title, sanitize(doctags));
   await ftsRepo.upsertFTSEntry(mdPage.id, title, mdContent);
 
   return [dtPage.id, mdPage.id];

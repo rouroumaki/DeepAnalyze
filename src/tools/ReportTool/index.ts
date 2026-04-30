@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { AgentTool } from "../../services/agent/types.js";
+import { eventBus } from "../../services/event-bus.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies
@@ -167,6 +168,11 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
           token_count: tokenCount,
         });
 
+        console.log(`[ReportTool] Report saved: id=${page.id}, title="${title}", kbId=${kbId}, tokens=${tokenCount}`);
+
+        // Notify listeners (e.g. report panel refresh, logging)
+        eventBus.emit({ type: "report_generated", kbId, reportId: page.id, title });
+
         // -------------------------------------------------------------------
         // 3. Return result
         // -------------------------------------------------------------------
@@ -179,6 +185,7 @@ export function createReportTool(deps: ReportToolDeps): AgentTool {
           reportType,
         };
       } catch (err) {
+        console.error(`[ReportTool] Report generation failed:`, err instanceof Error ? err.message : String(err));
         return {
           error: `Report generation failed: ${err instanceof Error ? err.message : String(err)}`,
         };

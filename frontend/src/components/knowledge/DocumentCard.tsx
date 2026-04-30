@@ -932,66 +932,63 @@ export function DocumentCard({
             </button>
           )}
 
-          {/* Processor selector */}
-          {!isMedia && (
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
-              <select
-                value={processor}
-                onChange={(e) => {
-                  setProcessor(e.target.value as "auto" | "docling" | "native" | "asr");
-                }}
-                title="选择处理器"
-                style={{
-                  padding: "var(--space-1) var(--space-2)",
-                  border: "1px solid var(--border-primary)",
-                  borderRadius: "var(--radius-sm)",
-                  backgroundColor: "var(--bg-primary)",
-                  color: "var(--text-secondary)",
-                  fontSize: "var(--text-xs)",
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                <option value="auto">Auto</option>
-                <option value="docling">Docling</option>
-                {(category === "audio") ? (
-                  <option value="asr">ASR</option>
-                ) : category === "document" ? (
-                  <option value="native">Native</option>
-                ) : null}
-              </select>
-              {processor !== "auto" && (
-                <button
-                  onClick={() => {
-                    // Clear cached level content
-                    setLevelCache({});
-                    // Trigger reprocessing with selected processor
-                    api.reprocessDocument(kbId, doc.id, processor).catch((err) => {
-                      console.error("Reprocess failed:", err);
-                    });
-                  }}
-                  title={`使用 ${processor.toUpperCase()} 重新处理`}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--space-1)",
-                    padding: "var(--space-1) var(--space-2)",
-                    border: "1px solid var(--interactive)",
-                    borderRadius: "var(--radius-sm)",
-                    backgroundColor: "var(--interactive-light)",
-                    color: "var(--interactive)",
-                    fontSize: "var(--text-xs)",
-                    fontWeight: "var(--font-medium)",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <RefreshCw size={10} />
-                  重新生成
-                </button>
-              )}
-            </div>
-          )}
+          {/* Processor selector + rebuild button — available for ALL file types */}
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+            <select
+              value={processor}
+              onChange={(e) => {
+                setProcessor(e.target.value as "auto" | "docling" | "native" | "asr");
+              }}
+              title="选择处理器"
+              style={{
+                padding: "var(--space-1) var(--space-2)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-sm)",
+                backgroundColor: "var(--bg-primary)",
+                color: "var(--text-secondary)",
+                fontSize: "var(--text-xs)",
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              <option value="auto">Auto</option>
+              <option value="docling">Docling</option>
+              {category === "audio" ? (
+                <option value="asr">ASR</option>
+              ) : category === "document" ? (
+                <option value="native">Native</option>
+              ) : null}
+            </select>
+            <button
+              onClick={() => {
+                // Clear cached level content
+                setLevelCache({});
+                // Trigger reprocessing with selected processor
+                const proc = processor !== "auto" ? processor : undefined;
+                api.reprocessDocument(kbId, doc.id, proc).catch((err) => {
+                  console.error("Reprocess failed:", err);
+                });
+              }}
+              title={`重建文档${processor !== "auto" ? ` (${processor.toUpperCase()})` : ""}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-1)",
+                padding: "var(--space-1) var(--space-2)",
+                border: "1px solid var(--interactive)",
+                borderRadius: "var(--radius-sm)",
+                backgroundColor: "var(--interactive-light)",
+                color: "var(--interactive)",
+                fontSize: "var(--text-xs)",
+                fontWeight: "var(--font-medium)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <RefreshCw size={10} />
+              重建
+            </button>
+          </div>
         </div>
       )}
 

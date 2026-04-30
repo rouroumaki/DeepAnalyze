@@ -54,7 +54,7 @@ async def handle_request(raw: str) -> str:
             data = await loop.run_in_executor(
                 _executor, parse_document_sync, file_path, options
             )
-        return json.dumps({"id": request_id, "status": "ok", "data": data})
+        return json.dumps({"id": request_id, "status": "ok", "data": data}, ensure_ascii=True)
     except Exception as exc:
         tb = traceback.format_exc()
         return json.dumps({"id": request_id, "status": "error", "error": f"{exc}\n{tb}"})

@@ -24,6 +24,10 @@ import {
   OpenAICompatibleProvider,
   type OpenAICompatibleOptions,
 } from "./openai-compatible";
+import {
+  AnthropicCompatibleProvider,
+  type AnthropicCompatibleOptions,
+} from "./anthropic-compatible";
 import { getProviderMetadata } from "./provider-registry";
 import type { ProviderConfig } from "../store/repos/index.js";
 
@@ -485,6 +489,17 @@ export class ModelRouter {
         return new OpenAICompatibleProvider(options);
       }
 
+      case "anthropic-compatible": {
+        const options: AnthropicCompatibleOptions = {
+          name,
+          endpoint: modelConfig.endpoint,
+          apiKey: modelConfig.apiKey,
+          model: modelConfig.model,
+          maxTokens: modelConfig.maxTokens,
+        };
+        return new AnthropicCompatibleProvider(options);
+      }
+
       default: {
         const _exhaustive: never = modelConfig.provider;
         throw new Error(
@@ -499,6 +514,22 @@ export class ModelRouter {
     const meta = getProviderMetadata(p.id);
     const defaultModel = meta?.models.find(m => m.id === p.model);
 
+    // Anthropic-compatible provider type
+    if (p.type === "anthropic-compatible") {
+      const options: AnthropicCompatibleOptions = {
+        name: p.id,
+        endpoint: p.endpoint,
+        apiKey: p.apiKey || undefined,
+        model: p.model,
+        maxTokens: p.maxTokens,
+        temperature: p.temperature,
+        topP: p.topP,
+        topK: p.topK,
+      };
+      return new AnthropicCompatibleProvider(options);
+    }
+
+    // Default: OpenAI-compatible provider
     const options: OpenAICompatibleOptions = {
       name: p.id,
       endpoint: p.endpoint,

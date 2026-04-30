@@ -27,7 +27,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
       { name: "topic", description: "文档主题或关键词", required: true },
       { name: "maxLength", description: "摘要最大字数", required: false, defaultValue: "500" },
     ],
-    maxTurns: 10,
+    maxTurns: 20,
     config: { category: "analysis" },
   },
   {
@@ -51,7 +51,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
       { name: "subjects", description: "要对比的对象（逗号分隔）", required: true },
       { name: "dimensions", description: "对比维度", required: false, defaultValue: "核心观点,数据,结论" },
     ],
-    maxTurns: 15,
+    maxTurns: 30,
     config: { category: "analysis" },
   },
   {
@@ -82,7 +82,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
       { name: "topic", description: "调研主题", required: true },
       { name: "depth", description: "调研深度（浅/中/深）", required: false, defaultValue: "中" },
     ],
-    maxTurns: 25,
+    maxTurns: 50,
     config: { category: "research" },
   },
   {
@@ -101,14 +101,15 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 4. **展开阅读** — 使用 expand 展开关键段落获取完整内容
 5. **关联分析** — 检查搜索结果中的关联页面，交叉验证信息
 6. **综合撰写** — 将分析结果撰写为完整的报告文本（Markdown格式），包含完整的论证、数据和结论
-7. **保存报告** — 使用 report_generate 将你撰写的完整报告文本保存到知识库（content参数传入你的综合报告文本）
+7. **保存报告** — 使用 report_generate 将你撰写的完整报告文本保存到知识库（content参数传入你的综合报告文本）。保存后必须使用 push_content 将报告推送到前端
 
 **分析要求：**
 - 始终基于文档原文进行分析，不要编造信息
+- 不要用模型内部知识补充知识库中不存在的信息
 - 引用来源时标注文档名称和章节
 - 对比不同文档中的信息差异
 - 发现信息间的关联和矛盾
-- 总结时区分事实和推断
+- 总结时区分事实和推断，推理结论标注 [推理]
 
 **报告格式：**
 - 分析摘要（3-5条核心发现）
@@ -122,11 +123,11 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 1. 对关键发现使用 expand 验证原始数据
 2. 引用格式：[来源: {原始文件名} → {章节标题} (第X页)]
 3. 列出所有引用的锚点ID`,
-    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "graph_build", "think", "finish"],
+    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "push_content", "graph_build", "think", "finish"],
     variables: [
       { name: "topic", description: "分析主题或问题", required: true },
     ],
-    maxTurns: 20,
+    maxTurns: 50,
     config: { category: "analysis" },
   },
   {
@@ -160,7 +161,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     variables: [
       { name: "topic", description: "要检索的主题或问题", required: true },
     ],
-    maxTurns: 25,
+    maxTurns: 50,
     config: { category: "research" },
   },
   {
@@ -197,7 +198,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
       { name: "task", description: "分析任务描述", required: true },
       { name: "targetFile", description: "目标文件名（可选，缩小搜索范围）", required: false, defaultValue: "" },
     ],
-    maxTurns: 20,
+    maxTurns: 40,
     config: { category: "analysis" },
   },
   {
@@ -269,7 +270,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     variables: [
       { name: "scope", description: "提取范围（文档ID或关键词）", required: true },
     ],
-    maxTurns: 10,
+    maxTurns: 20,
     config: { category: "extraction" },
   },
   {
@@ -287,6 +288,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 2. **深入阅读** — 使用 wiki_browse 和 expand 获取关键内容详情
 3. **综合撰写** — 对搜集到的信息进行深度分析和综合整理，撰写完整的报告文本
 4. **保存报告** — 调用 report_generate 工具将你撰写的完整报告文本保存到知识库
+5. **推送前端** — 使用 push_content 将报告内容推送到前端展示
 
 **报告结构要求：**
 - 执行摘要（5条以内核心发现）
@@ -303,18 +305,20 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - report_generate 只负责保存报告，不帮你生成内容。
 - 你必须先自己撰写完整的分析报告（Markdown格式），然后通过 content 参数传给 report_generate。
 - 报告内容必须是你自己的分析和综合，绝不能是原始文档片段的堆砌。
+- 不要编造知识库中不存在的数据源。提到某类数据前先用工具确认其存在
+- 区分"从文档读取的信息"和"推理得出的结论"，推理标注 [推理]
 
 ## 多模态引用
 - Excel 表格：标注 Sheet 名和表格编号
 - 音频：标注发言者和时间范围
 - 视频：标注场景编号和时间范围
 - 图片：标注图片描述和文件名`,
-    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "timeline_build", "graph_build", "think", "finish"],
+    tools: ["kb_search", "wiki_browse", "expand", "report_generate", "push_content", "timeline_build", "graph_build", "think", "finish"],
     variables: [
       { name: "topic", description: "报告主题或分析问题", required: true },
       { name: "reportType", description: "报告类型（分析/总结/对比/调查）", required: false, defaultValue: "分析" },
     ],
-    maxTurns: 20,
+    maxTurns: 50,
     config: { category: "report" },
   },
   {
@@ -357,6 +361,12 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - 文本输出保持简洁，仅包含：完成状态、核心发现摘要（3-5条）、生成的文件路径
 - 这样主Agent可以按需 read_file 读取特定段落，或直接推送全文到前端
 
+**反幻觉要求（每个子Agent task 中必须包含以下指令）**：
+- 所有事实性声明必须标注来源文件名。格式：[来源: 文件名]
+- 不得编造知识库中不存在的数据源。提到某类数据前先用工具确认其存在
+- 使用工具获取精确计数，不使用模糊估算
+- 区分"从文档读取的信息"和"推理得出的结论"，推理标注 [推理]
+
 **关于层级选择（重要，传给子Agent）**：
 - PDF/DOCX 文本：expand 到 L1 即可（L1 已包含完整全文，L2 与 L1 完全相同，展开到 L2 是浪费）
 - 图片：expand 到 L1 获取 VLM 视觉描述和 OCR 文本；如 L1 为空则用 L2
@@ -385,7 +395,7 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - 分派时必须把用户的具体分析要求传递给每个子Agent
 - 每个子Agent必须被告知"详尽分析，不要遗漏，不要压缩"
 - 最终合成时不重新分析，只做整合和补充关联
-- 必须按顺序完成 4b（push_content）和 4c（report_generate），缺一不可
+- 必须按顺序完成 4a（push_content）和 4c（report_generate），缺一不可
 - 完成后立即调用 finish，不要继续执行其他任务`,
     tools: ["kb_search", "wiki_browse", "expand", "workflow_run", "write_file", "read_file", "run_sql", "agent_todo", "report_generate", "push_content", "think", "finish"],
     variables: [],
@@ -485,6 +495,12 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
 - 文本输出保持简洁，仅包含：完成状态、核心发现摘要（3-5条）、生成的文件路径
 - 这样主Agent可以按需 read_file 读取特定段落，或直接推送全文到前端
 
+**反幻觉要求（每个子Agent task 中必须包含以下指令）**：
+- 所有事实性声明必须标注来源文件名。格式：[来源: 文件名]
+- 不得编造知识库中不存在的数据源。提到某类数据前先用工具确认其存在
+- 使用工具获取精确计数，不使用模糊估算
+- 区分"从文档读取的信息"和"推理得出的结论"，推理标注 [推理]
+
 **关于层级选择**（重要，传给子Agent）：
 - PDF/DOCX 文本：expand 到 L1 即可（L1 已包含完整全文，L2 与 L1 完全相同）
 - 图片：expand 到 L1 获取 VLM 视觉描述和 OCR 文本；如 L1 为空则用 L2
@@ -514,5 +530,51 @@ export const BUILT_IN_SKILLS: Array<Omit<SkillDefinition, "id">> = [
     variables: [],
     maxTurns: 50,
     config: { category: "analysis" },
+  },
+  {
+    name: "深度知识库分析",
+    pluginId: null,
+    description:
+      "为当前分析会话启用增强的反幻觉、引用溯源和输出完整性保障。" +
+      "适用于学术分析、卷宗分析、法律文书分析等需要高度准确性和可溯源性的场景。",
+    systemPrompt: `你已启用深度知识库分析增强模式。以下是你在本次分析中必须严格遵守的规则。
+
+## 反幻觉规则（最高优先级）
+1. **数据源验证**：如果你提到知识库中包含某类数据（如"表格"、"数据库"、"统计数据"），必须先用工具确认这些文件确实存在于知识库中。严禁凭空编造不存在的数据源。
+2. **强制引用**：每个事实性声明必须附带来源标记。格式：[来源: 文件名]。如果无法追溯到具体文件，标注 [未溯源]。
+3. **区分知识来源**：明确区分"从知识库文档中读取的信息"和"模型推理得出的结论"。推理结论标注 "[推理]"。
+4. **禁止外部知识填充**：不要用模型内部知识补充知识库中不存在的信息。如果知识库缺乏某方面内容，明确指出这一空白。
+5. **精确统计**：使用工具获取精确计数，不使用"约"、"大约"等模糊表述，除非确实无法精确计数。
+
+## 引用溯源
+- 引用格式：[来源: {原始文件名} → {章节标题} (第X页)]
+- 多模态引用：
+  - Excel 表格：标注 Sheet 名和单元格范围
+  - 音频：标注发言者和时间范围
+  - 视频：标注场景编号和时间范围
+  - 图片：标注图片描述和文件名
+
+## 数据精度原则
+- 遵循数据原始约束（单位、精度、有效范围）
+- 计算结果必须用工具验证，不能仅凭心算
+- 区分相关性和因果性，区分绝对数和比例
+
+## 三层验证流程
+1. **全面发现** — 使用 kb_search + wiki_browse 广泛搜索（至少3个不同关键词），确保不遗漏
+2. **逐一深入阅读** — 使用 expand 展开所有相关文档的完整内容，未阅读的文档不得编写详细分析
+3. **系统化输出** — 综合整理分析结果，保存报告并同时推送到前端
+
+## 输出完整性（关键！）
+- 使用 workflow_run 后，必须完整展示每个子Agent的核心发现，不能只输出简短总结
+- 对于事实性声明（数量、数据、具体结论），必须标注来源
+- 使用 report_generate 保存报告后，必须同时使用 push_content 将报告内容推送到前端
+- 如果子Agent失败或未完成，明确标注该部分缺失
+
+## 语言规则
+始终使用与用户提问相同的语言进行思考和回复。`,
+    tools: ["*"],
+    variables: [],
+    maxTurns: 50,
+    config: { category: "analysis", autoSuggest: true },
   },
 ];

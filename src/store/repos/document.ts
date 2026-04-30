@@ -80,6 +80,19 @@ export class PgDocumentRepo implements DocumentRepo {
     );
   }
 
+  /**
+   * Recover documents stuck in intermediate states (parsing, compiling, indexing, linking)
+   * by resetting them to "uploaded". Returns the number of documents recovered.
+   */
+  async recoverStuck(): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE documents
+       SET status = 'uploaded', processing_step = NULL, processing_progress = 0, processing_error = NULL
+       WHERE status IN ('parsing', 'compiling', 'indexing', 'linking')`
+    );
+    return rowCount ?? 0;
+  }
+
   private mapRow(row: any): Document {
     return {
       ...row,

@@ -550,6 +550,8 @@ export interface DocumentRepo {
   updateStatusWithProcessing(id: string, status: string, step: string, progress: number, error?: string): Promise<void>;
   deleteById(id: string): Promise<void>;
   deleteByKbId(kbId: string): Promise<void>;
+  /** Reset documents stuck in intermediate states back to "uploaded". Returns count recovered. */
+  recoverStuck(): Promise<number>;
 }
 
 /** Embedding management with deduplication by page+model+chunk. */

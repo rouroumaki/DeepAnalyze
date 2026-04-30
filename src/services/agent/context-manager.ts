@@ -137,7 +137,7 @@ export class ContextManager {
     let total = 0;
     for (const msg of messages) {
       // Content tokens
-      total += this.modelRouter.estimateTokens(msg.content ?? "");
+      total += this.modelRouter.estimateTokens(typeof msg.content === "string" ? (msg.content ?? "") : JSON.stringify(msg.content));
 
       // Tool call arguments tokens
       if (msg.toolCalls) {

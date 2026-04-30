@@ -36,11 +36,11 @@ export function parseSkillMd(content: string, fileName: string): SkillManifest {
 
   return {
     name: fileName.replace(/\.md$/, "").replace(/SKILL$/, "").replace(/\/$/, ""),
-    description: meta.description ?? "",
+    description: (meta.description as string) ?? "",
     tools: typeof meta.tools === "string"
-      ? [meta.tools]
-      : Array.isArray(meta.tools) ? meta.tools : ["*"],
-    modelRole: meta["model-role"] ?? "main",
+      ? [meta.tools as string]
+      : Array.isArray(meta.tools) ? meta.tools as string[] : ["*"],
+    modelRole: (meta["model-role"] as string) ?? "main",
     scheduling: meta.scheduling as SkillManifest["scheduling"],
     arguments: meta.arguments as SkillManifest["arguments"],
     systemPrompt: body,
@@ -75,7 +75,9 @@ export async function loadSkillsFromDir(dirPath: string): Promise<SkillManifest[
         } catch { /* no SKILL.md */ }
       } else if (entry.endsWith(".md")) {
         const content = await readFile(fullPath, "utf-8");
-        skills.push(parseSkillMd(content, entry));
+        // When the file is SKILL.md, derive name from parent directory
+        const name = entry === "SKILL.md" ? path.basename(dirPath) : entry;
+        skills.push(parseSkillMd(content, name));
       }
     } catch { /* skip */ }
   }

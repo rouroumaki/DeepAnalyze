@@ -433,6 +433,9 @@ export interface AgentSettings {
   microcompactKeepTurns: number;
   autoDreamIntervalHours: number;
   autoDreamSessionThreshold: number;
+  subAgentMaxTurns: number;
+  consecutiveErrorThreshold: number;
+  stuckDetectionThreshold: number;
 }
 
 // --- Cron Jobs ---

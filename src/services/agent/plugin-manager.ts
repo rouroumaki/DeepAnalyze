@@ -11,8 +11,8 @@ export interface PluginManifest {
   version: string;
   description: string;
   capabilities: Array<"skills" | "agents" | "hooks" | "tools">;
-  skills?: Array<{ dir: string }>;
-  agents?: Array<{ file: string }>;
+  skills?: Array<string | { dir: string }>;
+  agents?: Array<string | { file: string }>;
   hooks?: Record<string, string>;
   tools?: Array<{ file: string }>;
 }
@@ -61,10 +61,11 @@ export class AgentPluginManager {
       enabled: true,
     };
 
-    // Load skills
+    // Load skills (supports both string entries and {dir} objects)
     if (manifest.skills) {
       for (const skillRef of manifest.skills) {
-        const skillDir = path.join(dirPath, skillRef.dir);
+        const dir = typeof skillRef === "string" ? skillRef : skillRef.dir;
+        const skillDir = path.join(dirPath, dir);
         try {
           const skills = await loadSkillsFromDir(skillDir);
           plugin.skills.push(...skills);
@@ -74,10 +75,11 @@ export class AgentPluginManager {
       }
     }
 
-    // Load agents
+    // Load agents (supports both string entries and {file} objects)
     if (manifest.agents) {
       for (const agentRef of manifest.agents) {
-        const agentFile = path.join(dirPath, agentRef.file);
+        const file = typeof agentRef === "string" ? agentRef : agentRef.file;
+        const agentFile = path.join(dirPath, file);
         try {
           const content = await readFile(agentFile, "utf-8");
           const agentDef = parseAgentMd(content, path.basename(agentFile));

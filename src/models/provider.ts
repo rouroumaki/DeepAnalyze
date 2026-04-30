@@ -66,6 +66,8 @@ export interface ChatOptions {
   temperature?: number;
   tools?: ToolDefinition[];
   signal?: AbortSignal;
+  /** Enable prompt caching (adds cache_control to appropriate messages) */
+  enableCaching?: boolean;
 }
 
 export interface ChatResponse {
@@ -119,8 +121,8 @@ export interface ModelProvider {
 
 /** Schema for a single model entry in the config file. */
 export const ModelConfigSchema = z.object({
-  /** Provider type, currently only "openai-compatible" is supported. */
-  provider: z.enum(["openai-compatible"]),
+  /** Provider type. */
+  provider: z.enum(["openai-compatible", "anthropic-compatible"]),
 
   /** Base endpoint URL (e.g. "http://localhost:11434/v1"). */
   endpoint: z.string().url(),

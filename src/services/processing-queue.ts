@@ -26,6 +26,8 @@ export interface ProcessingJob {
   lastError?: string;
   /** Processor override: "auto" | "docling" | "native" | "asr" */
   processor?: string;
+  /** Force rebuild: clean up old wiki pages before reprocessing */
+  force?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,17 +94,31 @@ export class ProcessingQueue {
   /**
    * Add a job to the queue. Deduplicates by docId — if the same document
    * is already queued or actively processing, the duplicate is silently ignored.
+   * Force jobs bypass deduplication and cancel any active job for the same docId.
    */
   enqueue(job: ProcessingJob): void {
-    // Deduplicate: skip if already queued
-    const alreadyQueued = this.queue.some((j) => j.docId === job.docId);
-    if (alreadyQueued) {
-      return;
-    }
+    // Force jobs: cancel any existing active/queued job for the same docId
+    if (job.force) {
+      const queueIndex = this.queue.findIndex((j) => j.docId === job.docId);
+      if (queueIndex !== -1) {
+        this.queue.splice(queueIndex, 1);
+      }
+      const abortController = this.active.get(job.docId);
+      if (abortController) {
+        abortController.abort();
+        this.active.delete(job.docId);
+      }
+    } else {
+      // Deduplicate: skip if already queued
+      const alreadyQueued = this.queue.some((j) => j.docId === job.docId);
+      if (alreadyQueued) {
+        return;
+      }
 
-    // Deduplicate: skip if already actively processing
-    if (this.active.has(job.docId)) {
-      return;
+      // Deduplicate: skip if already actively processing
+      if (this.active.has(job.docId)) {
+        return;
+      }
     }
 
     this.queue.push(job);
@@ -190,7 +206,23 @@ export class ProcessingQueue {
     const { kbId, docId, filename, filePath, fileType } = job;
     const timeoutMs = getTimeoutForFileType(fileType);
 
-    console.log(`[ProcessingQueue] Starting processing: ${filename} (${docId}), timeout=${timeoutMs / 1000}s`);
+    console.log(`[ProcessingQueue] Starting processing: ${filename} (${docId}), timeout=${timeoutMs / 1000}s${job.force ? " (force rebuild)" : ""}`);
+
+    // If force rebuild, clean up old wiki pages, anchors, and embeddings first
+    if (job.force) {
+      try {
+        const repos = await getRepos();
+        await repos.vectorSearch.deleteByDocId(docId);
+        await repos.wikiPage.deleteByDocId(docId);
+        await repos.anchor.deleteByDocId(docId);
+        console.log(`[ProcessingQueue] Cleaned up old data for force rebuild: ${filename} (${docId})`);
+      } catch (err) {
+        console.warn(
+          `[ProcessingQueue] Cleanup failed for ${docId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
 
     // Set up per-job timeout to prevent large files from blocking the queue
     let timedOut = false;

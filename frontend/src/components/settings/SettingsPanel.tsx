@@ -598,6 +598,36 @@ export function SettingsPanel() {
                         <option value={30000}>30K</option>
                       </select>
                     </div>
+                    <div>
+                      <label style={labelStyle}>子Agent最大轮次</label>
+                      <select value={agentSettings.subAgentMaxTurns} onChange={(e) => setAgentSettings({ ...agentSettings, subAgentMaxTurns: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={50}>50 轮</option>
+                        <option value={100}>100 轮</option>
+                        <option value={200}>200 轮 (默认)</option>
+                        <option value={300}>300 轮</option>
+                        <option value={500}>500 轮</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={labelStyle}>连续错误阈值</label>
+                      <select value={agentSettings.consecutiveErrorThreshold} onChange={(e) => setAgentSettings({ ...agentSettings, consecutiveErrorThreshold: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={2}>2 次</option>
+                        <option value={3}>3 次 (默认)</option>
+                        <option value={5}>5 次</option>
+                        <option value={8}>8 次</option>
+                        <option value={10}>10 次</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={labelStyle}>卡住检测阈值</label>
+                      <select value={agentSettings.stuckDetectionThreshold} onChange={(e) => setAgentSettings({ ...agentSettings, stuckDetectionThreshold: parseInt(e.target.value) })} style={{ ...inputStyle, padding: "8px var(--space-3)", cursor: "pointer" }}>
+                        <option value={3}>3 次</option>
+                        <option value={5}>5 次 (默认)</option>
+                        <option value={8}>8 次</option>
+                        <option value={10}>10 次</option>
+                        <option value={15}>15 次</option>
+                      </select>
+                    </div>
                     <button onClick={handleAgentSave} disabled={agentSaving} style={{
                       display: "flex", alignItems: "center", gap: "var(--space-1)",
                       padding: "var(--space-2) var(--space-4)", background: "var(--interactive)", color: "#fff",

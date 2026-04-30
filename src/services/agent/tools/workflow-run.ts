@@ -104,7 +104,12 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
       "4. 用 report_generate 保存综合报告\n" +
       "5. 调用 finish 结束\n" +
       "**不要重新 expand 或搜索子Agent已经分析过的数据。信任子Agent的分析结果。**\n" +
-      "只有当某个子Agent失败或未完成时，你才需要补充分析该部分。",
+      "只有当某个子Agent失败或未完成时，你才需要补充分析该部分。\n\n" +
+      "**反幻觉规则（最高优先级）**：\n" +
+      "- 你必须完整展示每个子Agent的核心发现，不能只输出简短总结而丢弃详细分析\n" +
+      "- 对于事实性声明（数量、数据、具体结论），必须标注来源：[来源: 文件名]\n" +
+      "- 严禁编造知识库中不存在的数据源。如果子Agent未报告某类数据，你不能凭空声称它存在\n" +
+      "- 如果子Agent的输出中包含具体数字或统计数据，必须确认该数据来自知识库文档，而非模型推理",
 
     inputSchema: {
       type: "object",

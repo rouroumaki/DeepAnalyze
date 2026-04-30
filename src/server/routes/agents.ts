@@ -11,12 +11,21 @@
 
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
+import { EventEmitter } from "events";
 import type { Orchestrator } from "../../services/agent/orchestrator.js";
 import type { AgentEvent, AgentTask } from "../../services/agent/types.js";
 import { DEFAULT_AGENT_SETTINGS } from "../../services/agent/types.js";
 import { ContextManager } from "../../services/agent/context-manager.js";
 import { getPluginManager, getToolRegistry } from "../../services/agent/agent-system.js";
 import { getRepos } from "../../store/repos/index.js";
+
+// Ensure global workflow event bus exists (shared with ws.ts)
+declare global {
+  var __workflowEvents: EventEmitter | undefined;
+}
+if (!globalThis.__workflowEvents) {
+  globalThis.__workflowEvents = new EventEmitter();
+}
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -28,6 +37,8 @@ interface RunRequest {
   agentType?: string;
   maxTurns?: number;
   scope?: Record<string, unknown>;
+  /** Override the default tool list for this run (e.g. exclude "kb_search"). */
+  toolsOverride?: string[];
 }
 
 interface RunCoordinatedRequest {
@@ -153,6 +164,7 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         maxTurns: body.maxTurns,
         contextMessages,
         scope: body.scope,
+        toolsOverride: body.toolsOverride,
       });
 
       // Save assistant response to the chat session
@@ -281,6 +293,53 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
 
       // Collect push_content items for persistence
       const pushedContents: Array<{ type: string; title: string; data: string; format?: string; timestamp?: string }> = [];
+
+      // Subscribe to workflow sub-agent events and forward relevant ones to SSE.
+      // This bridges the gap where workflow events were only going to WebSocket.
+      const workflowEventHandler = (event: Record<string, unknown>) => {
+        if (aborted) return;
+        const etype = event.type as string;
+
+        // Forward sub-agent tool results (especially push_content) to SSE
+        if (etype === "workflow_agent_tool_result") {
+          const toolName = String(event.toolName || event.tool || "");
+          const result = event.result;
+
+          // Forward push_content from sub-agents
+          if (toolName === "push_content" && typeof result === "object" && result !== null) {
+            const r = result as Record<string, unknown>;
+            if (r.pushed && !r.error) {
+              const pcItem = {
+                type: String(r.type || ""),
+                title: String(r.title || ""),
+                data: String(r.data || ""),
+                format: r.format ? String(r.format) : undefined,
+                timestamp: r.timestamp ? String(r.timestamp) : undefined,
+              };
+              sendEvent("push_content", pcItem);
+              pushedContents.push(pcItem);
+            }
+          }
+
+          // Forward report_generate from sub-agents
+          if (toolName === "report_generate" && typeof result === "object" && result !== null) {
+            const r = result as Record<string, unknown>;
+            if (r.reportId && !r.error) {
+              reportData = {
+                id: String(r.reportId),
+                title: String(r.title || ""),
+                content: String(r.content || ""),
+                sourceCount: typeof r.sourceCount === "number" ? r.sourceCount : undefined,
+                reportType: String(r.reportType || "analysis"),
+              };
+            }
+          }
+        }
+
+        // Forward workflow lifecycle events for SubAgentPanel
+        sendEvent("workflow_event", event);
+      };
+      globalThis.__workflowEvents?.on("workflow", workflowEventHandler);
 
       const onEvent = (event: AgentEvent) => {
         switch (event.type) {
@@ -507,6 +566,8 @@ export function createAgentRoutes(orchestrator: Orchestrator): Hono {
         sendEvent("error", { taskId: taskId || "unknown", error: errorMsg });
         sendEvent("done", { taskId: taskId || "unknown", status: "failed", error: errorMsg });
       } finally {
+        // Unsubscribe from workflow events
+        globalThis.__workflowEvents?.off("workflow", workflowEventHandler);
         // Stop keepalive heartbeat
         if (keepaliveTimer) {
           clearInterval(keepaliveTimer);

@@ -269,3 +269,41 @@
 | PaddleOCR-VL 局限性 | 计划作为主要 VLM | **决策：不作为默认 VLM — PaddleOCR-VL-1.5 输出 `<|LOC_xx|>` 定位标记设计给 PP-DocLayoutV3 配合使用，独立使用时输出包含 1000+ 定位 token，需后处理清理。输出质量（重复、结构混乱）不如 GLM-OCR。保留 API 模式支持作为备选** (04-25) |
 | VLM vs 标准管线性能 | 无对比数据 | **基准测试（4 篇学术论文）：标准管线平均 9.3s (4-6 页/秒)，GLM-OCR 平均 58.3s (0.19 页/秒)。内容完整度：GLM-OCR 输出字符数为标准管线的 70-90%，主要缺失为图片标记（VLM 不检测图片区域）和部分格式标记。标准管线有内容重复问题（PDF 双层文本），GLM-OCR 无此问题** (04-25) |
 | VLM OCR 准确率评估 | 无第三方评估 | **qwen3.6-plus VLM 评估（3 篇学术论文）：GLM-OCR 平均 43.3/50 vs 标准 23.0/50，GLM-OCR 全面胜出。最大优势维度：格式完整 (+5.3) 和可读性 (+5.0)。文字准确率 GLM-OCR 9.0/10 vs 标准 4.7/10。antigravity-rag 文档标准管线出现灾难性字符编码错误 (10/50)** (04-25) |
+| 反幻觉规则位置 | 写入 agent-definitions.ts 基础 Agent 提示词 | **移至"深度知识库分析"内置 Skill**，基础 Agent 保持通用简洁。REPORT_AGENT 仅保留报告结构和生成流程，反幻觉/引用溯源规则由 Skill 承载。C-56 执行：GENERAL_AGENT 提示词精简至 23 行核心指令 (04-29) |
+| Skill 自动推荐 | 无 | **新增"深度知识库分析"内置 Skill（config.autoSuggest=true）**：包含反幻觉 5 条规则、引用溯源格式、数据精度原则、三层验证流程、输出完整性要求。适用于学术分析、卷宗分析、法律文书等高精度场景 (04-29) |
+| 输出完整性 | 子 Agent 结果可能丢失，report_generate 后内容不显示 | **Skills 强制双输出**：report_generate 保存后必须 push_content 推送到前端；全面分块分析/全面知识库分析 Skills 的子 Agent task 模板增加反幻觉要求（来源标注、数据验证、禁止编造）(04-29) |
+| 运行时注入 | synthesizeResults() 中注入 [系统提示：...] | **移除运行时注入**，反幻觉引导已通过 Skill 和 workflow_run 工具描述承载，不再在工具返回结果中注入系统指令 (04-29) |
+| 子 Agent 轮次限制 | workflow-engine 硬编码 maxTurns=50，agent-runner skill_invoke 硬编码 maxTurns=20 | **硬性要求：子 Agent maxTurns 必须为 200**（workflow-engine.ts、agent-runner.ts 中的 skill_invoke 均为 200）。主 Agent 不设上限（-1）。内置 Skill 的 maxTurns 按复杂度合理设置（简单任务 20，中等 30-50，复杂分析 50-60）。此为硬性约束，不允许降低 (04-29) |
+| Agent 运行参数可配置 | subAgentMaxTurns/consecutiveErrorThreshold/stuckDetectionThreshold 硬编码 | **AgentSettings 新增 subAgentMaxTurns（默认200），前端"通用→Agent运行参数"可修改子Agent最大轮次、连续错误阈值、卡住检测阈值，保存后持久化到数据库即时生效** (04-29) |
+| 工具并发执行 | 所有工具串行执行 | **C-85: 工具并发编排 — AgentTool 新增 isConcurrencySafe()/isReadOnly() 动态分类，partitionToolCalls 分组安全/非安全批，安全批 Promise.all 并行（最大并发 10），非安全批串行。Bash 工具按命令前缀白名单动态判定只读** (04-30) |
+| Prompt 缓存优化 | 无缓存意识，每次完整发送 | **C-86: SystemPromptBuilder 静态/动态分离 — 系统提示词分为静态区（Agent 定义，跨请求可缓存）和动态区（scope/session memory/项目配置），边界标记便于 API 缓存命中。工具定义按字母序排序保证缓存稳定性** (04-30) |
+| 自然终止机制 | 必须调用 finish 工具才能终止 | **C-87: 自然终止 — 模型返回文本（无 tool_use）时自动终止循环，减少不必要的 API 调用和 token 消耗** (04-30) |
+| Cache Editing | 压缩时修改本地消息数组，破坏缓存前缀 | **C-88: API Cache Editing — 截断旧 tool_result 时不修改本地消息数组，只对发送给 API 的副本做截断，保持缓存前缀不变** (04-30) |
+| 长输出续写 | 模型输出被 max_tokens 截断后丢失 | **C-89: 长输出续写 — 检测 finish_reason=length 时注入续写消息继续生成，最多续写 5 轮，拼接完整结果** (04-30) |
+| Token 估算 | 简单启发式（字符数/3） | **C-90: 双层 Token 估算 — 优先使用 API 报告 usage（精确），回退到 4/3 保守估算。TokenEstimator 类管理报告值和估算值** (04-30) |
+| 工具输入校验 | 仅 JSON.parse 无 schema 校验 | **C-91: 两阶段工具校验 — Stage 1: JSON 解析，Stage 2: Schema 校验（必填字段+类型兼容性），校验失败返回结构化错误消息** (04-30) |
+| 大结果持久化 | 固定 token 限制截断 | **C-92: 工具结果磁盘持久化 — 超过 50K 字符的工具结果写入磁盘文件，模型只拿 2K 预览+文件路径，避免上下文被大结果撑爆** (04-30) |
+| Edit 唯一性 | old_string 可能多处匹配导致错误替换 | **C-93: Edit 唯一性检查 — edit_file 工具检查 old_string 在文件中的出现次数，多次匹配要求 replace_all 或提供更多上下文** (04-30) |
+| 工具优先级引导 | 无工具使用指导 | **C-94: 工具使用优先级引导 — system prompt 注入工具使用指南（搜索优先用专用工具、并行调用独立操作），目前仅 GENERAL_AGENT 包含** (04-30) |
+| 分层压缩 | 单次全量压缩 | **C-95: 多级上下文压缩 — D2(最旧,粗粒度,≤2000 token) → D1(中等,≤4000 token) → Leaf(最新,完整保留)，不同层使用不同压缩 prompt 控制信息密度** (04-30) |
+| Session Memory 异步 | 同步提取阻塞主循环 | **C-96: Session Memory 异步提取 — AsyncSessionMemoryExtractor 后台非阻塞提取，不占用用户等待时间，下次请求直接使用已提取结果** (04-30) |
+| Hook 系统 | 仅 PreToolUse/PostToolUse | **C-97: 8 类 Hook 系统 — AgentStart/AgentComplete/PreToolUse/PostToolUse/PreCompact/PostCompact/SessionStart/SessionEnd，区分阻塞 vs fire-and-forget 语义** (04-30) |
+| Feature Flags | 硬编码特性开关 | **C-98: Feature Flags — 9 个功能标志（concurrentToolExecution/promptCaching/cacheEditing/streamingToolExecution/hierarchicalCompression/longOutputContinuation/maxToolConcurrency/pluginSystem/markdownSkills），优先级 env var > DB config > defaults** (04-30) |
+| Plugin 系统 | 仅基础工具注册 | **C-99: Plugin 系统 — plugin.json 清单 + SKILL.md 技能定义 + agent.md Agent 定义，启动时自动加载 plugins/ 目录。judicial-analysis 插件提供 5 个领域 skill（证据链/时间线/实体网络/交叉验证/事实提取）+ 2 个领域 agent（验证器/提取器）** (04-30) |
+| Skill Markdown | 仅 TypeScript 对象定义 | **C-100: SKILL.md 格式 — YAML frontmatter + Markdown body 定义技能，降低非开发者创建技能门槛，保留 TypeScript 作为内部表示** (04-30) |
+| 通用工具 | 缺少基础通用工具 | **C-101: 通用工具补全 — 新增 list_files/notebook_read 工具，所有工具标注并发属性（isReadOnly/isConcurrencySafe）** (04-30) |
+
+### GAIA 基准测试验证结果 (04-30)
+
+| 问题域 | 发现 | 优化方向 |
+|--------|------|---------|
+| Session 隔离 | 同一 session 连续处理多题导致上下文污染，至少 3/50 题输出了前一轮答案 | **C-102: 每请求独立 session 隔离** — 测试脚本已修复为每题独立 session |
+| Provider 稳定性 | minimax-highspeed HTTP 400 "invalid function arguments" 占 8/50 题 (16%) | **C-103: Provider 自动 fallback** — 主 provider 失败时自动切换到备用 provider |
+| 文件附件 | GAIA 4/50 题 (8%) 带附件文件无法处理 | C-12 (已有) 需增强：API 层支持文件上传传递给 Agent |
+| 搜索能力 | 8/50 题 (16%) 因搜索不足失败（Wikipedia 超时、YouTube 无法获取 transcript） | C-18 (已有) 需增强：接入更多搜索 API |
+| 答案提取 | 部分答案内容正确但格式不匹配 | **C-104: 答案后处理** — 从 agent 长输出中提取精确答案，标准化格式 |
+| 动态超时 | Level 3 题目 10 分钟不够 | **C-105: 动态超时分配** — 根据任务复杂度分配不同超时时间 |
+| 子 Agent 事件路由 | workflow 子 Agent 事件仅走 WebSocket，SSE 连接前端看不到子 Agent 进度 | **C-106: SSE 订阅 workflow 事件** — SSE 路由订阅 `globalThis.__workflowEvents`，转发子 Agent 的 push_content/report_generate/工具事件到 SSE 流，流结束时自动清理订阅 (04-30) |
+| 报告事件通知 | ReportTool 成功保存后无事件通知 | **C-107: ReportTool 发射 report_generated 事件** — 保存成功后调用 `eventBus.emit({ type: "report_generated" })`，添加保存成功/失败日志 (04-30) |
+| Python JSON 控制字符 | Docling/Whisper 解析文档内容含控制字符导致 JSONDecodeError | **C-108: Python JSON ensure_ascii** — docling-service 和 whisper-service 的 `json.dumps()` 添加 `ensure_ascii=True` (04-30) |
+| Stuck detection 误判 | expand 工具批量展开文档触发卡住干预 | **C-109: Stuck detection 豁免列表** — expand/kb_search 等批量操作工具排除在卡住检测之外 (04-30) |

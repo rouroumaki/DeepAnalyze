@@ -223,7 +223,7 @@ export type { ChatMessage, ChatResponse } from "../../models/provider.js";
  */
 export interface CompactBoundaryMeta {
   type: "compact_boundary";
-  method: "sm-compact" | "legacy-compact" | "emergency-sm-compact" | "emergency-legacy-compact";
+  method: "sm-compact" | "legacy-compact" | "hierarchical-compact" | "emergency-sm-compact" | "emergency-legacy-compact";
   preCompactTokens: number;
   turnNumber: number;
   timestamp: string;
@@ -296,6 +296,21 @@ export interface AgentSettings {
   consecutiveErrorThreshold: number;
   /** Maximum turns for sub-agents (workflow_run / skill_invoke). Default: 200 */
   subAgentMaxTurns: number;
+
+  // -- Feature flags (undefined = use flag default) --
+
+  /** Enable concurrent tool execution. Default: true */
+  concurrentToolExecution?: boolean;
+  /** Enable prompt caching optimization. Default: true */
+  promptCaching?: boolean;
+  /** Enable cache editing (truncate old tool results for context management). Default: true */
+  cacheEditing?: boolean;
+  /** Enable streaming tool execution. Default: false (not yet fully integrated) */
+  streamingToolExecution?: boolean;
+  /** Enable hierarchical context compression. Default: true */
+  hierarchicalCompression?: boolean;
+  /** Enable long output continuation for truncated responses. Default: true */
+  longOutputContinuation?: boolean;
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {

@@ -6,9 +6,13 @@
 // Bun's fetch() automatically routes through http_proxy/https_proxy,
 // which can break API calls when the proxy is unreliable (e.g., VPN tools
 // on WSL2).  DeepAnalyze providers have their own endpoint configuration;
-// users who need a proxy should set DEEPANALYZE_HTTP_PROXY and configure
-// per-provider endpoints accordingly.
+// the web_fetch tool reads proxy config separately.
 if (!process.env.DEEPANALYZE_KEEP_PROXY) {
+  // Save proxy URL for web_fetch tool before deleting from env
+  const savedProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+  if (savedProxy) {
+    process.env.DEEPANALYZE_WEB_PROXY = savedProxy;
+  }
   delete process.env.http_proxy;
   delete process.env.HTTP_PROXY;
   delete process.env.https_proxy;
@@ -71,6 +75,7 @@ process.on("SIGTERM", shutdown);
 // ---------------------------------------------------------------------------
 initDatabase().then(async () => {
   await autoConfigureEmbedding();
+  await recoverStuckDocuments();
   startHttpServer();
 }).catch((err) => {
   console.error(
@@ -79,6 +84,28 @@ initDatabase().then(async () => {
   );
   process.exit(1);
 });
+
+/**
+ * Recover documents stuck in intermediate states (parsing, compiling, indexing, linking)
+ * that were interrupted by a server restart. Resets them to "uploaded" so they can be
+ * re-processed when the user triggers processing or when auto_process is enabled.
+ */
+async function recoverStuckDocuments(): Promise<void> {
+  try {
+    const { getRepos } = await import("./store/repos/index.ts");
+    const repos = await getRepos();
+    const recovered = await repos.document.recoverStuck();
+
+    if (recovered > 0) {
+      console.log(`[Startup] Recovered ${recovered} stuck document(s) from intermediate states`);
+    }
+  } catch (err) {
+    console.warn(
+      "[Startup] Failed to recover stuck documents:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
 
 /**
  * Auto-configure the local BGE-M3 embedding server as a provider if:

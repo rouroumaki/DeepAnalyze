@@ -143,7 +143,7 @@ export function DocumentManager({ kbId, onSelectDoc }: DocumentManagerProps) {
   const handleReprocess = async (docId: string) => {
     setActionLoading(docId);
     try {
-      await api.post(`/api/knowledge/kbs/${kbId}/process/${docId}`, {});
+      await api.post(`/api/knowledge/kbs/${kbId}/process/${docId}?force=true`, {});
       await fetchDocs();
     } catch (err) {
       console.error("Reprocess failed:", err);
@@ -265,7 +265,7 @@ export function DocumentManager({ kbId, onSelectDoc }: DocumentManagerProps) {
                 <Download size={14} />
               </a>
             )}
-            {(doc.status === "uploaded" || doc.status === "error") && (
+            {(doc.status === "uploaded" || doc.status === "error" || ["parsing", "compiling", "indexing", "linking"].includes(doc.status)) && (
               <button
                 onClick={() => handleReprocess(doc.id)}
                 disabled={actionLoading === doc.id}

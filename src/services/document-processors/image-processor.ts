@@ -342,12 +342,12 @@ export class ImageProcessor implements DocumentProcessor {
     const count = read32(entryOffset + 4);
     // If count <= 4, the string is stored inline in the value offset field
     if (count <= 4) {
-      return buf.toString("ascii", entryOffset + 8, entryOffset + 8 + count).replace(/\0+$/, "");
+      return buf.toString("ascii", entryOffset + 8, entryOffset + 8 + count).replace(/\0/g, "").trim();
     }
     // Otherwise, the value offset points to the actual data
     const valueOffset = read32(entryOffset + 8);
     if (valueOffset + count > buf.length) return "";
-    return buf.toString("ascii", valueOffset, valueOffset + count).replace(/\0+$/, "");
+    return buf.toString("ascii", valueOffset, valueOffset + count).replace(/\0/g, "").trim();
   }
 
   /** Read a rational value (numerator/denominator) as a string like "1/100". */

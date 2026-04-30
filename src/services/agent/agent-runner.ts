@@ -19,6 +19,7 @@ import { ContextManager } from "./context-manager.js";
 import { CompactionEngine } from "./compaction.js";
 import { MicroCompactor } from "./micro-compact.js";
 import { SessionMemoryManager, replaceSessionMemoryInjection } from "./session-memory.js";
+import { AsyncSessionMemoryExtractor } from "./session-memory-async.js";
 import { getRepos } from "../../store/repos/index.js";
 import { DisplayResolver } from "../display-resolver.js";
 import { maybePersistToolResult } from "./tool-result-storage.js";
@@ -38,6 +39,8 @@ import { orchestrateToolCalls } from "./tool-orchestration.js";
 import { TokenEstimator } from "./token-estimator.js";
 import { needsContinuation, buildContinuationMessage, DEFAULT_CONTINUATION_CONFIG } from "./long-io.js";
 import { applyCacheEditing } from "./cache-editing.js";
+import { resolveFeatureFlags } from "./feature-flags.js";
+import { SystemPromptBuilder } from "./system-prompt.js";
 import type { HookManager } from "./hooks.js";
 import type { HookContext } from "./hook-types.js";
 import type {
@@ -103,6 +106,9 @@ class StuckDetector {
   private readonly maxInterventions = 2;
   private readonly threshold: number;
 
+  /** Tools exempt from stuck detection — batch operations are normal. */
+  private static readonly EXEMPT_TOOLS = new Set(["expand", "kb_search"]);
+
   constructor(threshold: number = 5) {
     this.threshold = threshold;
   }
@@ -112,6 +118,9 @@ class StuckDetector {
    * Returns an intervention message if stuck is detected, null otherwise.
    */
   recordAndCheck(toolName: string, input: Record<string, unknown>, turn: number): string | null {
+    // Skip stuck detection for exempt tools — batch operations are normal
+    if (StuckDetector.EXEMPT_TOOLS.has(toolName)) return null;
+
     const primaryInput = this.extractPrimaryInput(toolName, input);
     this.history.push({ toolName, turn, inputHash: `${toolName}:${primaryInput}` });
 
@@ -283,6 +292,16 @@ export class AgentRunner {
       throw err;
     }
 
+    // Resolve feature flags (env var > DB config > defaults)
+    const featureFlags = resolveFeatureFlags({
+      concurrentToolExecution: agentSettings.concurrentToolExecution,
+      promptCaching: agentSettings.promptCaching,
+      cacheEditing: agentSettings.cacheEditing,
+      streamingToolExecution: agentSettings.streamingToolExecution,
+      hierarchicalCompression: agentSettings.hierarchicalCompression,
+      longOutputContinuation: agentSettings.longOutputContinuation,
+    });
+
     // Resolve effective turn limit (API override > settings > definition > default)
     const advisoryLimit = options.maxTurns ?? definition.maxTurns ?? agentSettings.maxTurns;
     const isUnlimited = advisoryLimit === -1;
@@ -311,7 +330,14 @@ export class AgentRunner {
     }
     const effectiveSystemPrompt = options.systemPromptOverride ?? definition.systemPrompt;
 
+    // Use SystemPromptBuilder for static/dynamic separation (prompt caching optimization)
+    const promptBuilder = new SystemPromptBuilder();
+
+    // Agent definition and tool guidance are static (cacheable across requests)
+    promptBuilder.addStaticSection("agent-definition", effectiveSystemPrompt);
+
     // Inject scope constraints into system prompt if scope is provided
+    // Scope and project config are dynamic (change per request/session)
     let scopeInjection = "";
     if (options.scope) {
       // Support two scope formats:
@@ -374,19 +400,34 @@ export class AgentRunner {
         }
       }
     }
-    let systemPromptWithScope = effectiveSystemPrompt + scopeInjection;
+    if (scopeInjection) {
+      promptBuilder.addDynamicSection("scope", scopeInjection);
+    }
 
-    // Load .deepanalyze.md project config and inject into system prompt
+    // Load .deepanalyze.md project config
     try {
       const { DEEPANALYZE_CONFIG } = await import("../../core/config.js");
       const mdPath = join(DEEPANALYZE_CONFIG.dataDir, ".deepanalyze.md");
       const md = await readFile(mdPath, "utf-8");
       if (md.trim()) {
-        systemPromptWithScope += "\n\n## 项目配置\n" + md.trim();
+        promptBuilder.addDynamicSection("project-config", "## 项目配置\n" + md.trim());
       }
     } catch {
       // File does not exist — normal, skip
     }
+
+    // Initialize SessionMemory early so we can include it in the built prompt
+    let sessionMemory: SessionMemoryManager | null = null;
+    if (options.sessionId) {
+      sessionMemory = new SessionMemoryManager(this.modelRouter, options.sessionId, agentSettings);
+      const memory = await sessionMemory.load();
+      if (memory) {
+        promptBuilder.addDynamicSection("session-memory", sessionMemory.buildPromptInjection(memory));
+      }
+    }
+
+    const builtPrompt = promptBuilder.build();
+    const systemPromptWithScope = builtPrompt.full;
 
     console.log(`[AgentRunner] Starting agent run: taskId=${taskId}, agentType=${agentType}, modelRole=${modelRole}, modelId=${modelId}, providers=${this.modelRouter.listProviderNames().join(",")}`);
 
@@ -447,15 +488,10 @@ export class AgentRunner {
     const microCompactor = new MicroCompactor();
     const compactionEngine = new CompactionEngine(this.modelRouter, contextManager, agentSettings);
 
-    // Initialize SessionMemory (if sessionId is provided)
-    let sessionMemory: SessionMemoryManager | null = null;
-    if (options.sessionId) {
-      sessionMemory = new SessionMemoryManager(this.modelRouter, options.sessionId, agentSettings);
-      const memory = await sessionMemory.load();
-      if (memory) {
-        messages[0].content += "\n\n" + sessionMemory.buildPromptInjection(memory);
-      }
-    }
+    // Async session memory extractor (non-blocking background extraction)
+    const asyncMemoryExtractor = sessionMemory
+      ? new AsyncSessionMemoryExtractor(agentSettings)
+      : null;
 
     // Emit start event
     this.emitEvent(options.onEvent, {
@@ -522,7 +558,9 @@ export class AgentRunner {
       // 4. Call the LLM via streaming (with automatic model fallback)
       // Apply cache editing: truncate old tool results for context management
       // without modifying the local messages array (preserves cache prefix).
-      const messagesForApi = applyCacheEditing(messages);
+      const messagesForApi = featureFlags.cacheEditing
+        ? applyCacheEditing(messages)
+        : messages;
       let assistantContent: string;
       let toolCalls: ToolCall[] | undefined;
       let finishReason: string | undefined;
@@ -622,7 +660,7 @@ export class AgentRunner {
       this.emitEvent(options.onEvent, { type: "turn", taskId, turn, content: assistantContent });
 
       // Long output continuation: if output was truncated, inject continuation message
-      if (needsContinuation(finishReason) && (!toolCalls || toolCalls.length === 0)) {
+      if (featureFlags.longOutputContinuation && needsContinuation(finishReason) && (!toolCalls || toolCalls.length === 0)) {
         continuations++;
         if (continuations <= DEFAULT_CONTINUATION_CONFIG.maxContinuations) {
           messages.push({ role: "assistant", content: assistantContent } as ChatMessage);
@@ -664,17 +702,28 @@ export class AgentRunner {
           toolMap.set(tool.name, tool);
         }
 
-        // Execute tools with concurrent orchestration
+        // Execute tools with concurrent orchestration (guarded by feature flag)
         // Read-only tools run in parallel, write tools run serially
-        const batchResult = await orchestrateToolCalls(
-          toolCalls,
-          toolMap,
-          (tc) => this.executeToolCall(tc, taskId, turn, options.onEvent, accessedPages, agentSettings),
-        );
-        messages.push(...batchResult.messages);
+        let toolResultMessages: ChatMessage[];
+        if (featureFlags.concurrentToolExecution) {
+          const batchResult = await orchestrateToolCalls(
+            toolCalls,
+            toolMap,
+            (tc) => this.executeToolCall(tc, taskId, turn, options.onEvent, accessedPages, agentSettings),
+          );
+          toolResultMessages = batchResult.messages;
+        } else {
+          // Fallback to serial execution
+          toolResultMessages = [];
+          for (const toolCall of toolCalls) {
+            const result = await this.executeToolCall(toolCall, taskId, turn, options.onEvent, accessedPages, agentSettings);
+            toolResultMessages.push(result);
+          }
+        }
+        messages.push(...toolResultMessages);
 
         // Track consecutive tool errors across all results
-        for (const resultMsg of batchResult.messages) {
+        for (const resultMsg of toolResultMessages) {
           const rawResult = typeof resultMsg.content === "string"
             ? resultMsg.content
             : JSON.stringify(resultMsg.content);
@@ -694,7 +743,7 @@ export class AgentRunner {
         for (const toolCall of toolCalls) {
           if (toolCall.function.name === "tool_discover") {
             // Find the corresponding result message
-            const resultMsg = batchResult.messages.find(
+            const resultMsg = toolResultMessages.find(
               m => "toolCallId" in m && m.toolCallId === toolCall.id
             );
             if (resultMsg) {
@@ -824,27 +873,23 @@ export class AgentRunner {
         }
       }
 
-      // 6c. Session Memory update
-      if (sessionMemory && messages.length > 0) {
+      // 6c. Session Memory update — async background extraction (non-blocking)
+      // Trigger async session memory extraction in background.
+      // On the NEXT turn, the already-extracted memory will be used.
+      if (sessionMemory && asyncMemoryExtractor && messages.length > 0) {
         const totalTokens = totalInputTokens + totalOutputTokens;
-        try {
+        asyncMemoryExtractor.tryExtract(totalTokens, async () => {
           const memory = await sessionMemory.load();
           if (!memory && sessionMemory.shouldInitialize(totalTokens)) {
             const newMemory = await sessionMemory.initialize(messages, options.signal);
-            // Set lastTokenPosition to actual session tokens
             newMemory.lastTokenPosition = totalTokens;
-            sessionMemory.save(newMemory);
-            messages[0].content += "\n\n" + sessionMemory.buildPromptInjection(newMemory);
+            await sessionMemory.save(newMemory);
+            // Note: prompt injection update happens on next turn load, not here
           } else if (memory && sessionMemory.shouldUpdate(totalTokens, memory)) {
-            const updated = await sessionMemory.update(memory, messages, totalTokens, options.signal);
-            messages[0].content = replaceSessionMemoryInjection(
-              messages[0].content,
-              sessionMemory.buildPromptInjection(updated),
-            );
+            await sessionMemory.update(memory, messages, totalTokens, options.signal);
+            // Note: prompt injection update happens on next turn load, not here
           }
-        } catch (err) {
-          console.warn("[AgentRunner] Session memory update failed:", err instanceof Error ? err.message : String(err));
-        }
+        });
       }
 
       // 7. Completion check — only explicit finish tool call terminates the loop.
@@ -1149,7 +1194,7 @@ export class AgentRunner {
 
     // PreToolUse hook — may block execution
     if (this.hookManager) {
-      const preResult = await this.hookManager.fire("PreToolUse", { toolName, toolInput, taskId });
+      const preResult = await this.hookManager.fire("PreToolUse", { hookType: "PreToolUse", toolName, toolInput, taskId });
       if (!preResult.allowed) {
         const blockMsg = preResult.error ?? `Blocked by PreToolUse hook`;
         const errorResult = { error: blockMsg };
@@ -1178,7 +1223,7 @@ export class AgentRunner {
 
     // PostToolUse hook — fire-and-forget (does not affect result)
     if (this.hookManager) {
-      await this.hookManager.fire("PostToolUse", { toolName, toolInput, taskId }).catch(() => {});
+      await this.hookManager.fire("PostToolUse", { hookType: "PostToolUse", toolName, toolInput, taskId }).catch(() => {});
     }
 
     this.emitEvent(onEvent, { type: "tool_result", taskId, turn, toolName, result });
@@ -1532,7 +1577,8 @@ export class AgentRunner {
     if (!finalOutput) {
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === "assistant" && messages[i].content) {
-          finalOutput = messages[i].content;
+          const c = messages[i].content;
+          finalOutput = typeof c === "string" ? c : JSON.stringify(c);
           break;
         }
       }

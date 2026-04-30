@@ -899,6 +899,18 @@ export class AgentRunner {
       if (this.isDone(assistantContent, toolCalls, finishReason, agentCalledFinish)) {
         break;
       }
+
+      // 7b. Auto-detect FINAL ANSWER in output — some models output the answer
+      // as text instead of calling the finish tool. Detect and terminate early.
+      if (!agentCalledFinish && assistantContent) {
+        const finalAnswerMatch = assistantContent.match(/FINAL\s+ANSWER\s*[:：]\s*(.+?)(?:\n|$)/i);
+        if (finalAnswerMatch && !toolCalls?.length) {
+          console.log(`[AgentRunner] Detected FINAL ANSWER in output (no finish tool called), terminating early at turn ${turn}`);
+          // Inject the answer as a synthetic finish summary
+          lastFinishSummary = finalAnswerMatch[1].trim();
+          break;
+        }
+      }
     }
 
     // Build final result

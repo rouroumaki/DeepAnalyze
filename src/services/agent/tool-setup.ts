@@ -1651,6 +1651,34 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
           });
 
           if (!resp.ok) {
+            // MiniMax web_search failed, fall back to DuckDuckGo HTML search
+            console.log(`[web_search] MiniMax failed (HTTP ${resp.status}), falling back to DuckDuckGo`);
+            try {
+              const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(args.query)}`;
+              const ddgResp = await fetch(ddgUrl, {
+                headers: { "User-Agent": "Mozilla/5.0 (compatible; DeepAnalyze/1.0)" },
+                signal: AbortSignal.timeout(15000),
+              });
+              if (ddgResp.ok) {
+                const html = await ddgResp.text();
+                const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gi;
+                const ddgResults: string[] = [];
+                let match;
+                let count = 0;
+                while ((match = resultRegex.exec(html)) !== null && count < maxResults) {
+                  const link = match[1];
+                  const title = match[2].replace(/<[^>]*>/g, "").trim();
+                  const snippet = match[3].replace(/<[^>]*>/g, "").trim();
+                  ddgResults.push(`[${count + 1}] ${title}\n    ${link}\n    ${snippet}`);
+                  count++;
+                }
+                if (ddgResults.length > 0) {
+                  return ddgResults.join("\n\n");
+                }
+              }
+            } catch (ddgErr) {
+              console.log(`[web_search] DuckDuckGo fallback also failed: ${ddgErr instanceof Error ? ddgErr.message : String(ddgErr)}`);
+            }
             return { error: true, message: `Search request failed: HTTP ${resp.status}`, suggestion: "Search service unavailable. Try browser tool to visit a URL directly, or proceed with available information." };
           }
 

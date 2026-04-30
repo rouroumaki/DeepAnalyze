@@ -70,8 +70,11 @@ const thinkTool: AgentTool = {
 const finishTool: AgentTool = {
   name: "finish",
   description:
-    "Signal that you have completed the task. Provide your final answer " +
-    "or summary. This tells the orchestrator that no further action is needed.",
+    "Signal that you have completed the task. Provide your final answer as a " +
+    "concise, precise value. For factual questions, give ONLY the specific answer " +
+    "(number, name, word, date) without units or explanations unless asked. " +
+    "Example: if asked 'how many', just give the number. " +
+    "This tells the orchestrator that no further action is needed.",
   async execute(input: Record<string, unknown>) {
     return { completed: true, summary: input.summary };
   },

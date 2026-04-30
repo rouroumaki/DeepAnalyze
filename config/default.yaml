@@ -10,8 +10,17 @@
 models:
   main:
     provider: openai-compatible
+    endpoint: https://open.bigmodel.cn/api/paas/v4
+    model: glm-5.1
+    apiKey: a80b5d0e0d6b4ac7a7e9712326b467aa.o6RYc7WQIKLRWMor
+    maxTokens: 32768
+    supportsToolUse: true
+
+  qwen:
+    provider: openai-compatible
     endpoint: https://coding.dashscope.aliyuncs.com/v1
     model: qwen3.6-plus
+    apiKey: sk-sp-5eb17a53ea5d4d68a422346e301068c0
     maxTokens: 32768
     supportsToolUse: true
 

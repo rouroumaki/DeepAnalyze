@@ -25,5 +25,16 @@ export function getToolGuidanceSection(): string {
 4. 需要 Shell 命令？→ bash（只读命令优先）
 5. 需要修改文件？→ edit_file（精确替换）或 write_file（新文件）
 6. 需要生成报告？→ report_generate
-7. 需要多 Agent 协作？→ workflow_run`;
+7. 需要多 Agent 协作？→ workflow_run
+
+### 搜索无结果时的策略
+1. 尝试换关键词：用同义词、更短/更长的查询词、去掉限定词
+2. 尝试换工具：web_search 无结果 → 试试 web_fetch 直接访问相关网站
+3. 尝试 wikipedia 工具搜索相关背景信息
+4. 用 think 工具反思：我是否理解了问题的真正含义？
+
+### 准备提交答案前
+1. 用 think 工具快速回顾：答案是否直接回应了问题？是否包含了不必要的解释？
+2. 确认答案格式匹配问题要求的格式（数字、名称、日期等）
+3. 调用 finish 工具，summary 参数只包含简洁的最终答案`;
 }

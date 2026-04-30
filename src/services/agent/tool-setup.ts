@@ -362,7 +362,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "- 图片（JPG/PNG）：L1 包含 VLM 视觉描述和 OCR 文本；如 VLM 未配置则 L1 为空，需看 L2 的原始描述数据\n" +
       "- 音频（MP3）：L1 包含按说话者分组的转写文本；L2 基本相同\n" +
       "- 视频（MP4）：L1 包含按场景分割的描述和对话转写；如 VLM 未配置则 L1 为空，需看 L2\n" +
-      "- Excel：小表格（≤1000行）L1/L2 有完整内容；**大表格（>1000行）L1 为空，L2 是海量原始 CSV**，必须使用 bash + pandas 读取原始文件分析（文件路径从 wiki_browse listDocuments 返回的 filePath 字段获取）\n\n" +
+      "- Excel：小表格（≤1000行）L1/L2 有完整内容；**大表格（>1000行）L1 为空，L2 是海量原始 CSV**，使用 run_sql 对数据库中的结构化数据做聚合分析，或用 read_file 读取 CSV 原始文件（文件路径从 wiki_browse listDocuments 返回的 filePath 字段获取）\n\n" +
       "批量模式：提供 docIds 数组 + kbId 一次获取多个文档的 L0 或 L1 内容（通过 targetLevel 指定）。" +
       "单文档模式：提供 docId + targetLevel 展开到指定层级。",
     inputSchema: {
@@ -828,7 +828,7 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       properties: {
         pattern: {
           type: "string",
-          description: "正则表达式模式。如：'合同编号.*2024'、'张某|赵某'、'¥\\d+\\.\\d{2}'",
+          description: "正则表达式模式。如：'\\d{4}-\\d{2}-\\d{2}'、'error|warning|fail'、'[A-Z]{2,4}-\\d{3,6}'",
         },
         kbIds: {
           type: "array",
@@ -1440,10 +1440,12 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       "工作目录为项目数据目录。" +
       "命令超时时间为 30 秒。\n\n" +
       "使用建议：\n" +
+      "- 读取文档内容优先使用 expand 或 read_file，不要用 bash 的 python/json 解析文件\n" +
+      "- 分析结构化数据优先使用 run_sql 查询数据库，而非用 python 解析原始文件\n" +
       "- 执行代码前先在 think 工具中验证逻辑\n" +
       "- 对计算结果做常识性检查（数量级、单位、边界值）\n" +
       "- 代码出错时先分析错误信息，不要盲目修改重试\n" +
-      "- 复杂计算优先使用 Python 脚本而非单行命令，便于调试",
+      "- 如果 python 报 json 解析错误，说明文件含控制字符，应换用 read_file 逐行读取",
     inputSchema: {
       type: "object",
       properties: {
@@ -1462,6 +1464,15 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
       const { execSync } = await import("node:child_process");
       const command = input.command as string;
       const timeoutSec = Math.min((input.timeout as number) || 30, 120);
+
+      // Intercept JSON parsing attempts — agents should use read_file instead
+      if (/\bjson\s*\.\s*(load|loads)\b/.test(command)) {
+        return {
+          exitCode: 1,
+          output: "",
+          error: "此命令尝试用 Python json.loads 解析文件，但工具结果文件可能包含控制字符导致 JSON 解析失败。请改用 read_file 工具直接读取文件内容，或用 expand 工具读取文档。不要用 bash 执行 python json 解析。",
+        };
+      }
 
       try {
         const result = execSync(command, {
@@ -1482,12 +1493,12 @@ export async function createConfiguredToolRegistry(deps: ToolSetupDeps): Promise
     },
     isReadOnly: (input) => {
       const cmd = (input.command as string) ?? "";
-      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch"];
+      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch", "python3", "python"];
       return readOnlyPrefixes.some(c => cmd.trimStart().startsWith(c));
     },
     isConcurrencySafe: (input) => {
       const cmd = (input.command as string) ?? "";
-      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch"];
+      const readOnlyPrefixes = ["ls", "cat", "head", "tail", "wc", "du", "file", "stat", "pwd", "echo", "which", "type", "env", "printenv", "git status", "git log", "git diff", "git branch", "python3", "python"];
       return readOnlyPrefixes.some(c => cmd.trimStart().startsWith(c));
     },
   });

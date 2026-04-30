@@ -1,64 +1,18 @@
-version: "3.8"
+# DeepAnalyze - Offline/Intranet Deployment
 #
-# DeepAnalyze — 离线/内网部署 Compose 文件
+# Single-command deployment: ./deploy.sh
+# Only need to edit config/default.yaml for your LLM endpoint
 #
-# 前置条件:
-#   1. 运行 load-images.sh 加载所有 Docker 镜像
-#   2. 复制 .env.example 为 .env 并修改配置
-#   3. 运行 start.sh 启动服务
-#
-# 说明:
-#   - 所有镜像已预构建，无需互联网
-#   - 模型权重通过 volumes 挂载
-#   - 推理模型通过 OpenAI 兼容 API 调用内网部署的 GLM5/qwen3.5 等
-#   - 嵌入模型可选: Ollama 本地部署 或 内网嵌入服务
+# Port mapping:
+#   Frontend (Web UI):  host 21000 -> nginx 3000
+#   Backend  (API):     host 3000  -> bun  21000
+#   Embedding service:  internal only (11435)
+#   PostgreSQL:         internal only (5432)
 #
 
 services:
-  backend:
-    image: deepanalyze-backend:offline
-    ports:
-      - "${BACKEND_PORT:-21000}:21000"
-    volumes:
-      - deepanalyze-data:/app/data
-      - ./config:/app/config:ro
-      - ./models:/app/data/models
-    environment:
-      - DATA_DIR=/app/data
-      - PORT=21000
-      - MODEL_CONFIG=/app/config/default.yaml
-      - PG_HOST=postgres
-      - PG_PORT=5432
-      - PG_DATABASE=${PG_DATABASE:-deepanalyze}
-      - PG_USER=${PG_USER:-deepanalyze}
-      - PG_PASSWORD=${PG_PASSWORD:-deepanalyze_dev}
-      # HF_ENDPOINT 设为空，阻止运行时模型下载
-      - HF_ENDPOINT=
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:21000/api/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 15s
-      retries: 3
-
-  frontend:
-    image: deepanalyze-frontend:offline
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      - VITE_API_URL=http://localhost:${BACKEND_PORT:-21000}
-    depends_on:
-      - backend
-    restart: unless-stopped
-
   postgres:
     image: deepanalyze-pg:offline
-    ports:
-      - "${PG_PORT:-5432}:5432"
     environment:
       - POSTGRES_DB=${PG_DATABASE:-deepanalyze}
       - POSTGRES_USER=${PG_USER:-deepanalyze}
@@ -69,22 +23,60 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-deepanalyze} -d ${PG_DATABASE:-deepanalyze}"]
       interval: 5s
       timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  embedding:
+    image: deepanalyze-embedding:offline
+    depends_on: []
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11435/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
       retries: 5
     restart: unless-stopped
 
-  # Ollama 用于本地嵌入模型（可选）
-  # 如果内网有独立的嵌入服务，可以注释掉 ollama 并在设置中修改嵌入端点
-  ollama:
-    image: ollama/ollama:latest
-    profiles:
-      - embedding
+  backend:
+    image: deepanalyze-backend:offline
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "${BACKEND_PORT:-3000}:21000"
     volumes:
-      - ollama-data:/root/.ollama
+      - deepanalyze-data:/app/data
+      - ./config:/app/config:ro
+      - ./models/docling:/app/data/models/docling
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=21000
+      - MODEL_CONFIG=/app/config/default.yaml
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DATABASE=${PG_DATABASE:-deepanalyze}
+      - PG_USER=${PG_USER:-deepanalyze}
+      - PG_PASSWORD=${PG_PASSWORD:-deepanalyze_dev}
+      - HF_ENDPOINT=
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embedding:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:21000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  frontend:
+    image: deepanalyze-frontend:offline
+    ports:
+      - "${FRONTEND_PORT:-21000}:3000"
+    depends_on:
+      backend:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   deepanalyze-data:
   pgdata:
-  ollama-data:

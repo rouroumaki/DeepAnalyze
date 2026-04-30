@@ -1,43 +1,35 @@
-# =============================================================================
-# DeepAnalyze 内网配置模板
-# =============================================================================
+# DeepAnalyze Intranet Configuration Template
 #
-# 使用方法:
-#   1. 复制本文件为 default.yaml
-#   2. 修改 endpoint 和 model 为内网实际地址
-#   3. 重启 backend 容器: docker compose restart backend
+# Usage:
+#   1. Edit the 'main' model section below to point to your LLM service
+#   2. Run: ./deploy.sh
+#   3. Or configure via the Settings page in the Web UI after startup
 #
-# 也可通过前端 "设置" 页面在线修改，无需重启。
-# =============================================================================
+# Embedding service is automatically started and configured.
+# No need to modify the embedding section unless using an external service.
+#
 
 models:
   # ================================================================
-  # 主推理模型 — 必须配置，指向内网 OpenAI 兼容 API
+  # Main LLM - MUST configure, point to your OpenAI-compatible API
   # ================================================================
   main:
     provider: openai-compatible
-    # TODO: 修改为内网推理服务地址
+    # TODO: Change to your LLM service endpoint
     endpoint: http://192.168.1.100:8080/v1
-    # TODO: 修改为实际模型名称（如 glm-5-plus, qwen3.5-72b 等）
+    # TODO: Change to your model name (e.g., glm-5-plus, qwen3.5-72b, etc.)
     model: glm-5-plus
-    # API Key（内网服务如不需要可留空或填任意值）
+    # API Key (leave empty or use any value if not needed by your service)
     apiKey: ""
     maxTokens: 32768
     supportsToolUse: true
 
   # ================================================================
-  # 嵌入模型 — 用于文档向量化
-  # 选项 A: 使用内网嵌入服务（修改 endpoint 即可）
-  # 选项 B: 使用 Ollama 本地部署（启动 ollama: docker compose --profile embedding up ollama -d）
-  #         然后在容器内执行: docker exec -it <ollama容器> ollama pull bge-m3
+  # Embedding - Auto-configured, uses built-in BGE-M3 service
   # ================================================================
   embedding:
     provider: openai-compatible
-    # 选项 A: 内网嵌入服务
-    # endpoint: http://192.168.1.100:8080/v1
-    # model: bge-m3
-    # 选项 B: Ollama 本地
-    endpoint: http://ollama:11434/v1
+    endpoint: http://embedding:11435/v1
     model: bge-m3
     dimension: 1024
     maxTokens: 8192

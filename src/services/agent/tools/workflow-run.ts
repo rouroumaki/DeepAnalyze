@@ -91,6 +91,15 @@ export function createWorkflowRunTool(ctx: WorkflowRunContext): AgentTool {
       "使用 single 模式可直接委托单个子 Agent 执行任务，跳过多 Agent 编排开销。\n" +
       "在 graph 和 parallel 模式下，子Agent 间可通过 send_message 工具互相通信。\n" +
       "每个子Agent拥有独立的完整上下文窗口，适合处理大型任务。简单查询不需要使用此工具。\n\n" +
+      "**Agent 分配与任务覆盖（最高优先级）**：\n" +
+      "创建 Agent 前必须先了解完整的目标范围，确保覆盖完整：\n" +
+      "1. 用 run_sql 或 wiki_browse(listDocuments) 获取完整的文档清单（包含文件名、类型、ID）\n" +
+      "2. 根据任务目标和文档内容的相关性进行分组，考虑文档间的关系和依赖\n" +
+      "3. 合理分配 Agent 数量和职责——确保每个文档都有明确的负责 Agent\n" +
+      "   - 根据文档大小、复杂度和分析深度灵活调整每个 Agent 的工作量\n" +
+      "   - 有相关性或需要交叉对比的文档应分配给同一个 Agent，保证分析连贯性\n" +
+      "4. 在每个 Agent 的 task 中明确列出它负责的文档ID或文件名，不要让Agent自行搜索发现\n" +
+      "5. 工作流完成后，核对返回结果中的Agent数量与目标文档数量，确保无一遗漏\n\n" +
       "**输出管理（重要）**：当子Agent任务可能产生大量详细内容时，在每个子Agent的 task 中指示：\n" +
       "1. 用 write_file 将详细分析结果写入文件（建议路径：tmp/{role}_{id}.md，相对于 data 目录）\n" +
       "2. 文件末尾附上段落索引（各章节标题和内容摘要），方便后续按需读取\n" +

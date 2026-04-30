@@ -23,6 +23,7 @@ import { AsyncSessionMemoryExtractor } from "./session-memory-async.js";
 import { getRepos } from "../../store/repos/index.js";
 import { DisplayResolver } from "../display-resolver.js";
 import { maybePersistToolResult } from "./tool-result-storage.js";
+import { safeTruncateJSON } from "./json-truncate.js";
 import type {
   AgentDefinition,
   AgentRunOptions,
@@ -1285,8 +1286,7 @@ export class AgentRunner {
         const truncationHint = toolName === "expand"
           ? `[... 内容被截断: 共约 ${estimatedTokens} tokens, 已展示前 ~${maxTokens} tokens. 如需完整信息, 可用 heading 参数指定章节逐段阅读]`
           : `[... result truncated: ${estimatedTokens} tokens total, showing first ~${maxTokens} tokens]`;
-        resultContent = resultContent.substring(0, previewChars)
-          + `\n\n${truncationHint}`;
+        resultContent = safeTruncateJSON(resultContent, previewChars) + `\n\n${truncationHint}`;
       }
     } catch {
       resultContent = String(result);

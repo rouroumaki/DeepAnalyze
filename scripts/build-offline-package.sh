@@ -1,169 +1,224 @@
 #!/bin/bash
 # =============================================================================
-# build-offline-package.sh — 构建离线部署包
+# build-offline-package.sh — Build complete offline deployment package
 # =============================================================================
-# 在有互联网的机器上运行此脚本，生成完整的离线部署包。
+# Run this on a machine with Docker and the project set up.
+# Uses existing local Docker images (no Docker Hub pull needed).
+# Produces a fully self-contained deployment package.
 #
-# 用法:
-#   ./scripts/build-offline-package.sh [输出目录]
+# Prerequisites:
+#   - deepanalyze-backend:latest  (built from Dockerfile)
+#   - deepanalyze-frontend:latest (built from frontend/Dockerfile)
+#   - deepanalyze-pg:latest       (built from config/pg-zhparser.Dockerfile)
+#   - data/models/bge-m3/         (BGE-M3 model weights)
+#   - data/models/docling/        (Docling model weights)
 #
-# 默认输出到 /tmp/deepanalyze-offline/
+# Usage:
+#   ./scripts/build-offline-package.sh [output_dir]
+#
+# Default output: /tmp/deepanalyze-offline/
 # =============================================================================
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="${1:-/tmp/deepanalyze-offline}"
 
-echo "======================================"
-echo "  DeepAnalyze 离线部署包构建"
-echo "======================================"
-echo "  项目根目录: $PROJECT_ROOT"
-echo "  输出目录:   $OUTPUT_DIR"
+echo "============================================"
+echo "  DeepAnalyze Offline Package Builder"
+echo "============================================"
+echo "  Project:  $PROJECT_ROOT"
+echo "  Output:   $OUTPUT_DIR"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 1: 准备输出目录
+# Step 1: Check prerequisites
 # ---------------------------------------------------------------------------
-echo "[1/8] 准备输出目录..."
-rm -rf "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR"/{images,models,config,source,tools}
+echo "[1/9] Checking prerequisites..."
+
+check_image() {
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^$1$"; then
+        echo "  ERROR: Required image not found: $1"
+        echo "  Please build it first."
+        exit 1
+    fi
+    echo "  OK: $1"
+}
+
+check_image "deepanalyze-backend:latest"
+check_image "deepanalyze-frontend:latest"
+check_image "deepanalyze-pg:latest"
+
+MODELS_SRC="$PROJECT_ROOT/data/models"
+if [ ! -d "$MODELS_SRC/bge-m3" ]; then
+    echo "  ERROR: BGE-M3 model not found at $MODELS_SRC/bge-m3/"
+    exit 1
+fi
+echo "  OK: BGE-M3 model ($MODELS_SRC/bge-m3/)"
+
+if [ ! -d "$MODELS_SRC/docling" ]; then
+    echo "  WARNING: Docling models not found at $MODELS_SRC/docling/"
+    echo "  Document processing may not work without these models."
+fi
 
 # ---------------------------------------------------------------------------
-# Step 2: 构建前端
+# Step 2: Prepare output directory
 # ---------------------------------------------------------------------------
-echo "[2/8] 构建前端..."
+echo "[2/9] Preparing output directory..."
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"/{images,config,models}
+
+# ---------------------------------------------------------------------------
+# Step 3: Build frontend
+# ---------------------------------------------------------------------------
+echo "[3/9] Building frontend..."
 cd "$PROJECT_ROOT/frontend"
 npm install --prefer-offline 2>/dev/null || npm install
 npm run build
-echo "  前端构建完成"
+echo "  Frontend build complete"
 
 # ---------------------------------------------------------------------------
-# Step 3: 构建 Docker 镜像
+# Step 4: Build backend offline image
 # ---------------------------------------------------------------------------
-echo "[3/8] 构建 Docker 镜像..."
+echo "[4/9] Building backend offline image..."
 
-cd "$PROJECT_ROOT"
+docker rm -f temp-backend-offline 2>/dev/null || true
+docker create --name temp-backend-offline deepanalyze-backend:latest sh
 
-# Backend — patch existing image with latest source code
-echo "  构建 backend (patching existing image with latest code)..."
-cat > /tmp/Dockerfile.backend-patch << 'PATCH_EOF'
-FROM deepanalyze-backend:latest
-COPY src/ /app/src/
-COPY docling-service/ /app/docling-service/
-COPY paddleocr-vl-service/ /app/paddleocr-vl-service/
-COPY whisper-service/ /app/whisper-service/
-COPY package.json /app/package.json
-RUN bun install --production 2>/dev/null || bun install
-ENV HF_ENDPOINT=""
-PATCH_EOF
+# Copy latest source code
+docker cp "$PROJECT_ROOT/src/." temp-backend-offline:/app/src/
+docker cp "$PROJECT_ROOT/package.json" temp-backend-offline:/app/package.json
 
-DOCKER_BUILDKIT=0 docker build -t deepanalyze-backend:offline -f /tmp/Dockerfile.backend-patch "$PROJECT_ROOT"
+# Commit with correct CMD and environment
+docker commit \
+    --change 'ENV HF_ENDPOINT=' \
+    --change 'ENV NODE_ENV=production' \
+    --change 'CMD ["bun", "run", "src/main.ts"]' \
+    --change 'HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD curl -f http://localhost:21000/api/health || exit 1' \
+    temp-backend-offline deepanalyze-backend:offline
 
-# Frontend — update nginx config in existing image
-echo "  构建 frontend (updating nginx config)..."
-docker rm -f temp-frontend-build 2>/dev/null || true
-docker create --name temp-frontend-build deepanalyze-frontend:latest sh
-docker cp "$PROJECT_ROOT/frontend/nginx.conf" temp-frontend-build:/etc/nginx/conf.d/default.conf
-docker commit temp-frontend-build deepanalyze-frontend:offline
-docker rm temp-frontend-build
+docker rm temp-backend-offline
+echo "  Backend offline image created"
 
-# PostgreSQL — just tag the existing image
-echo "  标记 postgres..."
+# ---------------------------------------------------------------------------
+# Step 5: Build frontend offline image
+# ---------------------------------------------------------------------------
+echo "[5/9] Building frontend offline image..."
+
+rm -rf /tmp/fe-build-ctx
+mkdir -p /tmp/fe-build-ctx/assets
+
+cp "$PROJECT_ROOT/frontend/dist/index.html" /tmp/fe-build-ctx/
+cp -r "$PROJECT_ROOT/frontend/dist/assets/"* /tmp/fe-build-ctx/assets/
+cp "$PROJECT_ROOT/frontend/nginx.conf" /tmp/fe-build-ctx/
+
+cat > /tmp/fe-build-ctx/Dockerfile << 'FEEOF'
+FROM deepanalyze-frontend:latest
+RUN rm -rf /usr/share/nginx/html/assets/* /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
+COPY assets/ /usr/share/nginx/html/assets/
+COPY index.html /usr/share/nginx/html/index.html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+FEEOF
+
+DOCKER_BUILDKIT=0 docker build -t deepanalyze-frontend:offline /tmp/fe-build-ctx/ 2>&1 | tail -5
+rm -rf /tmp/fe-build-ctx
+echo "  Frontend offline image created"
+
+# ---------------------------------------------------------------------------
+# Step 6: Build embedding offline image
+# ---------------------------------------------------------------------------
+echo "[6/9] Building embedding offline image..."
+
+docker rm -f temp-embedding-offline 2>/dev/null || true
+docker run -d --name temp-embedding-offline deepanalyze-backend:latest sleep 3600
+
+# Install sentence-transformers
+echo "  Installing sentence-transformers (may take a minute)..."
+docker exec temp-embedding-offline pip3 install --break-system-packages --no-cache-dir \
+    -i https://mirrors.aliyun.com/pypi/simple/ \
+    --trusted-host mirrors.aliyun.com \
+    sentence-transformers 2>&1 | tail -3
+
+# Copy embedding server and model files
+docker cp "$PROJECT_ROOT/embedding_server.py" temp-embedding-offline:/app/embedding_server.py
+docker exec temp-embedding-offline mkdir -p /app/models/bge-m3
+docker cp "$MODELS_SRC/bge-m3/." temp-embedding-offline:/app/models/bge-m3/
+
+# Commit with correct CMD
+docker commit \
+    --change 'ENV TOKENIZERS_PARALLELISM=false' \
+    --change 'EXPOSE 11435' \
+    --change 'CMD ["python3", "/app/embedding_server.py", "--host", "0.0.0.0", "--port", "11435", "--model-path", "/app/models/bge-m3"]' \
+    --change 'HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD curl -f http://localhost:11435/health || exit 1' \
+    temp-embedding-offline deepanalyze-embedding:offline
+
+docker rm -f temp-embedding-offline
+echo "  Embedding offline image created"
+
+# Tag postgres
 docker tag deepanalyze-pg:latest deepanalyze-pg:offline
 
-echo "  所有镜像构建完成"
+echo "  All images built:"
+docker images | grep "offline"
 
 # ---------------------------------------------------------------------------
-# Step 4: 拉取 Ollama 镜像
+# Step 7: Save Docker images as tar files
 # ---------------------------------------------------------------------------
-echo "[4/8] 拉取 Ollama 镜像..."
-docker pull ollama/ollama:latest
-echo "  Ollama 镜像就绪"
+echo "[7/9] Saving Docker images..."
 
-# ---------------------------------------------------------------------------
-# Step 5: 保存 Docker 镜像为 tar 文件
-# ---------------------------------------------------------------------------
-echo "[5/8] 保存 Docker 镜像..."
-
-echo "  保存 backend (~3.5GB)..."
+echo "  Saving backend (~900MB)..."
 docker save deepanalyze-backend:offline -o "$OUTPUT_DIR/images/backend.tar"
 
-echo "  保存 frontend (~100MB)..."
+echo "  Saving frontend (~30MB)..."
 docker save deepanalyze-frontend:offline -o "$OUTPUT_DIR/images/frontend.tar"
 
-echo "  保存 postgres (~1.9GB)..."
+echo "  Saving postgres (~440MB)..."
 docker save deepanalyze-pg:offline -o "$OUTPUT_DIR/images/postgres.tar"
 
-echo "  保存 ollama (~3.7GB)..."
-docker save ollama/ollama:latest -o "$OUTPUT_DIR/images/ollama.tar"
+echo "  Saving embedding (~2.1GB, includes BGE-M3 model)..."
+docker save deepanalyze-embedding:offline -o "$OUTPUT_DIR/images/embedding.tar"
 
-echo "  镜像保存完成"
+echo "  All images saved"
 
 # ---------------------------------------------------------------------------
-# Step 6: 复制模型权重
+# Step 8: Copy model files and deployment configs
 # ---------------------------------------------------------------------------
-echo "[6/8] 复制模型权重..."
+echo "[8/9] Copying model files and deployment configs..."
 
-MODELS_SRC="$PROJECT_ROOT/data/models"
-if [ -d "$MODELS_SRC/bge-m3" ]; then
-    echo "  复制 bge-m3 嵌入模型 (~2.2GB)..."
-    cp -r "$MODELS_SRC/bge-m3" "$OUTPUT_DIR/models/"
-fi
-
+# Docling models (mounted at runtime, not in any image)
 if [ -d "$MODELS_SRC/docling" ]; then
-    echo "  复制 docling 文档处理模型 (~4.3GB)..."
+    echo "  Copying docling models (~4.3GB)..."
     cp -r "$MODELS_SRC/docling" "$OUTPUT_DIR/models/"
 fi
 
-echo "  模型文件复制完成"
-
-# ---------------------------------------------------------------------------
-# Step 7: 复制部署文件和源代码
-# ---------------------------------------------------------------------------
-echo "[7/8] 复制部署文件和源代码..."
-
-# 部署脚本和配置
+# Deployment files
 cp "$PROJECT_ROOT/deploy/docker-compose.yml" "$OUTPUT_DIR/docker-compose.yml"
-cp "$PROJECT_ROOT/deploy/load-images.sh" "$OUTPUT_DIR/load-images.sh"
-cp "$PROJECT_ROOT/deploy/start.sh" "$OUTPUT_DIR/start.sh"
+cp "$PROJECT_ROOT/deploy/deploy.sh" "$OUTPUT_DIR/deploy.sh"
 cp "$PROJECT_ROOT/deploy/stop.sh" "$OUTPUT_DIR/stop.sh"
 cp "$PROJECT_ROOT/deploy/.env.example" "$OUTPUT_DIR/.env.example"
 cp "$PROJECT_ROOT/deploy/config/default.yaml" "$OUTPUT_DIR/config/default.yaml"
 
-# 设置脚本可执行
-chmod +x "$OUTPUT_DIR/load-images.sh" "$OUTPUT_DIR/start.sh" "$OUTPUT_DIR/stop.sh"
+chmod +x "$OUTPUT_DIR/deploy.sh" "$OUTPUT_DIR/stop.sh"
 
-# 完整源代码（用于内网修改和参考）
-echo "  复制源代码..."
+# Source code (for reference)
+mkdir -p "$OUTPUT_DIR/source"
+echo "  Copying source code..."
 rsync -a --exclude='node_modules' \
     --exclude='.git' \
     --exclude='data/' \
-    --exclude='pip-wheels' \
     --exclude='frontend/dist' \
     --exclude='frontend/node_modules' \
+    --exclude='pip-wheels' \
     --exclude='test-results' \
     --exclude='deploy' \
     --exclude='.claude' \
     "$PROJECT_ROOT/" "$OUTPUT_DIR/source/"
 
-# 开发工具
-if [ -f "$PROJECT_ROOT/start.py" ]; then
-    cp "$PROJECT_ROOT/start.py" "$OUTPUT_DIR/tools/"
-fi
-if [ -f "$PROJECT_ROOT/test-suite.md" ]; then
-    cp "$PROJECT_ROOT/test-suite.md" "$OUTPUT_DIR/tools/"
-fi
-if [ -d "$PROJECT_ROOT/pip-wheels" ]; then
-    echo "  复制 pip wheels (~3.1GB)..."
-    cp -r "$PROJECT_ROOT/pip-wheels" "$OUTPUT_DIR/tools/"
-fi
-
-echo "  文件复制完成"
+echo "  Files copied"
 
 # ---------------------------------------------------------------------------
-# Step 8: 生成说明文件
+# Step 9: Generate README
 # ---------------------------------------------------------------------------
-echo "[8/8] 生成说明文件..."
+echo "[9/9] Generating README..."
 
 cat > "$OUTPUT_DIR/README.md" << 'READMEEOF'
 # DeepAnalyze 离线部署包
@@ -172,136 +227,103 @@ cat > "$OUTPUT_DIR/README.md" << 'READMEEOF'
 
 ```
 deepanalyze-offline/
-├── images/              # Docker 镜像 tar 文件
-│   ├── backend.tar      # 后端服务（Bun + Python）
-│   ├── frontend.tar     # 前端（Nginx + SPA）
-│   ├── postgres.tar     # PostgreSQL + pgvector + zhparser
-│   └── ollama.tar       # Ollama（可选，用于本地嵌入）
-├── models/              # 模型权重
-│   ├── bge-m3/          # 嵌入模型（2.2GB）
-│   └── docling/         # 文档解析模型（4.3GB）
+├── images/                 # Docker 镜像 tar 文件
+│   ├── backend.tar         # 后端服务 (Bun + Python + docling)
+│   ├── frontend.tar        # 前端 (Nginx + React SPA)
+│   ├── postgres.tar        # PostgreSQL 17 + pgvector + zhparser
+│   └── embedding.tar       # 嵌入服务 (BGE-M3 模型已内置)
+├── models/
+│   └── docling/            # 文档处理模型 (运行时挂载)
 ├── config/
-│   └── default.yaml     # 模型配置（修改推理服务地址）
-├── source/              # 完整源代码（可修改）
-├── tools/               # 开发工具和 pip wheels
-├── docker-compose.yml   # Docker Compose 配置
-├── load-images.sh       # 加载 Docker 镜像
-├── start.sh             # 启动所有服务
-├── stop.sh              # 停止所有服务
-└── .env.example         # 环境变量模板
+│   └── default.yaml        # LLM 模型配置 (编辑此文件)
+├── source/                 # 完整源代码 (供参考和修改)
+├── docker-compose.yml      # Docker Compose 编排配置
+├── deploy.sh               # 一键部署脚本
+├── stop.sh                 # 停止服务
+├── .env.example            # 环境变量模板
+└── README.md
 ```
 
-## 部署步骤
+## 快速部署
 
-### 1. 前置条件
-
-目标机器需要安装：
+### 前置条件
 - Docker Engine >= 20.10
-- Docker Compose >= 2.0
-- 可用磁盘空间 >= 30GB
-- 至少 8GB 内存（推荐 16GB）
+- Docker Compose (支持 v1 `docker-compose` 和 v2 `docker compose`)
+- 可用磁盘空间 >= 20GB
+- 内存 >= 8GB (推荐 16GB)
 
-### 2. 配置推理模型
+### 部署步骤
 
-编辑 `config/default.yaml`，修改以下字段：
+1. **配置 LLM 推理服务**
 
-```yaml
-models:
-  main:
-    endpoint: http://你的推理服务地址:端口/v1
-    model: glm-5-plus    # 或其他模型名
-    apiKey: "你的API密钥"  # 如不需要可留空
-```
+   编辑 `config/default.yaml`，修改 `main` 模型部分：
 
-或启动后在前端 "设置" 页面在线修改。
+   ```yaml
+   models:
+     main:
+       provider: openai-compatible
+       endpoint: http://你的推理服务地址:端口/v1
+       model: glm-5-plus         # 或 qwen3.5-72b 等
+       apiKey: ""                # 内网服务通常不需要
+   ```
 
-### 3. 加载镜像
+   或启动后在 Web UI 的"设置"页面配置。
 
-```bash
-chmod +x load-images.sh start.sh stop.sh
-./load-images.sh
-```
+2. **一键部署**
 
-### 4. 启动服务
+   ```bash
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
 
-```bash
-cp .env.example .env   # 首次需要
-./start.sh
-```
+   脚本会自动完成：加载镜像 → 创建配置 → 启动所有服务 → 等待健康检查
 
-### 5. 访问
+3. **访问应用**
 
-- 前端: http://localhost:3000
-- 后端 API: http://localhost:21000/api
-- 健康检查: http://localhost:21000/api/health
+   - Web UI: http://localhost:21000
+   - API: http://localhost:3000/api
+   - 健康检查: http://localhost:3000/api/health
 
-### 6. 停止服务
+### 其他命令
 
 ```bash
-./stop.sh
+./deploy.sh status         # 查看服务状态
+./deploy.sh logs           # 查看所有日志
+./deploy.sh logs backend   # 查看后端日志
+./deploy.sh stop           # 停止所有服务
+./deploy.sh restart        # 重启服务
 ```
 
-## 配置说明
+## 服务说明
 
-### 推理模型（必须配置）
+| 服务 | 镜像 | 内部端口 | 宿主机端口 | 说明 |
+|------|------|---------|-----------|------|
+| frontend | deepanalyze-frontend:offline | 3000 | **21000** | Nginx 提供 React SPA |
+| backend | deepanalyze-backend:offline | 21000 | **3000** | Bun + Python API 服务 |
+| embedding | deepanalyze-embedding:offline | 11435 | 内部 | BGE-M3 嵌入模型 (自动启动) |
+| postgres | deepanalyze-pg:offline | 5432 | 内部 | PostgreSQL + pgvector + zhparser |
 
-DeepAnalyze 通过 OpenAI 兼容 API 调用推理模型。支持任何 OpenAI 兼容的服务：
-- vLLM
-- Ollama
-- TGI (Text Generation Inference)
-- 自研推理服务
+## 架构
 
-只需在 `config/default.yaml` 或前端设置中配置 `endpoint`、`model`、`apiKey`。
-
-### 嵌入模型
-
-两个选项：
-
-**选项 A: 使用内网嵌入服务**
-```yaml
-embedding:
-  endpoint: http://内网嵌入服务:端口/v1
-  model: bge-m3
-```
-
-**选项 B: 使用本地 Ollama**
-```bash
-docker compose --profile embedding up ollama -d
-# 等待 Ollama 启动后拉取模型:
-docker exec -it <ollama容器名> ollama pull bge-m3
-```
-
-### 修改源代码
-
-源代码在 `source/` 目录中。如需修改并重新部署：
-
-1. 修改 `source/` 中的代码
-2. 在有互联网的机器上重新构建 Docker 镜像
-3. 保存并替换 `images/` 中的 tar 文件
-4. 在目标机器上重新 `./load-images.sh`
-
-### pip wheels
-
-`tools/pip-wheels/` 包含 131 个预下载的 Python 包（3.1GB）。
-如果修改了 Python 服务（docling, paddleocr 等），可用这些 wheels 离线安装：
-
-```bash
-pip install --no-index --find-links=tools/pip-wheels/ <package>
-```
+- 前端 (Nginx) 提供 Web UI，将 `/api/*` 和 `/ws` 代理到后端
+- 后端连接 PostgreSQL 存储数据，连接嵌入服务进行向量化
+- 嵌入服务内置 BGE-M3 模型，无需下载
+- 服务间通过 Docker 内部网络通信
+- 用户只需访问前端端口 21000
 
 ## 故障排除
 
-- **Backend 无法启动**: 检查 `config/default.yaml` 中的推理服务地址是否可达
-- **PostgreSQL 连接失败**: 等待 postgres 容器完全启动（约 10 秒）
-- **文档解析失败**: 确保 `models/docling/` 目录已正确挂载
-- **嵌入服务报错**: 如果不用 Ollama，确保 `default.yaml` 中 embedding 配置指向了正确的服务
+- **后端无法启动**: 检查 `config/default.yaml` 中的推理服务地址是否可达
+- **嵌入服务启动慢**: BGE-M3 模型加载需要 30-60 秒，属于正常现象
+- **PostgreSQL 连接失败**: 等待 postgres 健康检查通过 (约 15-30 秒)
+- **查看日志**: `./deploy.sh logs <服务名>` 查看详细日志
 
 READMEEOF
 
 echo ""
-echo "======================================"
+echo "============================================"
 echo "  离线部署包构建完成!"
-echo "======================================"
+echo "============================================"
 echo ""
 echo "  输出目录: $OUTPUT_DIR"
 echo ""
@@ -310,5 +332,6 @@ echo ""
 echo "  总大小:"
 du -sh "$OUTPUT_DIR"
 echo ""
-echo "打包命令 (可选):"
-echo "  cd $(dirname "$OUTPUT_DIR") && tar czf deepanalyze-offline.tar.gz $(basename "$OUTPUT_DIR")"
+echo "  打包为单文件:"
+echo "    cd $(dirname "$OUTPUT_DIR") && tar cf deepanalyze-offline.tar $(basename "$OUTPUT_DIR")"
+echo ""

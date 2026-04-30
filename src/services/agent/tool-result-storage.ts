@@ -2,6 +2,7 @@ import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
+import { safeTruncateJSON } from "./json-truncate.js";
 
 /** Default max result size before persisting to disk */
 const DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000;
@@ -59,7 +60,15 @@ export async function maybePersistToolResult(
 
     return { persisted: true, content, filePath };
   } catch {
-    const truncated = result.slice(0, maxChars) + "\n... [truncated due to size]";
+    // Fallback: try to truncate valid JSON, otherwise plain truncation
+    let truncated: string;
+    try {
+      JSON.parse(result);
+      // Result was valid JSON — truncate it safely
+      truncated = safeTruncateJSON(result, maxChars) + "\n... [truncated due to size]";
+    } catch {
+      truncated = result.slice(0, maxChars) + "\n... [truncated due to size]";
+    }
     return { persisted: false, content: truncated };
   }
 }
